@@ -8,7 +8,7 @@ no AG-UI bridge** in the path: a plain ``pydantic_ai.Agent`` calls the specs
 in-process.
 
 The acting identity flows through ``RunContext.deps``: by default the toolset
-reads ``ctx.deps.user`` (the :class:`~drf_pydantic_ai.types.agent_deps.AgentDeps`
+reads ``ctx.deps.user`` (the :class:`~rest_framework_pydantic_ai.types.agent_deps.AgentDeps`
 shape); projects that thread identity differently pass a ``get_user`` extractor.
 
 Each call mirrors what a DRF view does, in order:

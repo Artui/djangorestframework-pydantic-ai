@@ -7,7 +7,7 @@ bridge** in the path.
 
 ## What this is
 
-A single thin adapter, [`SpecToolset`](reference.md#drf_pydantic_ai.SpecToolset),
+A single thin adapter, [`SpecToolset`](reference.md#rest_framework_pydantic_ai.SpecToolset),
 that turns a `name -> spec` mapping into agent tools. Every call routes through
 drf-services' transport-neutral surface:
 

@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.2.0] — 2026-07-02
 
+### Changed (breaking)
+
+- **The importable package is renamed `drf_pydantic_ai` → `rest_framework_pydantic_ai`.**
+  This matches the sibling packages (`djangorestframework-services` →
+  `rest_framework_services`, `djangorestframework-mcp-server` →
+  `rest_framework_mcp`); the PyPI name is unchanged
+  (`djangorestframework-pydantic-ai`). Update imports:
+  `from rest_framework_pydantic_ai import SpecToolset, AgentDeps`.
+
 ### Added
 
 - **`unknown_arguments` knob on `SpecToolset` (CONF-6).** Controls what happens

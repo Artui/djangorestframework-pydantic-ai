@@ -54,11 +54,11 @@ Repository = "https://github.com/Artui/djangorestframework-pydantic-ai"
 Issues = "https://github.com/Artui/djangorestframework-pydantic-ai/issues"
 
 [tool.hatch.version]
-path = "drf_pydantic_ai/version.py"
+path = "rest_framework_pydantic_ai/version.py"
 pattern = "^__version__(?:\\s*:\\s*[A-Za-z][A-Za-z0-9_]*)?\\s*=\\s*[\"'](?P<version>[^\"']+)[\"']"
 
 [tool.hatch.build.targets.wheel]
-packages = ["drf_pydantic_ai"]
+packages = ["rest_framework_pydantic_ai"]
 
 [dependency-groups]
 dev = [
@@ -84,12 +84,12 @@ docs = [
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "tests.conftest_settings"
 asyncio_mode = "auto"
-addopts = "--cov=drf_pydantic_ai --cov-report=term-missing --cov-fail-under=100"
+addopts = "--cov=rest_framework_pydantic_ai --cov-report=term-missing --cov-fail-under=100"
 testpaths = ["tests"]
 
 [tool.coverage.run]
 branch = true
-source = ["drf_pydantic_ai"]
+source = ["rest_framework_pydantic_ai"]
 
 [tool.coverage.report]
 show_missing = true
@@ -108,7 +108,7 @@ ignore = ["E203", "E501", "E231", "F811", "E722", "E741"]
 "__init__.py" = ["F401"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["drf_pydantic_ai"]
+known-first-party = ["rest_framework_pydantic_ai"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -117,10 +117,10 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 
 [tool.ty.environment]
-root = ["./drf_pydantic_ai"]
+root = ["./rest_framework_pydantic_ai"]
 
 # bump-my-version drives `make release-bump` — it rewrites the version in
-# drf_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
+# rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
 current_version = "0.2.0"
@@ -129,7 +129,7 @@ commit = false
 tag = false
 
 [[tool.bumpversion.files]]
-filename = "drf_pydantic_ai/version.py"
+filename = "rest_framework_pydantic_ai/version.py"
 search = '__version__: str = "{current_version}"'
 replace = '__version__: str = "{new_version}"'
 

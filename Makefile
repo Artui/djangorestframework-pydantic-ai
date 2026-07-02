@@ -26,7 +26,7 @@ test:
 
 lint:
 	uv run ruff check .
-	uv run ty check drf_pydantic_ai
+	uv run ty check rest_framework_pydantic_ai
 
 lint-fix:
 	uv run ruff check --fix .
@@ -38,7 +38,7 @@ format-check:
 	uv run ruff format --check --diff .
 
 type-check:
-	uv run ty check drf_pydantic_ai
+	uv run ty check rest_framework_pydantic_ai
 
 deps-bump:
 	uvx uv-upx upgrade run --profile with_pinned
@@ -58,7 +58,7 @@ release-bump:
 	@echo "Bumped to $(VERSION). Edit CHANGELOG.md to fill the new section,"
 	@echo "review with 'git diff', then run 'make release-publish'."
 
-# Release pipeline. The version lives in drf_pydantic_ai/version.py (pyproject
+# Release pipeline. The version lives in rest_framework_pydantic_ai/version.py (pyproject
 # pulls it in via [tool.hatch.version] dynamic). The three targets below wrap
 # scripts/release-publish.sh, which is the single source of truth for the flow
 # and stays byte-identical across the services + mcp-server repos.
@@ -72,7 +72,7 @@ release-bump:
 #   release-publish           — prepare → uv publish → finalize. For end-to-end
 #                               workstation releases. Set DRY_RUN=1 to rehearse.
 RELEASE_PACKAGE_NAME := djangorestframework-pydantic-ai
-RELEASE_VERSION_FILES := drf_pydantic_ai/version.py|^__version__[^=]*= *
+RELEASE_VERSION_FILES := rest_framework_pydantic_ai/version.py|^__version__[^=]*= *
 
 release-publish:
 	@PACKAGE_NAME='$(RELEASE_PACKAGE_NAME)' \

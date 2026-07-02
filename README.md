@@ -34,7 +34,7 @@ provider is pulled in separately, the usual Pydantic-AI way (e.g.
 
 ```python
 from pydantic_ai import Agent
-from drf_pydantic_ai import AgentDeps, SpecToolset
+from rest_framework_pydantic_ai import AgentDeps, SpecToolset
 
 toolset = SpecToolset({
     "list_orders":  orders_selector_spec,   # SelectorSpec -> read-only tool

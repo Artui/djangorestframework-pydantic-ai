@@ -16,8 +16,8 @@ from rest_framework_services import (
     UnknownArguments,
 )
 
-from drf_pydantic_ai import AgentDeps, SpecToolset
-from drf_pydantic_ai.spec_toolset import (
+from rest_framework_pydantic_ai import AgentDeps, SpecToolset
+from rest_framework_pydantic_ai.spec_toolset import (
     _call_spec,
     _output_extras,
     _paginate,

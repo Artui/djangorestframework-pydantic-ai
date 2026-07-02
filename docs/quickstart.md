@@ -35,7 +35,7 @@ create_order_spec = ServiceSpec(
 ## 2. Build the toolset
 
 ```python
-from drf_pydantic_ai import SpecToolset
+from rest_framework_pydantic_ai import SpecToolset
 
 toolset = SpecToolset({
     "list_orders": list_orders_spec,
@@ -51,11 +51,11 @@ List selectors additionally accept `page`, `limit`, and `order` tool args.
 ## 3. Run an agent
 
 The acting user flows through `RunContext.deps`. The default
-[`AgentDeps`](reference.md#drf_pydantic_ai.AgentDeps) carries it:
+[`AgentDeps`](reference.md#rest_framework_pydantic_ai.AgentDeps) carries it:
 
 ```python
 from pydantic_ai import Agent
-from drf_pydantic_ai import AgentDeps
+from rest_framework_pydantic_ai import AgentDeps
 
 agent = Agent("anthropic:claude-opus-4-8", deps_type=AgentDeps, toolsets=[toolset])
 
