@@ -506,7 +506,7 @@ services and selectors as a <a href="https://ai.pydantic.dev">Pydantic-AI</a> to
 plain <code>pydantic_ai.Agent</code> can call them as tools — <strong>no MCP server and no AG-UI
 bridge</strong> in the path.</p>
 <h2 id="what-this-is">What this is<a class="headerlink" href="#what-this-is" title="Permanent link">&para;</a></h2>
-<p>A single thin adapter, <a href="reference/#drf_pydantic_ai.SpecToolset"><code>SpecToolset</code></a>,
+<p>A single thin adapter, <a href="reference/#rest_framework_pydantic_ai.SpecToolset"><code>SpecToolset</code></a>,
 that turns a <code>name -&gt; spec</code> mapping into agent tools. Every call routes through
 drf-services' transport-neutral surface:</p>
 <ul>
@@ -521,8 +521,10 @@ drf-services' transport-neutral surface:</p>
 <li><strong><code>render_spec_output</code></strong> renders the result through the spec's serializer.</li>
 </ul>
 <p>The result is that an agent driving these tools sees exactly what an HTTP client
-would: the same validation errors, the same permission checks, the same rendered
-payloads — without the network hop, and without standing up an MCP server.</p>
+would: the same validation errors, the same <code>permission_classes</code> checks (both
+class-level <code>has_permission</code> and object-level <code>has_object_permission</code> on the
+resolved row), the same rendered payloads — without the network hop, and without
+standing up an MCP server.</p>
 <h2 id="how-it-compares">How it compares<a class="headerlink" href="#how-it-compares" title="Permanent link">&para;</a></h2>
 <p>If you already run an MCP server, <code>django-ag-ui</code>'s <code>DrfMcpToolset</code> exposes its
 tools to Pydantic-AI through the in-process MCP surface. <code>SpecToolset</code> is for the

@@ -387,7 +387,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#drf_pydantic_ai.SpecToolset" class="md-nav__link">
+  <a href="#rest_framework_pydantic_ai.SpecToolset" class="md-nav__link">
     <span class="md-ellipsis">
       
         SpecToolset
@@ -399,7 +399,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#drf_pydantic_ai.SpecToolset.get_tools" class="md-nav__link">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="md-nav__link">
     <span class="md-ellipsis">
       
         get_tools
@@ -426,7 +426,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#drf_pydantic_ai.AgentDeps" class="md-nav__link">
+  <a href="#rest_framework_pydantic_ai.AgentDeps" class="md-nav__link">
     <span class="md-ellipsis">
       
         AgentDeps
@@ -482,7 +482,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#drf_pydantic_ai.SpecToolset" class="md-nav__link">
+  <a href="#rest_framework_pydantic_ai.SpecToolset" class="md-nav__link">
     <span class="md-ellipsis">
       
         SpecToolset
@@ -494,7 +494,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#drf_pydantic_ai.SpecToolset.get_tools" class="md-nav__link">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="md-nav__link">
     <span class="md-ellipsis">
       
         get_tools
@@ -521,7 +521,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#drf_pydantic_ai.AgentDeps" class="md-nav__link">
+  <a href="#rest_framework_pydantic_ai.AgentDeps" class="md-nav__link">
     <span class="md-ellipsis">
       
         AgentDeps
@@ -565,11 +565,11 @@
 
 
 
-<h2 id="drf_pydantic_ai.SpecToolset" class="doc doc-heading">
+<h2 id="rest_framework_pydantic_ai.SpecToolset" class="doc doc-heading">
             <span class="doc doc-object-name doc-class-name">SpecToolset</span>
 
 
-<a href="#drf_pydantic_ai.SpecToolset" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#rest_framework_pydantic_ai.SpecToolset" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
     <div class="doc doc-contents first">
@@ -593,6 +593,13 @@ list selector's <code>page</code> / <code>limit</code> / <code>order</code> args
 services mutate).</p>
 <p><code>get_user</code> overrides how the acting identity is read off the run context;
 it defaults to <code>ctx.deps.user</code>.</p>
+<p><code>unknown_arguments</code> controls what happens to tool args outside a spec's
+declared input set — a hallucinated key the model invented. It defaults to
+:attr:<code>~rest_framework_services.UnknownArguments.REJECT</code>, which surfaces the
+unexpected key as a :class:<code>pydantic_ai.ModelRetry</code> so the model
+self-corrects; specs whose declared set is open (a <code>filter_set</code> or
+<code>**kwargs</code> selector) are unaffected. Pass <code>IGNORE</code> to silently drop them
+or <code>PASSTHROUGH</code> to forward them to the callable.</p>
 
 
 
@@ -618,7 +625,7 @@ it defaults to <code>ctx.deps.user</code>.</p>
 <div class="doc doc-object doc-function">
 
 
-<h3 id="drf_pydantic_ai.SpecToolset.get_tools" class="doc doc-heading">
+<h3 id="rest_framework_pydantic_ai.SpecToolset.get_tools" class="doc doc-heading">
             <span class="doc doc-object-name doc-function-name">get_tools</span>
 
 
@@ -626,7 +633,7 @@ it defaults to <code>ctx.deps.user</code>.</p>
       <small class="doc doc-label doc-label-async"><code>async</code></small>
   </span>
 
-<a href="#drf_pydantic_ai.SpecToolset.get_tools" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="headerlink" title="Permanent link">&para;</a></h3>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_tools</span><span class="p">(</span><span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">ToolsetTool</span><span class="p">[</span><span class="n">Any</span><span class="p">]]</span>
 </span></code></pre></div>
 
@@ -656,7 +663,7 @@ in-process, so the tools must run like ordinary function tools.</p>
 
 
 
-<h2 id="drf_pydantic_ai.AgentDeps" class="doc doc-heading">
+<h2 id="rest_framework_pydantic_ai.AgentDeps" class="doc doc-heading">
             <span class="doc doc-object-name doc-class-name">AgentDeps</span>
 
 
@@ -664,7 +671,7 @@ in-process, so the tools must run like ordinary function tools.</p>
       <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
   </span>
 
-<a href="#drf_pydantic_ai.AgentDeps" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#rest_framework_pydantic_ai.AgentDeps" class="headerlink" title="Permanent link">&para;</a></h2>
 
 
     <div class="doc doc-contents first">

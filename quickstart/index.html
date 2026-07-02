@@ -395,6 +395,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#unexpected-arguments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unexpected arguments
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#error-handling" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -511,6 +522,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#unexpected-arguments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unexpected arguments
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#error-handling" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -576,7 +598,7 @@ define for <code>djangorestframework-services</code>. A read selector and a writ
 </span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="2-build-the-toolset">2. Build the toolset<a class="headerlink" href="#2-build-the-toolset" title="Permanent link">&para;</a></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">drf_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">SpecToolset</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">SpecToolset</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">({</span>
 </span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="s2">&quot;list_orders&quot;</span><span class="p">:</span> <span class="n">list_orders_spec</span><span class="p">,</span>
@@ -589,9 +611,9 @@ docstring, the parameter schema from the spec's input serializer, and the
 List selectors additionally accept <code>page</code>, <code>limit</code>, and <code>order</code> tool args.</p>
 <h2 id="3-run-an-agent">3. Run an agent<a class="headerlink" href="#3-run-an-agent" title="Permanent link">&para;</a></h2>
 <p>The acting user flows through <code>RunContext.deps</code>. The default
-<a href="../reference/#drf_pydantic_ai.AgentDeps"><code>AgentDeps</code></a> carries it:</p>
+<a href="../reference/#rest_framework_pydantic_ai.AgentDeps"><code>AgentDeps</code></a> carries it:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">Agent</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">drf_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">AgentDeps</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">AgentDeps</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
 </span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">Agent</span><span class="p">(</span><span class="s2">&quot;anthropic:claude-opus-4-8&quot;</span><span class="p">,</span> <span class="n">deps_type</span><span class="o">=</span><span class="n">AgentDeps</span><span class="p">,</span> <span class="n">toolsets</span><span class="o">=</span><span class="p">[</span><span class="n">toolset</span><span class="p">])</span>
 </span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>
@@ -608,6 +630,16 @@ runs the selector as <code>request.user</code>, slices the result, and renders i
 <p>If your project carries identity on a richer deps object, hand the toolset a
 <code>get_user</code> extractor instead of using <code>AgentDeps</code>:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">get_user</span><span class="o">=</span><span class="k">lambda</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">ctx</span><span class="o">.</span><span class="n">deps</span><span class="o">.</span><span class="n">principal</span><span class="o">.</span><span class="n">user</span><span class="p">)</span>
+</span></code></pre></div>
+<h2 id="unexpected-arguments">Unexpected arguments<a class="headerlink" href="#unexpected-arguments" title="Permanent link">&para;</a></h2>
+<p>By default the toolset <strong>rejects</strong> tool args outside a spec's declared input set
+— a key the model invented — surfacing them as a <code>ModelRetry</code> so the model
+self-corrects. Specs whose declared set is open (a <code>filter_set</code> or <code>**kwargs</code>
+selector) are unaffected. Pass <code>unknown_arguments=</code> to change this:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_services</span><span class="w"> </span><span class="kn">import</span> <span class="n">UnknownArguments</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># silently drop unexpected keys instead of rejecting them</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">unknown_arguments</span><span class="o">=</span><span class="n">UnknownArguments</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="error-handling">Error handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h2>
 <p>The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:</p>
@@ -632,11 +664,19 @@ runs the selector as <code>request.user</code>, slices the result, and renders i
 <td><code>{"error": "not found"}</code></td>
 </tr>
 <tr>
+<td>Unexpected argument (default <code>REJECT</code>)</td>
+<td><code>ModelRetry</code> naming the unknown key</td>
+</tr>
+<tr>
+<td>Non-integer <code>page</code> / <code>limit</code>, non-string <code>order</code></td>
+<td><code>ModelRetry</code> — the model corrects the argument type</td>
+</tr>
+<tr>
 <td>Bad <code>order</code> field</td>
 <td><code>ModelRetry</code> — the model picked a column that doesn't exist</td>
 </tr>
 <tr>
-<td>Denied <code>permission_classes</code></td>
+<td>Denied <code>permission_classes</code> (class-level <code>has_permission</code> <strong>or</strong> object-level <code>has_object_permission</code>)</td>
 <td><code>PermissionDenied</code> is raised and aborts the run</td>
 </tr>
 </tbody>
