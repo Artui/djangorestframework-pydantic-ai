@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Documentation
+
+- README now describes the model-loop error mapping (invalid input / pagination
+  args / unexpected arguments → `ModelRetry`; permission denials abort) and the
+  `unknown_arguments` knob added in 0.2.0. No code change — a docs-only patch so
+  the updated README ships to PyPI.
+
 ## [0.2.0] — 2026-07-02
 
 ### Changed (breaking)
