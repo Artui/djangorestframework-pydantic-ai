@@ -123,7 +123,7 @@ root = ["./drf_pydantic_ai"]
 # drf_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.1.0"
+current_version = "0.2.0"
 allow_dirty = false
 commit = false
 tag = false
