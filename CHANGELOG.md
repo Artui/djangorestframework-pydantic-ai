@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] — 2026-07-02
+
 ### Documentation
 
 - README now describes the model-loop error mapping (invalid input / pagination
@@ -79,6 +81,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.0.0...v0.1.0
