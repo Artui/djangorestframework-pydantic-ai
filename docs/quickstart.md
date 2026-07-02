@@ -79,6 +79,20 @@ If your project carries identity on a richer deps object, hand the toolset a
 toolset = SpecToolset(specs, get_user=lambda ctx: ctx.deps.principal.user)
 ```
 
+## Unexpected arguments
+
+By default the toolset **rejects** tool args outside a spec's declared input set
+— a key the model invented — surfacing them as a `ModelRetry` so the model
+self-corrects. Specs whose declared set is open (a `filter_set` or `**kwargs`
+selector) are unaffected. Pass `unknown_arguments=` to change this:
+
+```python
+from rest_framework_services import UnknownArguments
+
+# silently drop unexpected keys instead of rejecting them
+toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
+```
+
 ## Error handling
 
 The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
@@ -88,5 +102,7 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | `ServiceValidationError` (bad input) | `ModelRetry` with the field errors — the model self-corrects |
 | `ServiceError` (business rule) | `{"error": "..."}` — model-readable content |
 | Unresolved instance | `{"error": "not found"}` |
+| Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
+| Non-integer `page` / `limit`, non-string `order` | `ModelRetry` — the model corrects the argument type |
 | Bad `order` field | `ModelRetry` — the model picked a column that doesn't exist |
-| Denied `permission_classes` | `PermissionDenied` is raised and aborts the run |
+| Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run |

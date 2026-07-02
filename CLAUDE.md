@@ -118,7 +118,7 @@ checker. Use `# ty: ignore[<rule>]`, not the mypy-style comment.
 | Python | 3.10 | 3.14 |
 | Django | 4.2 | 6.0 |
 | DRF | 3.14 | latest |
-| drf-services | 0.20 | 0.20.x |
+| drf-services | 0.21.1 | 0.21.x |
 | Pydantic-AI | 1.0 (`pydantic-ai-slim`) | latest |
 
 `from __future__ import annotations` at the top of every `.py` with annotations.

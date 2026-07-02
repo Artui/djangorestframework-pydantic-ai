@@ -15,9 +15,10 @@ plain `pydantic_ai.Agent` can call them as tools — **no MCP server and no AG-U
 bridge** in the path.
 
 Every tool call routes through drf-services' transport-neutral surface
-(`dispatch_spec` plus its off-HTTP helpers), so the same validation,
-permissions, and serializer rendering your DRF views apply also apply here —
-just without the HTTP hop.
+(`dispatch_spec` plus its off-HTTP helpers), so a tool call runs the same input
+validation, the same `permission_classes` — both class-level `has_permission`
+and object-level `has_object_permission` on the resolved row — and the same
+serializer rendering your DRF views apply, just without the HTTP hop.
 
 ## Install
 
