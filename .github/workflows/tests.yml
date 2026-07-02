@@ -25,7 +25,7 @@ jobs:
       - name: ruff format check
         run: uv run ruff format --check --diff .
       - name: ty
-        run: uv run ty check drf_pydantic_ai
+        run: uv run ty check rest_framework_pydantic_ai
 
   docs:
     name: docs build
@@ -141,12 +141,12 @@ jobs:
               git fetch --depth=1 origin "$before" 2>/dev/null || true
           fi
           old=""
-          if git cat-file -e "$before:drf_pydantic_ai/version.py" 2>/dev/null; then
-              old="$(git show "$before:drf_pydantic_ai/version.py" \
+          if git cat-file -e "$before:rest_framework_pydantic_ai/version.py" 2>/dev/null; then
+              old="$(git show "$before:rest_framework_pydantic_ai/version.py" \
                      | awk -F'"' '/^__version__/ { print $2; exit }')"
           fi
           new="$(awk -F'"' '/^__version__/ { print $2; exit }' \
-                 drf_pydantic_ai/version.py)"
+                 rest_framework_pydantic_ai/version.py)"
           if [[ -n "$old" && "$old" != "$new" ]]; then
               echo "Version bumped $old → $new; release.yml will deploy gh-pages."
               echo "skip=true" >> "$GITHUB_OUTPUT"

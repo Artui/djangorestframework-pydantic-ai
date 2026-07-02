@@ -8,7 +8,7 @@ no AG-UI bridge** in the path: a plain ``pydantic_ai.Agent`` calls the specs
 in-process.
 
 The acting identity flows through ``RunContext.deps``: by default the toolset
-reads ``ctx.deps.user`` (the :class:`~drf_pydantic_ai.types.agent_deps.AgentDeps`
+reads ``ctx.deps.user`` (the :class:`~rest_framework_pydantic_ai.types.agent_deps.AgentDeps`
 shape); projects that thread identity differently pass a ``get_user`` extractor.
 
 Each call mirrors what a DRF view does, in order:
@@ -37,6 +37,7 @@ Error semantics map drf-services' failure kinds onto Pydantic-AI's model-loop:
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, cast
@@ -54,6 +55,7 @@ from rest_framework_services import (
     ServiceError,
     ServiceSpec,
     ServiceValidationError,
+    UnknownArguments,
     build_offline_context,
     dispatch_spec,
     enforce_permissions,
@@ -63,6 +65,11 @@ from rest_framework_services import (
 
 Spec = ServiceSpec[Any, Any, Any] | SelectorSpec[Any, Any]
 UserExtractor = Callable[[RunContext[Any]], Any]
+
+# Tool names are surfaced verbatim to the model provider, which constrains them
+# to this shape (OpenAI / Anthropic function-name rules). Validated at
+# construction so a bad key fails fast instead of at the provider boundary.
+_TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 # Tool args a list selector accepts on top of its filter fields. Ordering and
 # pagination stay transport-side, so the adapter — not the spec — exposes them
@@ -115,6 +122,14 @@ class SpecToolset(ExternalToolset[Any]):
 
     ``get_user`` overrides how the acting identity is read off the run context;
     it defaults to ``ctx.deps.user``.
+
+    ``unknown_arguments`` controls what happens to tool args outside a spec's
+    declared input set — a hallucinated key the model invented. It defaults to
+    :attr:`~rest_framework_services.UnknownArguments.REJECT`, which surfaces the
+    unexpected key as a :class:`pydantic_ai.ModelRetry` so the model
+    self-corrects; specs whose declared set is open (a ``filter_set`` or
+    ``**kwargs`` selector) are unaffected. Pass ``IGNORE`` to silently drop them
+    or ``PASSTHROUGH`` to forward them to the callable.
     """
 
     def __init__(
@@ -123,9 +138,12 @@ class SpecToolset(ExternalToolset[Any]):
         *,
         id: str = "drf-specs",
         get_user: UserExtractor | None = None,
+        unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
     ) -> None:
+        _validate_tool_names(specs)
         self._specs: dict[str, Spec] = dict(specs)
         self._get_user: UserExtractor = get_user or _default_get_user
+        self._unknown_arguments: UnknownArguments = unknown_arguments
         # Schemas derive purely from the specs (no DB), so the tool defs are
         # built once up front and handed to ExternalToolset.
         super().__init__(
@@ -160,7 +178,19 @@ class SpecToolset(ExternalToolset[Any]):
         # rendering), which Django forbids on the async event loop — run it in a
         # thread. ``dict(tool_args)`` is a private copy so popping pagination
         # args never mutates the caller's dict.
-        return await sync_to_async(_call_spec)(spec, user, dict(tool_args))
+        return await sync_to_async(_call_spec)(
+            spec, user, dict(tool_args), unknown_arguments=self._unknown_arguments
+        )
+
+
+def _validate_tool_names(specs: Mapping[str, Spec]) -> None:
+    """Fail fast when a tool name violates the model provider's name constraint."""
+    invalid = sorted(name for name in specs if not _TOOL_NAME_RE.match(name))
+    if invalid:
+        raise ValueError(
+            "SpecToolset tool names must match ^[a-zA-Z0-9_-]{1,64}$ (model provider "
+            f"function-name constraint); invalid name(s): {invalid}."
+        )
 
 
 def _default_get_user(ctx: RunContext[Any]) -> Any:
@@ -203,7 +233,13 @@ def _is_list_selector(spec: Spec) -> bool:
     return isinstance(spec, SelectorSpec) and spec.kind == SelectorKind.LIST
 
 
-def _call_spec(spec: Spec, user: Any, args: dict[str, Any]) -> Any:
+def _call_spec(
+    spec: Spec,
+    user: Any,
+    args: dict[str, Any],
+    *,
+    unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
+) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
 
     Synchronous on purpose — ``SpecToolset.call_tool`` runs it in a thread so
@@ -211,6 +247,13 @@ def _call_spec(spec: Spec, user: Any, args: dict[str, Any]) -> Any:
     """
     page_args = _pop_pagination(spec, args)
     context = build_offline_context(user, args)
+    # Two-layer authorization, mirroring a DRF view: the upfront call runs the
+    # class-level ``has_permission`` (covers create / list-payload targets), and
+    # the ``on_target_resolved`` hook runs ``has_object_permission`` on the
+    # resolved row (update / retrieve). ``dispatch_spec`` never consults
+    # ``permission_classes`` itself, so without both an object-owned row would be
+    # reachable by any acting user (AUTHZ-3). A denial raises ``PermissionDenied``
+    # uncaught below, aborting the run exactly as it would over HTTP.
     enforce_permissions(spec, context)
     try:
         result = dispatch_spec(
@@ -219,6 +262,8 @@ def _call_spec(spec: Spec, user: Any, args: dict[str, Any]) -> Any:
             params=args,
             request=context.request,
             view=context.view,
+            unknown_arguments=unknown_arguments,
+            on_target_resolved=enforce_permissions,
         )
     except (DRFValidationError, ServiceValidationError) as exc:
         # Input-serializer validation raises DRF's ``ValidationError``; a service
@@ -251,14 +296,51 @@ def _call_spec(spec: Spec, user: Any, args: dict[str, Any]) -> Any:
 
 
 def _pop_pagination(spec: Spec, args: dict[str, Any]) -> _PageArgs | None:
-    """Strip ``page`` / ``limit`` / ``order`` from a list selector's args."""
+    """Strip + validate ``page`` / ``limit`` / ``order`` from a list selector's args.
+
+    The tool schema advertises ``page`` / ``limit`` as integers and ``order`` as
+    a string, but ``ExternalToolset`` installs a no-op argument validator, so a
+    model that sends ``limit="2"`` or ``order=["a"]`` reaches here untyped. Rather
+    than let a ``TypeError`` / ``AttributeError`` abort the run, coerce and
+    validate, mapping a bad value to :class:`ModelRetry` so the model corrects it.
+    """
     if not _is_list_selector(spec):
         return None
     return _PageArgs(
-        page=args.pop("page", None),
-        limit=args.pop("limit", None),
-        order=args.pop("order", None),
+        page=_coerce_positive_int(args.pop("page", None), "page"),
+        limit=_coerce_positive_int(args.pop("limit", None), "limit"),
+        order=_coerce_order(args.pop("order", None)),
     )
+
+
+def _coerce_positive_int(value: Any, name: str) -> int | None:
+    """Coerce a pagination arg to a positive int; ``ModelRetry`` on anything else.
+
+    Accepts an ``int`` or an all-digit ``str`` (``"2"``); rejects booleans,
+    floats, negatives, zero, and non-numeric strings.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):  # bool is an int subclass — never a valid count
+        raise ModelRetry(f"`{name}` must be a positive integer.")
+    if isinstance(value, int):
+        coerced = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        coerced = int(value)
+    else:
+        raise ModelRetry(f"`{name}` must be a positive integer.")
+    if coerced < 1:
+        raise ModelRetry(f"`{name}` must be a positive integer.")
+    return coerced
+
+
+def _coerce_order(value: Any) -> str | None:
+    """Require ``order`` to be a string; ``ModelRetry`` otherwise."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ModelRetry("`order` must be a comma-separated string of field names.")
+    return value
 
 
 def _shape_list(value: Any, page_args: _PageArgs) -> list[Any]:

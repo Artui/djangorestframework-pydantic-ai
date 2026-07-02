@@ -7,7 +7,7 @@ bridge** in the path.
 
 ## What this is
 
-A single thin adapter, [`SpecToolset`](reference.md#drf_pydantic_ai.SpecToolset),
+A single thin adapter, [`SpecToolset`](reference.md#rest_framework_pydantic_ai.SpecToolset),
 that turns a `name -> spec` mapping into agent tools. Every call routes through
 drf-services' transport-neutral surface:
 
@@ -22,8 +22,10 @@ drf-services' transport-neutral surface:
 - **`render_spec_output`** renders the result through the spec's serializer.
 
 The result is that an agent driving these tools sees exactly what an HTTP client
-would: the same validation errors, the same permission checks, the same rendered
-payloads — without the network hop, and without standing up an MCP server.
+would: the same validation errors, the same `permission_classes` checks (both
+class-level `has_permission` and object-level `has_object_permission` on the
+resolved row), the same rendered payloads — without the network hop, and without
+standing up an MCP server.
 
 ## How it compares
 

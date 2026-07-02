@@ -4,8 +4,8 @@ Conventions for writing code in this repo. For *what* the library does, see
 [`README.md`](README.md) and the [docs](docs/index.md).
 
 - Package on PyPI: `djangorestframework-pydantic-ai`
-- Importable name: `drf_pydantic_ai`
-- Build backend: hatchling (version is dynamic, read from `drf_pydantic_ai/version.py`)
+- Importable name: `rest_framework_pydantic_ai`
+- Build backend: hatchling (version is dynamic, read from `rest_framework_pydantic_ai/version.py`)
 
 ## What this package is
 
@@ -34,12 +34,12 @@ Use the Makefile targets; CI and pre-commit both call them.
 
 ```bash
 make init           # uv sync --all-groups + pre-commit install
-make test           # uv run pytest (--cov=drf_pydantic_ai --cov-fail-under=100)
-make lint           # ruff check + ty check drf_pydantic_ai
+make test           # uv run pytest (--cov=rest_framework_pydantic_ai --cov-fail-under=100)
+make lint           # ruff check + ty check rest_framework_pydantic_ai
 make lint-fix       # ruff check --fix
 make format         # ruff format
 make format-check   # ruff format --check --diff
-make type-check     # ty check drf_pydantic_ai
+make type-check     # ty check rest_framework_pydantic_ai
 make docs-serve     # live-reload docs at http://localhost:8000
 make docs-build     # mkdocs build --strict
 make release-bump VERSION=X.Y.Z   # rewrite version.py + promote CHANGELOG [Unreleased]
@@ -77,7 +77,7 @@ touches three places:
 1. The source file (one new `.py` per new class/function).
 2. The package's `__init__.py` (add to imports + `__all__`) if it's public.
 3. A test file under `tests/` mirroring the source path
-   (`drf_pydantic_ai/foo/bar.py` → `tests/foo/test_bar.py`).
+   (`rest_framework_pydantic_ai/foo/bar.py` → `tests/foo/test_bar.py`).
 
 Then `make lint-fix && make format && make test`. If the symbol is public, also
 add it to `CHANGELOG.md` under `[Unreleased]`.
@@ -94,7 +94,7 @@ add it to `CHANGELOG.md` under `[Unreleased]`.
 
 ## Type checking
 
-`ty` is scoped to `drf_pydantic_ai/` only (Django's dynamic descriptors trip the
+`ty` is scoped to `rest_framework_pydantic_ai/` only (Django's dynamic descriptors trip the
 checker when it walks `tests/`). Fix the source rather than narrowing the
 checker. Use `# ty: ignore[<rule>]`, not the mypy-style comment.
 
@@ -107,7 +107,7 @@ checker. Use `# ty: ignore[<rule>]`, not the mypy-style comment.
 ## Imports inside the package
 
 - Always absolute, fully qualified:
-  `from drf_pydantic_ai.spec_toolset import SpecToolset`. **Never** relative
+  `from rest_framework_pydantic_ai.spec_toolset import SpecToolset`. **Never** relative
   imports anywhere, including `__init__.py`.
 - isort via ruff (`I` rules). Order: stdlib → third-party → first-party.
 
@@ -118,7 +118,7 @@ checker. Use `# ty: ignore[<rule>]`, not the mypy-style comment.
 | Python | 3.10 | 3.14 |
 | Django | 4.2 | 6.0 |
 | DRF | 3.14 | latest |
-| drf-services | 0.20 | 0.20.x |
+| drf-services | 0.21.1 | 0.21.x |
 | Pydantic-AI | 1.0 (`pydantic-ai-slim`) | latest |
 
 `from __future__ import annotations` at the top of every `.py` with annotations.

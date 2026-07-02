@@ -13,10 +13,11 @@ from rest_framework_services import (
     ServiceError,
     ServiceSpec,
     ServiceValidationError,
+    UnknownArguments,
 )
 
-from drf_pydantic_ai import AgentDeps, SpecToolset
-from drf_pydantic_ai.spec_toolset import (
+from rest_framework_pydantic_ai import AgentDeps, SpecToolset
+from rest_framework_pydantic_ai.spec_toolset import (
     _call_spec,
     _output_extras,
     _paginate,
@@ -275,3 +276,153 @@ def test_output_extras_branches():
     assert _output_extras(list_spec(), sentinel, many=True) == {"page": sentinel}
     assert _output_extras(create_spec(), sentinel, many=False) == {"result": sentinel}
     assert _output_extras(retrieve_spec(), sentinel, many=False) == {"instance": sentinel}
+
+
+# --- CONF-6: tool-name validation --------------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["has space", "bang!", "", "x" * 65])
+def test_invalid_tool_name_raises_at_construction(bad):
+    with pytest.raises(ValueError, match="tool names"):
+        SpecToolset({bad: list_spec()})
+
+
+def test_valid_tool_names_are_accepted():
+    # letters, digits, underscore, hyphen, up to 64 chars — no error.
+    SpecToolset({"list_widgets-v2": list_spec()})
+
+
+# --- CONF-6: pagination arg validation ---------------------------------------
+
+
+@pytest.mark.django_db
+def test_string_limit_is_coerced_to_int():
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a", price=1)
+    Widget.objects.create(owner=user, name="b", price=2)
+    result = _call_spec(list_spec(), user, {"limit": "1"})
+    assert len(result) == 1
+
+
+@pytest.mark.parametrize("value", ["abc", "2.5", "-1", 0, -3, 2.0])
+def test_non_positive_int_limit_is_model_retry(value):
+    with pytest.raises(ModelRetry, match="positive integer"):
+        _call_spec(list_spec(), object(), {"limit": value})
+
+
+def test_bool_page_is_model_retry():
+    # ``True`` is an ``int`` subclass but never a valid count.
+    with pytest.raises(ModelRetry, match="positive integer"):
+        _call_spec(list_spec(), object(), {"page": True})
+
+
+def test_non_string_order_is_model_retry():
+    with pytest.raises(ModelRetry, match="order"):
+        _call_spec(list_spec(), object(), {"order": ["price"]})
+
+
+# --- CONF-6: unknown-arguments knob ------------------------------------------
+
+
+@pytest.mark.django_db
+def test_unknown_argument_rejected_by_default():
+    user = User.objects.create(username="u")
+    with pytest.raises(ModelRetry, match="bogus"):
+        _call_spec(create_spec(), user, {"name": "z", "price": 5, "bogus": 1})
+
+
+@pytest.mark.django_db
+def test_unknown_argument_ignored_when_configured():
+    user = User.objects.create(username="u")
+    result = _call_spec(
+        create_spec(),
+        user,
+        {"name": "z", "price": 5, "bogus": 1},
+        unknown_arguments=UnknownArguments.IGNORE,
+    )
+    assert result["name"] == "z"
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_toolset_threads_the_unknown_arguments_knob():
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    toolset = SpecToolset(
+        {"create_widget": create_spec()}, unknown_arguments=UnknownArguments.IGNORE
+    )
+    out = await toolset.call_tool(
+        "create_widget", {"name": "z", "price": 5, "bogus": 1}, ctx_for(user), None
+    )
+    assert out["name"] == "z"
+
+
+# --- AUTHZ-3: object-level permission enforcement ----------------------------
+
+
+class IsOwner(BasePermission):
+    def has_permission(self, request, view):
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        return obj.owner_id == getattr(request.user, "id", None)
+
+
+def get_any_widget(pk):
+    """Fetch a widget by primary key, regardless of owner."""
+    return Widget.objects.filter(pk=pk)
+
+
+def update_widget(instance, data):
+    """Rename a widget in place."""
+    instance.name = data["name"]
+    instance.save(update_fields=["name"])
+    return instance
+
+
+@pytest.mark.django_db
+def test_object_permission_denies_cross_user_retrieve():
+    owner = User.objects.create(username="owner")
+    other = User.objects.create(username="other")
+    widget = Widget.objects.create(owner=owner, name="a", price=1)
+    spec = SelectorSpec(
+        kind=SelectorKind.RETRIEVE,
+        selector=get_any_widget,
+        output_serializer=WidgetSerializer,
+        permission_classes=[IsOwner],
+    )
+    with pytest.raises(PermissionDenied):
+        _call_spec(spec, other, {"pk": widget.pk})
+
+
+@pytest.mark.django_db
+def test_object_permission_allows_owner_retrieve():
+    owner = User.objects.create(username="owner")
+    widget = Widget.objects.create(owner=owner, name="a", price=1)
+    spec = SelectorSpec(
+        kind=SelectorKind.RETRIEVE,
+        selector=get_any_widget,
+        output_serializer=WidgetSerializer,
+        permission_classes=[IsOwner],
+    )
+    assert _call_spec(spec, owner, {"pk": widget.pk})["name"] == "a"
+
+
+@pytest.mark.django_db
+def test_object_permission_denies_cross_user_mutation():
+    owner = User.objects.create(username="owner")
+    other = User.objects.create(username="other")
+    widget = Widget.objects.create(owner=owner, name="a", price=1)
+    spec = ServiceSpec(
+        service=update_widget,
+        input_serializer=WidgetInputSerializer,
+        instance_selector_spec=SelectorSpec(kind=SelectorKind.RETRIEVE, selector=get_any_widget),
+        permission_classes=[IsOwner],
+        atomic=False,
+    )
+    # A denial aborts the run (PermissionDenied) — not a ModelRetry — before the
+    # service mutates the row, exactly as it would over HTTP.
+    with pytest.raises(PermissionDenied):
+        _call_spec(spec, other, {"pk": widget.pk, "name": "hacked", "price": 9})
+    widget.refresh_from_db()
+    assert widget.name == "a"
