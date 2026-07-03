@@ -278,7 +278,7 @@ def test_output_extras_branches():
     assert _output_extras(retrieve_spec(), sentinel, many=False) == {"instance": sentinel}
 
 
-# --- CONF-6: tool-name validation --------------------------------------------
+# --- tool-name validation ----------------------------------------------------
 
 
 @pytest.mark.parametrize("bad", ["has space", "bang!", "", "x" * 65])
@@ -292,7 +292,7 @@ def test_valid_tool_names_are_accepted():
     SpecToolset({"list_widgets-v2": list_spec()})
 
 
-# --- CONF-6: pagination arg validation ---------------------------------------
+# --- pagination arg validation -----------------------------------------------
 
 
 @pytest.mark.django_db
@@ -321,7 +321,7 @@ def test_non_string_order_is_model_retry():
         _call_spec(list_spec(), object(), {"order": ["price"]})
 
 
-# --- CONF-6: unknown-arguments knob ------------------------------------------
+# --- unknown-arguments knob --------------------------------------------------
 
 
 @pytest.mark.django_db
@@ -357,7 +357,7 @@ async def test_toolset_threads_the_unknown_arguments_knob():
     assert out["name"] == "z"
 
 
-# --- AUTHZ-3: object-level permission enforcement ----------------------------
+# --- object-level permission enforcement -------------------------------------
 
 
 class IsOwner(BasePermission):

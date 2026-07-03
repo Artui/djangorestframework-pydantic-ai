@@ -28,7 +28,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **`unknown_arguments` knob on `SpecToolset` (CONF-6).** Controls what happens
+- **`unknown_arguments` knob on `SpecToolset`.** Controls what happens
   to tool args outside a spec's declared input set — a key the model
   hallucinated. Defaults to `REJECT`, surfacing the unexpected key as a
   `ModelRetry` so the model self-corrects (specs with an open declared set — a
@@ -37,7 +37,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **Object-level permissions are now enforced (AUTHZ-3).** `SpecToolset` ran only
+- **Object-level permissions are now enforced.** `SpecToolset` ran only
   a spec's class-level `has_permission`; the `on_target_resolved` object-level
   hook was never wired, so a mutation guarded by the standard DRF ownership
   pattern (`IsOwner.has_object_permission`) let an agent acting as user A
@@ -46,13 +46,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   resolved row and a denial raises `PermissionDenied` (aborting the run, not a
   `ModelRetry`), exactly as over HTTP. The README / docs parity wording is
   corrected to state precisely what runs.
-- **Model-supplied pagination args are validated (CONF-6).** `page` / `limit` /
+- **Model-supplied pagination args are validated.** `page` / `limit` /
   `order` reach the toolset untyped (`ExternalToolset` installs a no-op argument
   validator), so `limit="2"` or `order=["a"]` previously raised a `TypeError` /
   `AttributeError` that aborted the run. They are now coerced and validated
   (positive integers; a string `order`), mapping a bad value to `ModelRetry` so
   the model corrects it.
-- **Tool names are validated at construction (CONF-6).** A `SpecToolset` mapping
+- **Tool names are validated at construction.** A `SpecToolset` mapping
   key that violates the model provider's function-name constraint
   (`^[a-zA-Z0-9_-]{1,64}$`) now raises `ValueError` at construction instead of
   failing opaquely at the provider boundary.
@@ -60,8 +60,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - **`djangorestframework-services` floor raised to `>=0.21.1,<0.22`.** Required
-  for the object-permission guard to fire on selector dispatch (AUTHZ-1b) and for
-  collection-safe enforcement (AUTHZ-1a).
+  for the object-permission guard to fire on selector dispatch and for
+  collection-safe enforcement.
 
 ## [0.1.0] — 2026-06-24
 
