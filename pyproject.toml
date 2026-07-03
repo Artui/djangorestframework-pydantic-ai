@@ -38,7 +38,7 @@ classifiers = [
 dependencies = [
     "django>=4.2",
     "djangorestframework>=3.14",
-    "djangorestframework-services>=0.21.1,<0.22",
+    "djangorestframework-services>=0.21.1,<0.23",
     "pydantic-ai-slim>=1.0,<2",
 ]
 

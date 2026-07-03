@@ -6,6 +6,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Widened the `djangorestframework-services` dependency to `>=0.21.1,<0.23` to
+  allow the published 0.22.x line.
+
 ## [0.2.1] — 2026-07-02
 
 ### Documentation
