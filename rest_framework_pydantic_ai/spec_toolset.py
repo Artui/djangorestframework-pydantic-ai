@@ -252,7 +252,7 @@ def _call_spec(
     # the ``on_target_resolved`` hook runs ``has_object_permission`` on the
     # resolved row (update / retrieve). ``dispatch_spec`` never consults
     # ``permission_classes`` itself, so without both an object-owned row would be
-    # reachable by any acting user (AUTHZ-3). A denial raises ``PermissionDenied``
+    # reachable by any acting user. A denial raises ``PermissionDenied``
     # uncaught below, aborting the run exactly as it would over HTTP.
     enforce_permissions(spec, context)
     try:
