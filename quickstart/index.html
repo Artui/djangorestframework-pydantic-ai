@@ -406,6 +406,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#read-shaping-query-params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read-shaping query params
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#error-handling" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -533,6 +544,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#read-shaping-query-params" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read-shaping query params
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#error-handling" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -641,6 +663,37 @@ selector) are unaffected. Pass <code>unknown_arguments=</code> to change this:</
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># silently drop unexpected keys instead of rejecting them</span>
 </span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">unknown_arguments</span><span class="o">=</span><span class="n">UnknownArguments</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">)</span>
 </span></code></pre></div>
+<h2 id="read-shaping-query-params">Read-shaping query params<a class="headerlink" href="#read-shaping-query-params" title="Permanent link">&para;</a></h2>
+<p><code>page</code> / <code>limit</code> / <code>order</code> are built in for list selectors, but you can register
+your own request-level params with
+<a href="../reference/#rest_framework_pydantic_ai.QueryParam"><code>QueryParam</code></a>. Each is
+advertised as a tool arg, then — instead of reaching the spec as an input — seeded
+into <code>request.query_params</code> over the off-HTTP path. That is for whatever reads
+<code>request.query_params</code> <strong>directly</strong>: django-restql field selection, or a custom
+serializer that branches on the query string.</p>
+<div class="admonition note">
+<p class="admonition-title">You don't need this for <code>filter_set</code></p>
+<p>A <code>SelectorSpec.filter_set</code>'s fields are already generated into the tool's
+input schema (the <code>[filter]</code> extra) and flow through as ordinary <code>params</code> —
+which <code>dispatch_spec</code> hands the FilterSet as its <code>filter_data</code>. So the model
+can filter a list selector with no <code>QueryParam</code> declaration at all;
+<code>QueryParam</code> is only for params a serializer reads off <code>request.query_params</code>.</p>
+</div>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">QueryParam</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">specs</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="c1"># applies to every tool</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">query_params</span><span class="o">=</span><span class="p">[</span><span class="n">QueryParam</span><span class="p">(</span><span class="s2">&quot;query&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;django-restql field selection&quot;</span><span class="p">)],</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="c1"># or scope params to one tool</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="n">tool_query_params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;list_orders&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">QueryParam</span><span class="p">(</span><span class="s2">&quot;status&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;open&quot;</span><span class="p">)]},</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>A registered param is popped before dispatch, so <code>unknown_arguments</code> never flags
+it; a declared <code>default</code> is seeded when the model omits the arg. (Names can't be
+<code>page</code> / <code>limit</code> / <code>order</code> — those are reserved for list-selector pagination.)
+Requires <code>djangorestframework-services&gt;=0.23</code>, which added the
+<code>build_offline_context(query_params=…)</code> seam.</p>
 <h2 id="error-handling">Error handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h2>
 <p>The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:</p>
 <table>

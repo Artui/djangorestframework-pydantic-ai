@@ -415,6 +415,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#queryparam" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        QueryParam
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.QueryParam" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        QueryParam
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="QueryParam">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.QueryParam.json_schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        json_schema
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#agentdeps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -510,6 +549,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#queryparam" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        QueryParam
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.QueryParam" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        QueryParam
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="QueryParam">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.QueryParam.json_schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        json_schema
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#agentdeps" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -557,7 +635,7 @@
 
 
 <h1 id="reference">Reference<a class="headerlink" href="#reference" title="Permanent link">&para;</a></h1>
-<p>The public API is two symbols, both importable from the package root.</p>
+<p>The public API is three symbols, all importable from the package root.</p>
 <h2 id="spectoolset"><code>SpecToolset</code><a class="headerlink" href="#spectoolset" title="Permanent link">&para;</a></h2>
 
 
@@ -600,6 +678,22 @@ unexpected key as a :class:<code>pydantic_ai.ModelRetry</code> so the model
 self-corrects; specs whose declared set is open (a <code>filter_set</code> or
 <code>**kwargs</code> selector) are unaffected. Pass <code>IGNORE</code> to silently drop them
 or <code>PASSTHROUGH</code> to forward them to the callable.</p>
+<p><code>query_params</code> / <code>tool_query_params</code> register read-shaping
+:class:<code>~rest_framework_pydantic_ai.QueryParam</code> args that seed
+<code>request.query_params</code> over the off-HTTP path — the extensible generalization
+of <code>page</code> / <code>limit</code> / <code>order</code>. <code>query_params</code> applies to <strong>every</strong> tool;
+<code>tool_query_params</code> maps a tool name to params for that tool only (a per-tool
+param overrides a toolset-wide one of the same name). Each is advertised as a
+tool arg, then popped at call time and handed to
+<code>build_offline_context(query_params=…)</code> — never to the spec as an input, so
+<code>unknown_arguments</code> never sees it. This is for whatever reads
+<code>request.query_params</code> <strong>directly</strong> — django-restql field selection, a custom
+serializer branching on the query string — with zero toolset awareness of the
+specific library.</p>
+<p>A <code>SelectorSpec.filter_set</code> does <strong>not</strong> need this: its fields are already
+generated into the tool's input schema by <code>spec_to_json_schema</code> and flow
+through as ordinary <code>params</code> (which <code>dispatch_spec</code> hands the FilterSet as
+<code>filter_data</code>), so the model can filter with no extra declaration.</p>
 
 
 
@@ -644,6 +738,99 @@ or <code>PASSTHROUGH</code> to forward them to the callable.</p>
 Pydantic-AI <em>defers</em> — it yields the call back to the caller and ends
 the run, never invoking <code>call_tool</code>. This toolset executes specs
 in-process, so the tools must run like ordinary function tools.</p>
+
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="queryparam"><code>QueryParam</code><a class="headerlink" href="#queryparam" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="rest_framework_pydantic_ai.QueryParam" class="doc doc-heading">
+            <span class="doc doc-object-name doc-class-name">QueryParam</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#rest_framework_pydantic_ai.QueryParam" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+    <div class="doc doc-contents first">
+
+
+
+        <p>A request-level query param exposed as a tool arg and seeded into the
+off-HTTP request's <code>query_params</code>.</p>
+<p>Generalizes the built-in <code>page</code> / <code>limit</code> / <code>order</code> list-selector args
+to any read-shaping param a serializer reads off <code>request.query_params</code> —
+django-restql field selection (<code>?query=</code> / <code>?fields=</code>) or a custom
+serializer that branches on the query string. (A <code>SelectorSpec.filter_set</code>
+does <strong>not</strong> need this — its fields are already generated into the tool schema
+and flow through as ordinary <code>params</code>.) Register them on
+:class:<code>~rest_framework_pydantic_ai.SpecToolset</code> toolset-wide
+(<code>query_params=</code>) or per-tool (<code>tool_query_params=</code>). On a call the model
+supplies the value as a tool arg (or the declared <code>default</code> is used); the
+toolset pops it from the args and hands it to
+<code>build_offline_context(query_params=…)</code> — it never reaches the spec as an
+input, so it is unaffected by <code>unknown_arguments</code>.</p>
+<ul>
+<li><code>name</code> — the tool-arg / query-string key. Must not be <code>page</code> / <code>limit</code>
+  / <code>order</code> (reserved for list-selector pagination).</li>
+<li><code>type</code> — the JSON-Schema type advertised to the model (<code>"string"</code> by
+  default; <code>"integer"</code> / <code>"number"</code> / <code>"boolean"</code> / <code>"array"</code> …).</li>
+<li><code>description</code> — optional help text shown to the model.</li>
+<li><code>default</code> — optional value seeded when the model omits the arg; also
+  surfaced as the schema <code>default</code>.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="rest_framework_pydantic_ai.QueryParam.json_schema" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">json_schema</span>
+
+
+<a href="#rest_framework_pydantic_ai.QueryParam.json_schema" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">json_schema</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The JSON-Schema property this param contributes to a tool's input.</p>
 
 
     </div>
