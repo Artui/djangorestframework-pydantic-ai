@@ -123,7 +123,7 @@ root = ["./rest_framework_pydantic_ai"]
 # rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.3.1"
+current_version = "0.3.2"
 allow_dirty = false
 commit = false
 tag = false
