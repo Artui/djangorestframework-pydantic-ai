@@ -93,6 +93,41 @@ from rest_framework_services import UnknownArguments
 toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 ```
 
+## Read-shaping query params
+
+`page` / `limit` / `order` are built in for list selectors, but you can register
+your own request-level params with
+[`QueryParam`](reference.md#rest_framework_pydantic_ai.QueryParam). Each is
+advertised as a tool arg, then — instead of reaching the spec as an input — seeded
+into `request.query_params` over the off-HTTP path. That is for whatever reads
+`request.query_params` **directly**: django-restql field selection, or a custom
+serializer that branches on the query string.
+
+!!! note "You don't need this for `filter_set`"
+    A `SelectorSpec.filter_set`'s fields are already generated into the tool's
+    input schema (the `[filter]` extra) and flow through as ordinary `params` —
+    which `dispatch_spec` hands the FilterSet as its `filter_data`. So the model
+    can filter a list selector with no `QueryParam` declaration at all;
+    `QueryParam` is only for params a serializer reads off `request.query_params`.
+
+```python
+from rest_framework_pydantic_ai import QueryParam
+
+toolset = SpecToolset(
+    specs,
+    # applies to every tool
+    query_params=[QueryParam("query", description="django-restql field selection")],
+    # or scope params to one tool
+    tool_query_params={"list_orders": [QueryParam("status", default="open")]},
+)
+```
+
+A registered param is popped before dispatch, so `unknown_arguments` never flags
+it; a declared `default` is seeded when the model omits the arg. (Names can't be
+`page` / `limit` / `order` — those are reserved for list-selector pagination.)
+Requires `djangorestframework-services>=0.23`, which added the
+`build_offline_context(query_params=…)` seam.
+
 ## Error handling
 
 The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:

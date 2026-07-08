@@ -50,9 +50,16 @@ result = await agent.run(
 ```
 
 The agent acts as `deps.user`: each call builds an off-HTTP request/view context,
-**enforces the spec's `permission_classes`**, dispatches the spec, and renders
-the result through the spec's serializer. List selectors gain `page` / `limit` /
-`order` tool args.
+**enforces the spec's `permission_classes`** (class- and object-level),
+dispatches the spec, and renders the result through the spec's serializer. List
+selectors gain `page` / `limit` / `order` tool args.
+
+Failures map onto the model loop so the agent self-corrects: invalid input, a bad
+`page` / `limit` / `order` value, and unexpected (hallucinated) arguments come
+back as `ModelRetry`; a business error or missing row becomes a readable
+`{"error": ...}`; a denied permission raises `PermissionDenied` and aborts the
+run. Unexpected arguments are **rejected by default** — pass `unknown_arguments=`
+to `SpecToolset` (`IGNORE` / `PASSTHROUGH`) to change that.
 
 See the [documentation](https://artui.github.io/djangorestframework-pydantic-ai/)
 for the full reference.
