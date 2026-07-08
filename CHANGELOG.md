@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Widen the `pydantic-ai-slim` dependency constraint from `>=1.0,<2` to
+  `>=1.0,<3`, so the adapter installs against Pydantic-AI 2.x (verified against
+  `pydantic-ai-slim` 2.6.0). The 1.x line remains supported. Refreshed the
+  pinned dependency set at the same time.
+
 ## [0.3.0] — 2026-07-08
 
 ### Added
