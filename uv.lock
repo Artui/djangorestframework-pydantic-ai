@@ -475,7 +475,7 @@ requires-dist = [
     { name = "django", specifier = ">=4.2" },
     { name = "django-filter", marker = "extra == 'filter'", specifier = ">=23" },
     { name = "djangorestframework", specifier = ">=3.14" },
-    { name = "djangorestframework-services", specifier = ">=0.21.1,<0.22" },
+    { name = "djangorestframework-services", specifier = ">=0.23,<0.24" },
     { name = "pydantic-ai-slim", specifier = ">=1.0,<2" },
 ]
 provides-extras = ["filter"]
@@ -503,7 +503,7 @@ docs = [
 
 [[package]]
 name = "djangorestframework-services"
-version = "0.21.1"
+version = "0.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django", version = "5.2.15", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -512,9 +512,9 @@ dependencies = [
     { name = "djangorestframework-dataclasses" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cc/f5/4653342d29755580157bfdc0ed7143e0260d18b336699d866ce989ef25db/djangorestframework_services-0.21.1.tar.gz", hash = "sha256:eb773c5f8b3391d66e3cc4c5dd95a4e78ace115824a85a7d5264c628e5ab1b58", size = 341412, upload-time = "2026-07-02T13:17:17.244Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/a9/9121f1066d2f01ac3854c1360e629c9cb83fc15d080ae2256282cda45bdf/djangorestframework_services-0.23.0.tar.gz", hash = "sha256:70451dc452e7f470530008a76e859069a50c2d3340c7589170878008abb3e476", size = 348617, upload-time = "2026-07-08T08:42:36.564Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/2f/36ef2a8d1e09a57b2964240fe179811bba5a2020346f4dbae02da1ec5c30/djangorestframework_services-0.21.1-py3-none-any.whl", hash = "sha256:04c269667fb5d52969e8082fd91820000ae6ef8a6be0aacff1ab68d9c13779d0", size = 156448, upload-time = "2026-07-02T13:17:15.678Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/d6/259049affc0cfa547c4c283b071f769f87dafbbbf242c2d155c55ef93d8c/djangorestframework_services-0.23.0-py3-none-any.whl", hash = "sha256:63d3f506c26b0a1833c41238d276bc2e65bd619d48bb52e5c40d353bf2d5f32a", size = 159492, upload-time = "2026-07-08T08:42:35.035Z" },
 ]
 
 [[package]]

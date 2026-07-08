@@ -1,10 +1,14 @@
 # Reference
 
-The public API is two symbols, both importable from the package root.
+The public API is three symbols, all importable from the package root.
 
 ## `SpecToolset`
 
 ::: rest_framework_pydantic_ai.SpecToolset
+
+## `QueryParam`
+
+::: rest_framework_pydantic_ai.QueryParam
 
 ## `AgentDeps`
 

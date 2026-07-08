@@ -6,6 +6,28 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`QueryParam` — register read-shaping request-level params on `SpecToolset`.**
+  The extensible generalization of the built-in `page` / `limit` / `order` list
+  args: declare a `QueryParam(name, type=…, description=…, default=…)` toolset-wide
+  (`SpecToolset(specs, query_params=[…])`) or per-tool
+  (`tool_query_params={"tool": [...]}`). Each is advertised as a tool arg, then —
+  instead of reaching the spec as an input — popped and seeded into
+  `request.query_params` over the off-HTTP path via
+  `build_offline_context(query_params=…)`. This is how anything that reads the
+  query string works through the toolset: a `SelectorSpec.filter_set`,
+  django-restql field selection, or a custom serializer branching on
+  `request.query_params`. A registered param is popped before dispatch (so
+  `unknown_arguments` never flags it); a declared `default` is seeded when the
+  model omits the arg; reserved names (`page`/`limit`/`order`) and unknown
+  per-tool keys are rejected at construction. (QP-2.)
+
+### Changed
+
+- Bumped the `djangorestframework-services` floor to `>=0.23,<0.24` for the
+  `build_offline_context(query_params=…)` seam `QueryParam` builds on.
+
 ## [0.2.2] — 2026-07-03
 
 ### Changed
