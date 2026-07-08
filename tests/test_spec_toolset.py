@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import django_filters
 import pytest
 from django.contrib.auth.models import User
 from pydantic_ai import ModelRetry
+from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
 from rest_framework_services import (
@@ -16,7 +18,7 @@ from rest_framework_services import (
     UnknownArguments,
 )
 
-from rest_framework_pydantic_ai import AgentDeps, SpecToolset
+from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset
 from rest_framework_pydantic_ai.spec_toolset import (
     _call_spec,
     _output_extras,
@@ -426,3 +428,182 @@ def test_object_permission_denies_cross_user_mutation():
         _call_spec(spec, other, {"pk": widget.pk, "name": "hacked", "price": 9})
     widget.refresh_from_db()
     assert widget.name == "a"
+
+
+# --- QueryParam registration (QP-2) ------------------------------------------
+
+
+class _FieldsEchoSerializer(serializers.Serializer):
+    """Reflects a read-shaping query param back, proving it reached the request.
+
+    Stands in for a django-restql / custom serializer that branches on
+    ``request.query_params`` — which needs the request in its context, wired by
+    the spec's ``output_serializer_context`` provider (as a real consumer does).
+    """
+
+    def to_representation(self, instance):
+        request = self.context["request"]
+        return {"name": instance.name, "fields": request.query_params.get("fields")}
+
+
+def _pass_request(request):
+    return {"request": request}
+
+
+def _echo_list_spec(**kwargs):
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=_FieldsEchoSerializer,
+        output_serializer_context=_pass_request,
+        **kwargs,
+    )
+
+
+async def test_toolset_wide_query_params_appear_in_every_tool_schema():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "get_widget": retrieve_spec()},
+        query_params=[QueryParam("fields", description="restql field selection")],
+    )
+    tools = await toolset.get_tools(None)
+    for name in ("list_widgets", "get_widget"):
+        props = tools[name].tool_def.parameters_json_schema["properties"]
+        assert props["fields"] == {"type": "string", "description": "restql field selection"}
+
+
+async def test_per_tool_query_params_only_apply_to_that_tool():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "get_widget": retrieve_spec()},
+        tool_query_params={"list_widgets": [QueryParam("expand", type="boolean")]},
+    )
+    tools = await toolset.get_tools(None)
+    assert tools["list_widgets"].tool_def.parameters_json_schema["properties"]["expand"] == {
+        "type": "boolean"
+    }
+    get_widget_props = tools["get_widget"].tool_def.parameters_json_schema.get("properties", {})
+    assert "expand" not in get_widget_props
+
+
+async def test_per_tool_query_param_overrides_toolset_wide_by_name():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()},
+        query_params=[QueryParam("fields", description="wide")],
+        tool_query_params={"list_widgets": [QueryParam("fields", description="specific")]},
+    )
+    tools = await toolset.get_tools(None)
+    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    assert props["fields"]["description"] == "specific"
+
+
+async def test_query_param_default_appears_in_schema():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()}, query_params=[QueryParam("fields", default="id")]
+    )
+    tools = await toolset.get_tools(None)
+    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    assert props["fields"]["default"] == "id"
+
+
+def test_reserved_query_param_name_is_rejected():
+    with pytest.raises(ValueError, match="reserved"):
+        SpecToolset({"list_widgets": list_spec()}, query_params=[QueryParam("order")])
+
+
+def test_reserved_per_tool_query_param_name_is_rejected():
+    with pytest.raises(ValueError, match="reserved"):
+        SpecToolset(
+            {"list_widgets": list_spec()},
+            tool_query_params={"list_widgets": [QueryParam("limit")]},
+        )
+
+
+def test_unknown_per_tool_key_is_rejected():
+    with pytest.raises(ValueError, match="unknown tool"):
+        SpecToolset(
+            {"list_widgets": list_spec()},
+            tool_query_params={"nope": [QueryParam("fields")]},
+        )
+
+
+@pytest.mark.django_db
+def test_query_param_reaches_the_serializer_via_request_query_params():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    result = _call_spec(
+        _echo_list_spec(), user, {"fields": "id,name"}, query_params=(QueryParam("fields"),)
+    )
+    assert result == [{"name": "a", "fields": "id,name"}]
+
+
+@pytest.mark.django_db
+def test_query_param_default_is_seeded_when_the_model_omits_it():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    result = _call_spec(
+        _echo_list_spec(), user, {}, query_params=(QueryParam("fields", default="id"),)
+    )
+    assert result == [{"name": "a", "fields": "id"}]
+
+
+@pytest.mark.django_db
+def test_query_param_omitted_without_default_seeds_nothing():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    result = _call_spec(_echo_list_spec(), user, {}, query_params=(QueryParam("fields"),))
+    assert result == [{"name": "a", "fields": None}]
+
+
+@pytest.mark.django_db
+def test_query_param_is_popped_before_dispatch_so_reject_ignores_it():
+    # A closed-input list selector under REJECT: an undeclared arg would raise
+    # ModelRetry. The query param must be popped before dispatch, so this passes.
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    result = _call_spec(
+        list_spec(),
+        user,
+        {"fields": "x"},
+        query_params=(QueryParam("fields"),),
+        unknown_arguments=UnknownArguments.REJECT,
+    )
+    assert [w["name"] for w in result] == ["a"]
+
+
+# --- filter_set needs no QueryParam ------------------------------------------
+
+
+class _WidgetFilterSet(django_filters.FilterSet):
+    min_price = django_filters.NumberFilter(field_name="price", lookup_expr="gte")
+
+    class Meta:
+        model = Widget
+        fields = []
+
+
+def _filtered_list_spec():
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=WidgetSerializer,
+        filter_set=_WidgetFilterSet,
+    )
+
+
+async def test_filter_set_fields_are_auto_exposed_as_tool_args():
+    # A filter_set selector's fields land in the tool schema via
+    # spec_to_json_schema — no QueryParam declaration needed.
+    toolset = SpecToolset({"list_widgets": _filtered_list_spec()})
+    tools = await toolset.get_tools(None)
+    assert "min_price" in tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+
+
+@pytest.mark.django_db
+def test_filter_set_filters_via_ordinary_params_not_query_params():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="cheap", price=1, owner=user)
+    Widget.objects.create(name="pricey", price=10, owner=user)
+    # The filter value is an ordinary tool arg: a filter_set selector's declared
+    # set is open (REJECT doesn't flag it), and dispatch hands it to the FilterSet
+    # as filter_data. No QueryParam involved.
+    result = _call_spec(_filtered_list_spec(), user, {"min_price": "5"})
+    assert [w["name"] for w in result] == ["pricey"]

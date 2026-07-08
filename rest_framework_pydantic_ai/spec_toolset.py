@@ -14,8 +14,11 @@ shape); projects that thread identity differently pass a ``get_user`` extractor.
 Each call mirrors what a DRF view does, in order:
 
 1. strip a list selector's ``page`` / ``limit`` / ``order`` tool args (ordering
-   and pagination are transport concerns, kept off the spec);
-2. build the off-HTTP context (synthetic request + view + principal);
+   and pagination are transport concerns, kept off the spec) plus any registered
+   :class:`~rest_framework_pydantic_ai.QueryParam` args (read-shaping query
+   params that seed ``request.query_params``, not spec inputs);
+2. build the off-HTTP context (synthetic request + view + principal, with the
+   registered query params seeded into ``request.query_params``);
 3. **enforce ``spec.permission_classes``** — ``dispatch_spec`` deliberately does
    not, so a naive adapter would skip authorization;
 4. dispatch the spec, then render the result through the spec's serializer.
@@ -38,7 +41,7 @@ from __future__ import annotations
 
 import inspect
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, cast
 
@@ -63,8 +66,14 @@ from rest_framework_services import (
     spec_to_json_schema,
 )
 
+from rest_framework_pydantic_ai.types.query_param import QueryParam
+
 Spec = ServiceSpec[Any, Any, Any] | SelectorSpec[Any, Any]
 UserExtractor = Callable[[RunContext[Any]], Any]
+
+# List-selector pagination args own these names; a registered ``QueryParam`` may
+# not shadow them.
+_RESERVED_PARAM_NAMES = frozenset({"page", "limit", "order"})
 
 # Tool names are surfaced verbatim to the model provider, which constrains them
 # to this shape (OpenAI / Anthropic function-name rules). Validated at
@@ -130,6 +139,24 @@ class SpecToolset(ExternalToolset[Any]):
     self-corrects; specs whose declared set is open (a ``filter_set`` or
     ``**kwargs`` selector) are unaffected. Pass ``IGNORE`` to silently drop them
     or ``PASSTHROUGH`` to forward them to the callable.
+
+    ``query_params`` / ``tool_query_params`` register read-shaping
+    :class:`~rest_framework_pydantic_ai.QueryParam` args that seed
+    ``request.query_params`` over the off-HTTP path — the extensible generalization
+    of ``page`` / ``limit`` / ``order``. ``query_params`` applies to **every** tool;
+    ``tool_query_params`` maps a tool name to params for that tool only (a per-tool
+    param overrides a toolset-wide one of the same name). Each is advertised as a
+    tool arg, then popped at call time and handed to
+    ``build_offline_context(query_params=…)`` — never to the spec as an input, so
+    ``unknown_arguments`` never sees it. This is for whatever reads
+    ``request.query_params`` **directly** — django-restql field selection, a custom
+    serializer branching on the query string — with zero toolset awareness of the
+    specific library.
+
+    A ``SelectorSpec.filter_set`` does **not** need this: its fields are already
+    generated into the tool's input schema by ``spec_to_json_schema`` and flow
+    through as ordinary ``params`` (which ``dispatch_spec`` hands the FilterSet as
+    ``filter_data``), so the model can filter with no extra declaration.
     """
 
     def __init__(
@@ -139,15 +166,27 @@ class SpecToolset(ExternalToolset[Any]):
         id: str = "drf-specs",
         get_user: UserExtractor | None = None,
         unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
+        query_params: Sequence[QueryParam] = (),
+        tool_query_params: Mapping[str, Sequence[QueryParam]] | None = None,
     ) -> None:
         _validate_tool_names(specs)
+        _validate_query_params(query_params, tool_query_params, specs)
         self._specs: dict[str, Spec] = dict(specs)
         self._get_user: UserExtractor = get_user or _default_get_user
         self._unknown_arguments: UnknownArguments = unknown_arguments
+        # The effective (deduped) query params for each tool: toolset-wide first,
+        # then per-tool overriding by name. Built once — declarations are static.
+        self._tool_query_params: dict[str, tuple[QueryParam, ...]] = {
+            name: _merge_query_params(query_params, (tool_query_params or {}).get(name, ()))
+            for name in self._specs
+        }
         # Schemas derive purely from the specs (no DB), so the tool defs are
         # built once up front and handed to ExternalToolset.
         super().__init__(
-            [_build_tool_def(name, spec) for name, spec in self._specs.items()],
+            [
+                _build_tool_def(name, spec, self._tool_query_params[name])
+                for name, spec in self._specs.items()
+            ],
             id=id,
         )
 
@@ -176,10 +215,14 @@ class SpecToolset(ExternalToolset[Any]):
         user = self._get_user(ctx)
         # The whole pipeline touches the ORM (validation, dispatch, serializer
         # rendering), which Django forbids on the async event loop — run it in a
-        # thread. ``dict(tool_args)`` is a private copy so popping pagination
-        # args never mutates the caller's dict.
+        # thread. ``dict(tool_args)`` is a private copy so popping pagination /
+        # query-param args never mutates the caller's dict.
         return await sync_to_async(_call_spec)(
-            spec, user, dict(tool_args), unknown_arguments=self._unknown_arguments
+            spec,
+            user,
+            dict(tool_args),
+            unknown_arguments=self._unknown_arguments,
+            query_params=self._tool_query_params[name],
         )
 
 
@@ -193,16 +236,50 @@ def _validate_tool_names(specs: Mapping[str, Spec]) -> None:
         )
 
 
+def _validate_query_params(
+    query_params: Sequence[QueryParam],
+    tool_query_params: Mapping[str, Sequence[QueryParam]] | None,
+    specs: Mapping[str, Spec],
+) -> None:
+    """Fail fast on an unknown per-tool key or a reserved query-param name."""
+    declared = list(query_params)
+    for tool_name, params in (tool_query_params or {}).items():
+        if tool_name not in specs:
+            raise ValueError(
+                f"tool_query_params references unknown tool {tool_name!r}; "
+                f"known tools: {sorted(specs)}."
+            )
+        declared.extend(params)
+    reserved = sorted({qp.name for qp in declared} & _RESERVED_PARAM_NAMES)
+    if reserved:
+        raise ValueError(
+            f"QueryParam name(s) {reserved} are reserved for list-selector "
+            "pagination (page / limit / order)."
+        )
+
+
+def _merge_query_params(
+    toolset_wide: Sequence[QueryParam], per_tool: Sequence[QueryParam]
+) -> tuple[QueryParam, ...]:
+    """Toolset-wide params, then per-tool overriding by name (per-tool wins)."""
+    merged: dict[str, QueryParam] = {qp.name: qp for qp in toolset_wide}
+    for qp in per_tool:
+        merged[qp.name] = qp
+    return tuple(merged.values())
+
+
 def _default_get_user(ctx: RunContext[Any]) -> Any:
     """Read the acting user off ``ctx.deps.user`` (the ``AgentDeps`` default)."""
     return ctx.deps.user
 
 
-def _build_tool_def(name: str, spec: Spec) -> ToolDefinition:
+def _build_tool_def(
+    name: str, spec: Spec, query_params: Sequence[QueryParam] = ()
+) -> ToolDefinition:
     return ToolDefinition(
         name=name,
         description=_spec_description(spec),
-        parameters_json_schema=_input_schema(spec),
+        parameters_json_schema=_input_schema(spec, query_params),
         metadata={"annotations": {"readOnlyHint": isinstance(spec, SelectorSpec)}},
     )
 
@@ -213,19 +290,24 @@ def _spec_description(spec: Spec) -> str | None:
     return inspect.getdoc(callable_) if callable_ is not None else None
 
 
-def _input_schema(spec: Spec) -> dict[str, Any]:
-    """The tool's parameter schema, with list-selector pagination args merged in.
+def _input_schema(spec: Spec, query_params: Sequence[QueryParam] = ()) -> dict[str, Any]:
+    """The tool's parameter schema, with list-selector pagination + registered
+    query params merged into ``properties``.
 
     ``spec_to_json_schema(phase="input")`` always returns a dict (only the
     output phase is nullable), so the result is narrowed for the type-checker.
     """
     schema = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input"))
-    if not _is_list_selector(spec):
+    extra: dict[str, Any] = {}
+    if _is_list_selector(spec):
+        extra.update(_LIST_PARAM_SCHEMA)
+    extra.update({qp.name: qp.json_schema() for qp in query_params})
+    if not extra:
         return schema
     return {
         **schema,
         "type": "object",
-        "properties": {**schema.get("properties", {}), **_LIST_PARAM_SCHEMA},
+        "properties": {**schema.get("properties", {}), **extra},
     }
 
 
@@ -239,6 +321,7 @@ def _call_spec(
     args: dict[str, Any],
     *,
     unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
+    query_params: Sequence[QueryParam] = (),
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
 
@@ -246,7 +329,13 @@ def _call_spec(
     the ORM stays off the event loop.
     """
     page_args = _pop_pagination(spec, args)
-    context = build_offline_context(user, args)
+    # Pop the registered query params out of the spec args and seed them into the
+    # off-HTTP request's ``query_params`` (for whatever reads them directly —
+    # restql, a custom serializer; not a ``filter_set``, which reads the spec
+    # args as ``filter_data``). Popped first so they never reach the spec as
+    # inputs, so ``unknown_arguments`` (REJECT by default) can't flag them.
+    query_param_values = _pop_query_params(query_params, args)
+    context = build_offline_context(user, args, query_params=query_param_values or None)
     # Two-layer authorization, mirroring a DRF view: the upfront call runs the
     # class-level ``has_permission`` (covers create / list-payload targets), and
     # the ``on_target_resolved`` hook runs ``has_object_permission`` on the
@@ -311,6 +400,22 @@ def _pop_pagination(spec: Spec, args: dict[str, Any]) -> _PageArgs | None:
         limit=_coerce_positive_int(args.pop("limit", None), "limit"),
         order=_coerce_order(args.pop("order", None)),
     )
+
+
+def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) -> dict[str, Any]:
+    """Strip the registered query params from ``args`` into a plain ``dict``.
+
+    A declared param the model supplied is popped; one it omitted contributes its
+    ``default`` if set, else nothing. The result is handed to
+    ``build_offline_context(query_params=…)`` (which stringifies as on HTTP).
+    """
+    values: dict[str, Any] = {}
+    for query_param in query_params:
+        if query_param.name in args:
+            values[query_param.name] = args.pop(query_param.name)
+        elif query_param.default is not None:
+            values[query_param.name] = query_param.default
+    return values
 
 
 def _coerce_positive_int(value: Any, name: str) -> int | None:
