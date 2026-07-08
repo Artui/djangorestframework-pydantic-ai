@@ -17,10 +17,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`tool_query_params={"tool": [...]}`). Each is advertised as a tool arg, then —
   instead of reaching the spec as an input — popped and seeded into
   `request.query_params` over the off-HTTP path via
-  `build_offline_context(query_params=…)`. This is how anything that reads the
-  query string works through the toolset: a `SelectorSpec.filter_set`,
-  django-restql field selection, or a custom serializer branching on
-  `request.query_params`. A registered param is popped before dispatch (so
+  `build_offline_context(query_params=…)`. This is for whatever reads
+  `request.query_params` **directly** — django-restql field selection, or a
+  custom serializer branching on the query string. (A `SelectorSpec.filter_set`
+  needs none of this: its fields are already generated into the tool schema and
+  flow through as ordinary `params`.) A registered param is popped before dispatch (so
   `unknown_arguments` never flags it); a declared `default` is seeded when the
   model omits the arg; reserved names (`page`/`limit`/`order`) and unknown
   per-tool keys are rejected at construction. (QP-2.)

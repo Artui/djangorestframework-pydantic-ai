@@ -99,10 +99,16 @@ toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 your own request-level params with
 [`QueryParam`](reference.md#rest_framework_pydantic_ai.QueryParam). Each is
 advertised as a tool arg, then — instead of reaching the spec as an input — seeded
-into `request.query_params` over the off-HTTP path. That is how anything reading
-the query string works through the toolset: a `SelectorSpec.filter_set`,
-django-restql field selection, or a custom serializer that branches on
-`request.query_params`.
+into `request.query_params` over the off-HTTP path. That is for whatever reads
+`request.query_params` **directly**: django-restql field selection, or a custom
+serializer that branches on the query string.
+
+!!! note "You don't need this for `filter_set`"
+    A `SelectorSpec.filter_set`'s fields are already generated into the tool's
+    input schema (the `[filter]` extra) and flow through as ordinary `params` —
+    which `dispatch_spec` hands the FilterSet as its `filter_data`. So the model
+    can filter a list selector with no `QueryParam` declaration at all;
+    `QueryParam` is only for params a serializer reads off `request.query_params`.
 
 ```python
 from rest_framework_pydantic_ai import QueryParam

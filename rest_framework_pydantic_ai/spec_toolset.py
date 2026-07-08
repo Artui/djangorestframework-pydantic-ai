@@ -148,9 +148,15 @@ class SpecToolset(ExternalToolset[Any]):
     param overrides a toolset-wide one of the same name). Each is advertised as a
     tool arg, then popped at call time and handed to
     ``build_offline_context(query_params=…)`` — never to the spec as an input, so
-    ``unknown_arguments`` never sees it. Whatever reads query params (a
-    ``filter_set`` driven off ``request.query_params``, django-restql, a custom
-    serializer) then works with zero toolset awareness of the specific library.
+    ``unknown_arguments`` never sees it. This is for whatever reads
+    ``request.query_params`` **directly** — django-restql field selection, a custom
+    serializer branching on the query string — with zero toolset awareness of the
+    specific library.
+
+    A ``SelectorSpec.filter_set`` does **not** need this: its fields are already
+    generated into the tool's input schema by ``spec_to_json_schema`` and flow
+    through as ordinary ``params`` (which ``dispatch_spec`` hands the FilterSet as
+    ``filter_data``), so the model can filter with no extra declaration.
     """
 
     def __init__(
@@ -324,8 +330,9 @@ def _call_spec(
     """
     page_args = _pop_pagination(spec, args)
     # Pop the registered query params out of the spec args and seed them into the
-    # off-HTTP request's ``query_params`` (whatever reads them — filter_set,
-    # restql, a custom serializer). Popped first so they never reach the spec as
+    # off-HTTP request's ``query_params`` (for whatever reads them directly —
+    # restql, a custom serializer; not a ``filter_set``, which reads the spec
+    # args as ``filter_data``). Popped first so they never reach the spec as
     # inputs, so ``unknown_arguments`` (REJECT by default) can't flag them.
     query_param_values = _pop_query_params(query_params, args)
     context = build_offline_context(user, args, query_params=query_param_values or None)

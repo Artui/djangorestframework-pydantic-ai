@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import django_filters
 import pytest
 from django.contrib.auth.models import User
 from pydantic_ai import ModelRetry
@@ -566,3 +567,43 @@ def test_query_param_is_popped_before_dispatch_so_reject_ignores_it():
         unknown_arguments=UnknownArguments.REJECT,
     )
     assert [w["name"] for w in result] == ["a"]
+
+
+# --- filter_set needs no QueryParam ------------------------------------------
+
+
+class _WidgetFilterSet(django_filters.FilterSet):
+    min_price = django_filters.NumberFilter(field_name="price", lookup_expr="gte")
+
+    class Meta:
+        model = Widget
+        fields = []
+
+
+def _filtered_list_spec():
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=WidgetSerializer,
+        filter_set=_WidgetFilterSet,
+    )
+
+
+async def test_filter_set_fields_are_auto_exposed_as_tool_args():
+    # A filter_set selector's fields land in the tool schema via
+    # spec_to_json_schema — no QueryParam declaration needed.
+    toolset = SpecToolset({"list_widgets": _filtered_list_spec()})
+    tools = await toolset.get_tools(None)
+    assert "min_price" in tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+
+
+@pytest.mark.django_db
+def test_filter_set_filters_via_ordinary_params_not_query_params():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="cheap", price=1, owner=user)
+    Widget.objects.create(name="pricey", price=10, owner=user)
+    # The filter value is an ordinary tool arg: a filter_set selector's declared
+    # set is open (REJECT doesn't flag it), and dispatch hands it to the FilterSet
+    # as filter_data. No QueryParam involved.
+    result = _call_spec(_filtered_list_spec(), user, {"min_price": "5"})
+    assert [w["name"] for w in result] == ["pricey"]
