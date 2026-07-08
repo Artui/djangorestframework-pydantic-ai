@@ -395,9 +395,7 @@ def _pop_pagination(spec: Spec, args: dict[str, Any]) -> _PageArgs | None:
     )
 
 
-def _pop_query_params(
-    query_params: Sequence[QueryParam], args: dict[str, Any]
-) -> dict[str, Any]:
+def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) -> dict[str, Any]:
     """Strip the registered query params from ``args`` into a plain ``dict``.
 
     A declared param the model supplied is popped; one it omitted contributes its

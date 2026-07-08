@@ -495,7 +495,9 @@ async def test_per_tool_query_param_overrides_toolset_wide_by_name():
 
 
 async def test_query_param_default_appears_in_schema():
-    toolset = SpecToolset({"list_widgets": list_spec()}, query_params=[QueryParam("fields", default="id")])
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()}, query_params=[QueryParam("fields", default="id")]
+    )
     tools = await toolset.get_tools(None)
     props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
     assert props["fields"]["default"] == "id"
