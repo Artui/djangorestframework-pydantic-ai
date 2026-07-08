@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Widen the `djangorestframework-services` constraint from `>=0.23,<0.24` to
+  `>=0.23,<0.25`, so the adapter installs against drf-services 0.24.x. Selector
+  tool schemas transparently gain the 0.24 selector-input-schema fidelity (a
+  selector's own callable parameters are now reflected) with no code change.
+  Verified against drf-services 0.24.0.
+
 ## [0.3.1] — 2026-07-08
 
 ### Changed
