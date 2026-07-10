@@ -6,6 +6,33 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-10
+
+### Added
+
+- `SpecToolset(max_retries=...)` — each tool's retry budget: how many times a
+  `ModelRetry` (a validation failure, a bad `order` field) is fed back to the
+  model before the run aborts. Defaults to `1`, matching pydantic-ai's own
+  function-tool default.
+
+### Changed
+
+- `SpecToolset` now subclasses `pydantic_ai.toolsets.AbstractToolset` directly
+  (the documented extension point) instead of `ExternalToolset`, building its
+  tool definitions `kind="function"` from the start. Previously it inherited
+  from a base class that models the opposite of in-process execution (external
+  tools are *deferred* to the client) and re-stamped every tool definition back
+  to `kind="function"` per run — a seam that depended on `ExternalToolset`
+  internals. Public API and tool behaviour are unchanged.
+
+### Fixed
+
+- A tool's `ModelRetry` (an input-validation failure, a bad `order` field) now
+  actually reaches the model to self-correct, as documented. `ExternalToolset`
+  pinned every tool's retry budget to `0`, so in a real agent run the first
+  `ModelRetry` aborted the run with `UnexpectedModelBehavior` instead of
+  retrying. Both behaviours are now pinned by full agent-run integration tests.
+
 ## [0.3.2] — 2026-07-08
 
 ### Changed
@@ -132,7 +159,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.2.2...v0.3.0

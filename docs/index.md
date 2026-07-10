@@ -29,7 +29,7 @@ standing up an MCP server.
 
 ## How it compares
 
-If you already run an MCP server, `django-ag-ui`'s `DrfMcpToolset` exposes its
+If you already run an MCP server, `django-ag-ui`'s `DRFMCPToolset` exposes its
 tools to Pydantic-AI through the in-process MCP surface. `SpecToolset` is for the
 case where you want the specs as tools **without** any MCP layer: it depends only
 on `djangorestframework-services` and `pydantic-ai-slim`.

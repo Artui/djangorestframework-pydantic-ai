@@ -24,9 +24,10 @@ drf-services — import them, don't reimplement. If a needed concern is missing
 from drf-services, the fix is to lift it *down* into drf-services, not to grow a
 parallel copy here.
 
-The reference toolset to match is `django-ag-ui`'s `DrfMcpToolset` (same
-`ExternalToolset` shape, re-stamped `kind="function"`); the difference is that
-`SpecToolset` skips the MCP hop and calls drf-services directly.
+The reference toolset to match is `django-ag-ui`'s `DRFMCPToolset` (the same
+`AbstractToolset` subclass shape, building `kind="function"` tool defs for
+in-process execution); the difference is that `SpecToolset` skips the MCP hop
+and calls drf-services directly.
 
 ## Commands
 
