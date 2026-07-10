@@ -5,7 +5,9 @@ from types import SimpleNamespace
 import django_filters
 import pytest
 from django.contrib.auth.models import User
-from pydantic_ai import ModelRetry
+from pydantic_ai import Agent, ModelRetry
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+from pydantic_ai.models.function import FunctionModel
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
@@ -101,8 +103,8 @@ async def test_get_tools_builds_function_tools():
     toolset = SpecToolset({"list_widgets": list_spec(), "create_widget": create_spec()})
     tools = await toolset.get_tools(None)
     assert set(tools) == {"list_widgets", "create_widget"}
-    # ExternalToolset stamps "external" (deferred); we re-stamp "function" so the
-    # run loop actually invokes call_tool.
+    # "function" is the in-process kind — the run loop invokes call_tool rather
+    # than deferring the call to the client.
     assert all(tool.tool_def.kind == "function" for tool in tools.values())
 
 
@@ -131,6 +133,18 @@ async def test_selector_without_callable_has_no_description():
     toolset = SpecToolset({"empty": spec})
     tools = await toolset.get_tools(None)
     assert tools["empty"].tool_def.description is None
+
+
+async def test_id_property():
+    assert SpecToolset({"list_widgets": list_spec()}).id == "drf-specs"
+    assert SpecToolset({"list_widgets": list_spec()}, id="custom").id == "custom"
+
+
+async def test_max_retries_default_and_override():
+    tools = await SpecToolset({"list_widgets": list_spec()}).get_tools(None)
+    assert tools["list_widgets"].max_retries == 1
+    tools = await SpecToolset({"list_widgets": list_spec()}, max_retries=3).get_tools(None)
+    assert tools["list_widgets"].max_retries == 3
 
 
 # --- call_tool (async wrapper + identity) ------------------------------------
@@ -567,6 +581,71 @@ def test_query_param_is_popped_before_dispatch_so_reject_ignores_it():
         unknown_arguments=UnknownArguments.REJECT,
     )
     assert [w["name"] for w in result] == ["a"]
+
+
+# --- full agent-run integration ----------------------------------------------
+#
+# Drive a real ``Agent`` run loop (FunctionModel — no provider, no network) to
+# pin the toolset's run-loop contract on the locked pydantic-ai: the tools
+# execute in-process (``call_tool`` is invoked and the run completes, rather
+# than the call being deferred to the client), and a ``ModelRetry`` is fed back
+# to the model to self-correct instead of aborting the run.
+
+
+def _tool_calling_model(tool_name: str, first_args: dict, retry_args: dict):
+    """A model that calls ``tool_name``, corrects itself once if retried, then stops."""
+
+    def model_fn(messages, info):
+        last = messages[-1]
+        if any(part.part_kind == "retry-prompt" for part in last.parts):
+            return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=retry_args)])
+        if any(part.part_kind == "tool-return" for part in last.parts):
+            return ModelResponse(parts=[TextPart("done")])
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=first_args)])
+
+    return FunctionModel(model_fn)
+
+
+async def test_agent_run_executes_spec_tool_in_process():
+    seen = {}
+
+    def ping(user):
+        """Ping."""
+        seen["user"] = user
+        return {"ok": True}
+
+    toolset = SpecToolset({"ping": ServiceSpec(service=ping, atomic=False)})
+    agent = Agent(_tool_calling_model("ping", {}, {}), deps_type=AgentDeps, toolsets=[toolset])
+    result = await agent.run("go", deps=AgentDeps(user="alice"))
+    assert result.output == "done"
+    assert seen["user"] == "alice"
+
+
+class _ModeInputSerializer(serializers.Serializer):
+    mode = serializers.CharField()
+
+
+async def test_agent_run_recovers_from_model_retry():
+    calls = []
+
+    def flaky(data, user):
+        """Fails validation on the bad mode, succeeds otherwise."""
+        calls.append(data["mode"])
+        if data["mode"] == "bad":
+            raise ServiceValidationError("mode must not be 'bad'")
+        return {"ok": True}
+
+    toolset = SpecToolset(
+        {"flaky": ServiceSpec(service=flaky, input_serializer=_ModeInputSerializer, atomic=False)}
+    )
+    agent = Agent(
+        _tool_calling_model("flaky", {"mode": "bad"}, {"mode": "good"}),
+        deps_type=AgentDeps,
+        toolsets=[toolset],
+    )
+    result = await agent.run("go", deps=AgentDeps(user="alice"))
+    assert result.output == "done"
+    assert calls == ["bad", "good"]
 
 
 # --- filter_set needs no QueryParam ------------------------------------------

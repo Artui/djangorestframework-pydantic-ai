@@ -141,3 +141,12 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | Non-integer `page` / `limit`, non-string `order` | `ModelRetry` — the model corrects the argument type |
 | Bad `order` field | `ModelRetry` — the model picked a column that doesn't exist |
 | Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run |
+
+Each `ModelRetry` row consumes one unit of the tool's retry budget: after
+`max_retries` failed attempts (default `1`, pydantic-ai's function-tool
+default) the run aborts with `UnexpectedModelBehavior`. Raise it for models
+that need more attempts to converge:
+
+```python
+toolset = SpecToolset(specs, max_retries=3)
+```

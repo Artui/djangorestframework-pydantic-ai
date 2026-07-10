@@ -42,15 +42,15 @@ from __future__ import annotations
 import inspect
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, cast
 
 from asgiref.sync import sync_to_async
 from django.core.exceptions import FieldError
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
-from pydantic_ai.toolsets.abstract import ToolsetTool
-from pydantic_ai.toolsets.external import ExternalToolset
+from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
+from pydantic_core import SchemaValidator, core_schema
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework_services import (
     SelectorKind,
@@ -79,6 +79,13 @@ _RESERVED_PARAM_NAMES = frozenset({"page", "limit", "order"})
 # to this shape (OpenAI / Anthropic function-name rules). Validated at
 # construction so a bad key fails fast instead of at the provider boundary.
 _TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# Tool args pass through unvalidated: the parameter schemas advertised to the
+# model come from ``spec_to_json_schema`` (advisory, not a Pydantic model), and
+# the real validation is the spec's own input serializer at dispatch time — so
+# the per-tool validator is a no-op, exactly the double-validation split a DRF
+# view has (JSON parsing at the transport, field validation in the serializer).
+_TOOL_ARGS_VALIDATOR = SchemaValidator(schema=core_schema.any_schema())
 
 # Tool args a list selector accepts on top of its filter fields. Ordering and
 # pagination stay transport-side, so the adapter — not the spec — exposes them
@@ -112,7 +119,7 @@ class _PageArgs:
     order: str | None
 
 
-class SpecToolset(ExternalToolset[Any]):
+class SpecToolset(AbstractToolset[Any]):
     """Exposes drf-services specs as a Pydantic-AI toolset.
 
     Build it from a ``name -> spec`` mapping and hand it to an ``Agent``::
@@ -157,6 +164,12 @@ class SpecToolset(ExternalToolset[Any]):
     generated into the tool's input schema by ``spec_to_json_schema`` and flow
     through as ordinary ``params`` (which ``dispatch_spec`` hands the FilterSet as
     ``filter_data``), so the model can filter with no extra declaration.
+
+    ``max_retries`` is each tool's retry budget: how many times a
+    :class:`pydantic_ai.ModelRetry` (a validation failure, a bad ``order``
+    field) is fed back to the model before the run aborts with
+    ``UnexpectedModelBehavior``. Defaults to ``1``, matching pydantic-ai's own
+    function-tool default.
     """
 
     def __init__(
@@ -168,12 +181,15 @@ class SpecToolset(ExternalToolset[Any]):
         unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
         query_params: Sequence[QueryParam] = (),
         tool_query_params: Mapping[str, Sequence[QueryParam]] | None = None,
+        max_retries: int = 1,
     ) -> None:
         _validate_tool_names(specs)
         _validate_query_params(query_params, tool_query_params, specs)
+        self._id = id
         self._specs: dict[str, Spec] = dict(specs)
         self._get_user: UserExtractor = get_user or _default_get_user
         self._unknown_arguments: UnknownArguments = unknown_arguments
+        self._max_retries = max_retries
         # The effective (deduped) query params for each tool: toolset-wide first,
         # then per-tool overriding by name. Built once — declarations are static.
         self._tool_query_params: dict[str, tuple[QueryParam, ...]] = {
@@ -181,27 +197,26 @@ class SpecToolset(ExternalToolset[Any]):
             for name in self._specs
         }
         # Schemas derive purely from the specs (no DB), so the tool defs are
-        # built once up front and handed to ExternalToolset.
-        super().__init__(
-            [
-                _build_tool_def(name, spec, self._tool_query_params[name])
-                for name, spec in self._specs.items()
-            ],
-            id=id,
-        )
+        # built once up front. ``ToolDefinition`` defaults to ``kind="function"``
+        # — the in-process kind the run loop routes into ``call_tool``.
+        self._tool_defs: dict[str, ToolDefinition] = {
+            name: _build_tool_def(name, spec, self._tool_query_params[name])
+            for name, spec in self._specs.items()
+        }
+
+    @property
+    def id(self) -> str | None:
+        return self._id
 
     async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
-        """Re-stamp the base tools ``kind="function"`` so the run loop calls us.
-
-        ``ExternalToolset`` marks every tool ``kind="external"``, which
-        Pydantic-AI *defers* — it yields the call back to the caller and ends
-        the run, never invoking ``call_tool``. This toolset executes specs
-        in-process, so the tools must run like ordinary function tools.
-        """
-        tools = await super().get_tools(ctx)
         return {
-            name: replace(tool, tool_def=replace(tool.tool_def, kind="function"))
-            for name, tool in tools.items()
+            name: ToolsetTool(
+                toolset=self,
+                tool_def=tool_def,
+                max_retries=self._max_retries,
+                args_validator=_TOOL_ARGS_VALIDATOR,
+            )
+            for name, tool_def in self._tool_defs.items()
         }
 
     async def call_tool(
@@ -388,8 +403,9 @@ def _pop_pagination(spec: Spec, args: dict[str, Any]) -> _PageArgs | None:
     """Strip + validate ``page`` / ``limit`` / ``order`` from a list selector's args.
 
     The tool schema advertises ``page`` / ``limit`` as integers and ``order`` as
-    a string, but ``ExternalToolset`` installs a no-op argument validator, so a
-    model that sends ``limit="2"`` or ``order=["a"]`` reaches here untyped. Rather
+    a string, but the toolset's argument validator is a no-op (the schema is
+    advisory), so a model that sends ``limit="2"`` or ``order=["a"]`` reaches
+    here untyped. Rather
     than let a ``TypeError`` / ``AttributeError`` abort the run, coerce and
     validate, mapping a bad value to :class:`ModelRetry` so the model corrects it.
     """
