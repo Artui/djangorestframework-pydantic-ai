@@ -734,6 +734,12 @@ Requires <code>djangorestframework-services&gt;=0.23</code>, which added the
 </tr>
 </tbody>
 </table>
+<p>Each <code>ModelRetry</code> row consumes one unit of the tool's retry budget: after
+<code>max_retries</code> failed attempts (default <code>1</code>, pydantic-ai's function-tool
+default) the run aborts with <code>UnexpectedModelBehavior</code>. Raise it for models
+that need more attempts to converge:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+</span></code></pre></div>
 
 
 

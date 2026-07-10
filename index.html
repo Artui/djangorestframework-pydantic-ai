@@ -526,7 +526,7 @@ class-level <code>has_permission</code> and object-level <code>has_object_permis
 resolved row), the same rendered payloads — without the network hop, and without
 standing up an MCP server.</p>
 <h2 id="how-it-compares">How it compares<a class="headerlink" href="#how-it-compares" title="Permanent link">&para;</a></h2>
-<p>If you already run an MCP server, <code>django-ag-ui</code>'s <code>DrfMcpToolset</code> exposes its
+<p>If you already run an MCP server, <code>django-ag-ui</code>'s <code>DRFMCPToolset</code> exposes its
 tools to Pydantic-AI through the in-process MCP surface. <code>SpecToolset</code> is for the
 case where you want the specs as tools <strong>without</strong> any MCP layer: it depends only
 on <code>djangorestframework-services</code> and <code>pydantic-ai-slim</code>.</p>

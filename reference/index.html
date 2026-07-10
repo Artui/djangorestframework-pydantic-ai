@@ -395,23 +395,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="SpecToolset">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get_tools
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -529,23 +512,6 @@
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="SpecToolset">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        get_tools
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
 </li>
       
         <li class="md-nav__item">
@@ -652,7 +618,7 @@
 
     <div class="doc doc-contents first">
             <p class="doc doc-class-bases">
-              Bases: <code><span title="pydantic_ai.toolsets.external.ExternalToolset">ExternalToolset</span>[<span title="typing.Any">Any</span>]</code></p>
+              Bases: <code><span title="pydantic_ai.toolsets.AbstractToolset">AbstractToolset</span>[<span title="typing.Any">Any</span>]</code></p>
 
 
 
@@ -694,6 +660,11 @@ specific library.</p>
 generated into the tool's input schema by <code>spec_to_json_schema</code> and flow
 through as ordinary <code>params</code> (which <code>dispatch_spec</code> hands the FilterSet as
 <code>filter_data</code>), so the model can filter with no extra declaration.</p>
+<p><code>max_retries</code> is each tool's retry budget: how many times a
+:class:<code>pydantic_ai.ModelRetry</code> (a validation failure, a bad <code>order</code>
+field) is fed back to the model before the run aborts with
+<code>UnexpectedModelBehavior</code>. Defaults to <code>1</code>, matching pydantic-ai's own
+function-tool default.</p>
 
 
 
@@ -715,34 +686,6 @@ through as ordinary <code>params</code> (which <code>dispatch_spec</code> hands 
 
 
 
-
-<div class="doc doc-object doc-function">
-
-
-<h3 id="rest_framework_pydantic_ai.SpecToolset.get_tools" class="doc doc-heading">
-            <span class="doc doc-object-name doc-function-name">get_tools</span>
-
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-async"><code>async</code></small>
-  </span>
-
-<a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_tools</span><span class="p">(</span><span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">ToolsetTool</span><span class="p">[</span><span class="n">Any</span><span class="p">]]</span>
-</span></code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Re-stamp the base tools <code>kind="function"</code> so the run loop calls us.</p>
-<p><code>ExternalToolset</code> marks every tool <code>kind="external"</code>, which
-Pydantic-AI <em>defers</em> — it yields the call back to the caller and ends
-the run, never invoking <code>call_tool</code>. This toolset executes specs
-in-process, so the tools must run like ordinary function tools.</p>
-
-
-    </div>
-
-</div>
 
 
 
