@@ -395,6 +395,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="SpecToolset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.get_instructions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_instructions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -550,6 +567,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="SpecToolset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.get_instructions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_instructions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -743,6 +777,9 @@ through as ordinary <code>params</code> (which <code>dispatch_spec</code> hands 
 field) is fed back to the model before the run aborts with
 <code>UnexpectedModelBehavior</code>. Defaults to <code>1</code>, matching pydantic-ai's own
 function-tool default.</p>
+<p><code>instructions</code> overrides the auto-derived conventions block that
+:meth:<code>get_instructions</code> teaches the model (pagination + error contract);
+pass a string to replace it, or leave it <code>None</code> to derive from the specs.</p>
 
 
 
@@ -764,6 +801,43 @@ function-tool default.</p>
 
 
 
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="rest_framework_pydantic_ai.SpecToolset.get_instructions" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">get_instructions</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#rest_framework_pydantic_ai.SpecToolset.get_instructions" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_instructions</span><span class="p">(</span><span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Teach the model this toolset's conventions.</p>
+<p>The per-tool descriptions and parameter schemas say what each tool <em>is</em>,
+but not how the family behaves: that list tools accept <code>page</code> /
+<code>limit</code> / <code>order</code>, that a business failure comes back as a readable
+<code>{"error": …}</code> result (a final answer, not a reason to retry) while a
+bad argument comes back as a retry request, and that a permission error
+is final. Pydantic-AI appends this block to the system prompt each turn —
+for a toolset attached directly <em>or</em> wrapped by a capability — so the
+model doesn't rediscover the conventions by failing a call.</p>
+<p>Returns the <code>instructions</code> override when one was given, else a block
+derived from the specs: the pagination line appears only when a list
+selector is present, and the read-shaping line only when some
+<code>QueryParam</code> is declared, keeping the prompt free of advice that can't
+fire.</p>
+
+
+    </div>
+
+</div>
 
 
 
@@ -791,16 +865,16 @@ function-tool default.</p>
 
 
 
-        <p>A Pydantic-AI capability exposing drf-services specs as tools <em>and</em> teaching
-the model the conventions <code>SpecToolset</code> alone leaves in human docs.</p>
-<p>:class:<code>~rest_framework_pydantic_ai.SpecToolset</code> ships the tools but says
-nothing to the model about how they behave: that list tools accept <code>page</code> /
-<code>limit</code> / <code>order</code>, that a business failure comes back as a readable
-<code>{"error": …}</code> result (a final answer, not a reason to retry) while a bad
-argument comes back as a retry request, or that a permission error is final.
-<code>SpecCapability</code> wraps the toolset and carries those conventions to the model
-through <code>get_instructions()</code> — the system prompt Pydantic-AI appends each
-turn — so the model doesn't rediscover them by failing a call.</p>
+        <p>A Pydantic-AI capability exposing drf-services specs as tools.</p>
+<p>:class:<code>~rest_framework_pydantic_ai.SpecToolset</code> is a first-class toolset you
+can attach directly (<code>Agent(toolsets=[SpecToolset(...)])</code>); it already
+exposes the tools <em>and</em> teaches the model its conventions through
+<code>get_instructions</code> (that list tools accept <code>page</code> / <code>limit</code> / <code>order</code>,
+and how errors come back). <code>SpecCapability</code> wraps that toolset to add the
+capability-only feature: <code>defer_loading</code>. It does <strong>not</strong> re-emit the
+conventions — Pydantic-AI collects them from the owned toolset's
+<code>get_instructions</code> automatically, so wrapping vs. attaching directly yields
+the same model-facing instructions, exactly once.</p>
 <p>Construct it the same way as <code>SpecToolset</code> (it forwards the toolset knobs)::</p>
 <div class="language-text highlight"><pre><span></span><code>agent = Agent(
     model,
@@ -811,13 +885,14 @@ turn — so the model doesn't rediscover them by failing a call.</p>
     })],
 )
 </code></pre></div>
-<p>or wrap an already-built toolset with :meth:<code>from_toolset</code>. Either way the
-exposed tool set is identical to the toolset's; only the instructions are added.</p>
-<p><code>instructions</code> overrides the auto-derived conventions text. <code>defer_loading</code>
-(which needs the stable <code>id</code>) hides the whole spec toolset and its
-instructions behind Pydantic-AI's native <code>load_capability</code> tool until the
-model loads it — progressive disclosure for a large spec map. The remaining
-keywords (<code>get_user</code> / <code>unknown_arguments</code> / <code>query_params</code> /
+<p>or wrap an already-built toolset with :meth:<code>from_toolset</code> (the compose path).
+Either way the exposed tool set and instructions are the toolset's.</p>
+<p><code>instructions</code> overrides the toolset's auto-derived conventions text — it is
+forwarded to the <code>SpecToolset</code> this builds. <code>defer_loading</code> (which needs
+the stable <code>id</code>) hides the whole spec toolset and its instructions behind
+Pydantic-AI's native <code>load_capability</code> tool until the model loads it —
+progressive disclosure for a large spec map. The remaining keywords
+(<code>get_user</code> / <code>unknown_arguments</code> / <code>query_params</code> /
 <code>tool_query_params</code> / <code>max_retries</code>) are forwarded verbatim to the
 <code>SpecToolset</code> it builds; see there for their semantics.</p>
 
@@ -854,20 +929,16 @@ keywords (<code>get_user</code> / <code>unknown_arguments</code> / <code>query_p
   </span>
 
 <a href="#rest_framework_pydantic_ai.SpecCapability.from_toolset" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_toolset</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">toolset</span><span class="p">:</span> <span class="n">SpecToolset</span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">defer_loading</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">instructions</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SpecCapability</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_toolset</span><span class="p">(</span><span class="n">toolset</span><span class="p">:</span> <span class="n">SpecToolset</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">defer_loading</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SpecCapability</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Wrap an already-built :class:<code>SpecToolset</code> (the compose path).</p>
-<p>The capability adopts the toolset's <code>id</code> and derives its instructions
-from the same specs, so <code>SpecCapability.from_toolset(ts)</code> and
-<code>SpecCapability(specs, …)</code> produce the same model-facing behaviour.</p>
+<p>The capability adopts the toolset's <code>id</code>, and its tools and
+instructions are the toolset's own — set an <code>instructions</code> override on
+the <code>SpecToolset</code> itself if you need one, so <code>from_toolset(ts)</code> and
+<code>SpecCapability(specs, …)</code> behave identically.</p>
 
 
     </div>
