@@ -22,7 +22,11 @@ from rest_framework_services import (
 
 from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset
 from rest_framework_pydantic_ai.spec_toolset import (
+    _BASE_INSTRUCTIONS,
+    _LIST_INSTRUCTION,
     _call_spec,
+    _derive_instructions,
+    _is_list_selector,
     _output_extras,
     _paginate,
     _split_order,
@@ -94,6 +98,72 @@ class DenyAll(BasePermission):
 
 def ctx_for(user):
     return SimpleNamespace(deps=AgentDeps(user=user))
+
+
+# --- get_instructions --------------------------------------------------------
+#
+# ``get_instructions`` derives the conventions block from the specs; it ignores
+# ``ctx`` (no per-run state), so the tests pass ``None``.
+
+
+async def test_instructions_carry_the_error_contract():
+    instr = await SpecToolset({"go": create_spec()}).get_instructions(None)
+    assert instr is not None
+    assert _BASE_INSTRUCTIONS in instr
+    assert '{"error"' in instr
+    assert "unknown arguments are rejected" in instr
+
+
+async def test_pagination_line_present_only_with_a_list_selector():
+    with_list = await SpecToolset({"list": list_spec()}).get_instructions(None)
+    assert _LIST_INSTRUCTION in with_list
+
+    # A retrieve selector is a SelectorSpec but not LIST — no pagination line.
+    retrieve_only = await SpecToolset({"get": retrieve_spec()}).get_instructions(None)
+    assert _LIST_INSTRUCTION not in retrieve_only
+
+    # A service spec is not a SelectorSpec at all — no pagination line.
+    service_only = await SpecToolset({"go": create_spec()}).get_instructions(None)
+    assert _LIST_INSTRUCTION not in service_only
+
+
+async def test_read_shaping_line_lists_declared_query_params_sorted():
+    toolset = SpecToolset(
+        {"list": list_spec()},
+        query_params=[QueryParam("query"), QueryParam("fields")],
+    )
+    instr = await toolset.get_instructions(None)
+    assert instr is not None
+    assert "read-shaping parameters (`fields`, `query`)" in instr
+
+
+async def test_read_shaping_line_absent_without_query_params():
+    instr = await SpecToolset({"list": list_spec()}).get_instructions(None)
+    assert "read-shaping parameters" not in instr
+
+
+async def test_instructions_override_wins_verbatim():
+    toolset = SpecToolset({"list": list_spec()}, instructions="just do it")
+    assert await toolset.get_instructions(None) == "just do it"
+
+
+def test_is_list_selector():
+    assert _is_list_selector(list_spec()) is True
+    assert _is_list_selector(retrieve_spec()) is False
+    assert _is_list_selector(create_spec()) is False
+
+
+def test_derive_instructions_matches_get_instructions_input():
+    toolset = SpecToolset({"list": list_spec()}, query_params=[QueryParam("query")])
+    # The public ``get_instructions`` derives from exactly these two mappings.
+    assert _derive_instructions(toolset._specs, toolset._tool_query_params) == "\n".join(
+        [
+            _BASE_INSTRUCTIONS,
+            _LIST_INSTRUCTION,
+            "- Some tools accept read-shaping parameters (`query`) that adjust the shape "
+            "of the returned data without filtering it.",
+        ]
+    )
 
 
 # --- get_tools ---------------------------------------------------------------
@@ -619,6 +689,27 @@ async def test_agent_run_executes_spec_tool_in_process():
     result = await agent.run("go", deps=AgentDeps(user="alice"))
     assert result.output == "done"
     assert seen["user"] == "alice"
+
+
+async def test_toolset_instructions_reach_the_model_when_attached_directly():
+    # A plain Agent adding SpecToolset to ``toolsets=`` (no capability) gets the
+    # conventions: Pydantic-AI collects the toolset's ``get_instructions``.
+    captured = {}
+
+    def model_fn(messages, info):
+        captured["instructions"] = messages[-1].instructions
+        return ModelResponse(parts=[TextPart("done")])
+
+    agent = Agent(
+        FunctionModel(model_fn),
+        deps_type=AgentDeps,
+        toolsets=[SpecToolset({"list": list_spec()})],
+    )
+    result = await agent.run("go", deps=AgentDeps(user="alice"))
+    assert result.output == "done"
+    assert captured["instructions"] is not None
+    assert _BASE_INSTRUCTIONS in captured["instructions"]
+    assert _LIST_INSTRUCTION in captured["instructions"]
 
 
 class _ModeInputSerializer(serializers.Serializer):

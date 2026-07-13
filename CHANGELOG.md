@@ -6,6 +6,33 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-13
+
+### Added
+
+- **`SpecToolset` now teaches the model its conventions directly**, via a
+  `get_instructions()` override (the native `AbstractToolset` hook). The
+  pagination (`page` / `limit` / `order`) and error-contract text that
+  `SpecCapability` introduced in 0.5.0 now reaches the model **whether the toolset
+  is attached directly** (`Agent(toolsets=[SpecToolset(...)])`) **or wrapped by a
+  capability** — previously a plain-toolset consumer got the tools but not the
+  conventions. `SpecToolset(..., instructions=...)` overrides the derived block.
+
+### Changed (breaking)
+
+- **`SpecCapability` no longer emits its own instructions** — it delegates to the
+  wrapped `SpecToolset`, since pydantic-ai already collects an owned toolset's
+  `get_instructions()`. Model-facing behaviour is **identical** (the same
+  conventions block reaches the system prompt, exactly once), but two direct-call
+  surfaces changed:
+  - `SpecCapability.get_instructions()` now returns `None` (the toolset provides
+    the text). Read `capability.get_toolset().get_instructions(ctx)` if you need
+    it programmatically.
+  - `SpecCapability.from_toolset()` **no longer accepts `instructions=`** — set
+    the override on the `SpecToolset` (`SpecToolset(..., instructions=...)`)
+    before wrapping. The `SpecCapability(specs, instructions=...)` ctor still
+    accepts it and forwards it to the toolset it builds.
+
 ## [0.5.0] — 2026-07-13
 
 ### Added
@@ -185,7 +212,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.3.1...v0.3.2
