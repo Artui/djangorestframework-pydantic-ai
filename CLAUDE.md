@@ -120,7 +120,7 @@ checker. Use `# ty: ignore[<rule>]`, not the mypy-style comment.
 | Django | 4.2 | 6.0 |
 | DRF | 3.14 | latest |
 | drf-services | 0.23 | 0.24.x |
-| Pydantic-AI | 1.0 (`pydantic-ai-slim`) | latest |
+| Pydantic-AI | 2.0 (`pydantic-ai-slim`) | latest |
 
 `from __future__ import annotations` at the top of every `.py` with annotations.
 
