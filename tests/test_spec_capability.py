@@ -10,12 +10,7 @@ from rest_framework_services import (
 )
 
 from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecCapability, SpecToolset
-from rest_framework_pydantic_ai.spec_capability import (
-    _BASE_INSTRUCTIONS,
-    _LIST_INSTRUCTION,
-    _derive_instructions,
-    _is_list_selector,
-)
+from rest_framework_pydantic_ai.spec_toolset import _BASE_INSTRUCTIONS, _LIST_INSTRUCTION
 from tests.testapp.models import Widget
 from tests.testapp.serializers import WidgetSerializer
 
@@ -76,48 +71,22 @@ def test_id_defaults_and_forwards():
     assert cap.get_toolset().id == "orders"
 
 
-# --- get_instructions --------------------------------------------------------
+# --- instructions delegation -------------------------------------------------
+#
+# The conventions live on the toolset's ``get_instructions`` (see
+# ``test_spec_toolset``); the capability deliberately does *not* re-emit them —
+# Pydantic-AI collects the owned toolset's instructions, so overriding here would
+# duplicate them in the prompt (see the agent-run guard below).
 
 
-def test_instructions_always_carry_the_error_contract():
-    instr = SpecCapability({"go": ping_spec()}).get_instructions()
-    assert instr is not None
-    assert _BASE_INSTRUCTIONS in instr
-    assert '{"error"' in instr
-    assert "unknown arguments are rejected" in instr
+def test_capability_does_not_emit_its_own_instructions():
+    # Inherits ``AbstractCapability.get_instructions`` → ``None`` (delegates).
+    assert SpecCapability({"list": list_spec()}).get_instructions() is None
 
 
-def test_pagination_line_present_only_with_a_list_selector():
-    with_list = SpecCapability({"list": list_spec()}).get_instructions()
-    assert _LIST_INSTRUCTION in with_list
-
-    # A retrieve selector is a SelectorSpec but not LIST — no pagination line.
-    retrieve_only = SpecCapability({"get": retrieve_spec()}).get_instructions()
-    assert _LIST_INSTRUCTION not in retrieve_only
-
-    # A service spec is not a SelectorSpec at all — no pagination line.
-    service_only = SpecCapability({"go": ping_spec()}).get_instructions()
-    assert _LIST_INSTRUCTION not in service_only
-
-
-def test_read_shaping_line_lists_declared_query_params_sorted():
-    cap = SpecCapability(
-        {"list": list_spec()},
-        query_params=[QueryParam("query"), QueryParam("fields")],
-    )
-    instr = cap.get_instructions()
-    assert instr is not None
-    assert "read-shaping parameters (`fields`, `query`)" in instr
-
-
-def test_read_shaping_line_absent_without_query_params():
-    instr = SpecCapability({"list": list_spec()}).get_instructions()
-    assert "read-shaping parameters" not in instr
-
-
-def test_instructions_override_wins_verbatim():
+async def test_instructions_override_forwards_to_the_toolset():
     cap = SpecCapability({"list": list_spec()}, instructions="just do it")
-    assert cap.get_instructions() == "just do it"
+    assert await cap.get_toolset().get_instructions(None) == "just do it"
 
 
 # --- defer_loading -----------------------------------------------------------
@@ -134,46 +103,24 @@ def test_defer_loading_defaults_off_and_is_settable():
 # --- from_toolset ------------------------------------------------------------
 
 
-def test_from_toolset_wraps_a_prebuilt_toolset_with_matching_behaviour():
+def test_from_toolset_wraps_a_prebuilt_toolset():
     toolset = SpecToolset({"list": list_spec()}, id="orders", query_params=[QueryParam("query")])
     cap = SpecCapability.from_toolset(toolset)
     assert cap.get_toolset() is toolset
     assert cap.id == "orders"
-    # Same specs / query params in → same derived instructions as the direct ctor.
-    assert (
-        cap.get_instructions()
-        == SpecCapability(
-            {"list": list_spec()}, id="orders", query_params=[QueryParam("query")]
-        ).get_instructions()
-    )
 
 
-def test_from_toolset_honours_instructions_override_and_defer_loading():
+def test_from_toolset_honours_defer_loading():
     toolset = SpecToolset({"go": ping_spec()})
-    cap = SpecCapability.from_toolset(toolset, instructions="x", defer_loading=True)
-    assert cap.get_instructions() == "x"
+    cap = SpecCapability.from_toolset(toolset, defer_loading=True)
     assert cap.defer_loading is True
-
-
-# --- helpers -----------------------------------------------------------------
-
-
-def test_is_list_selector():
-    assert _is_list_selector(list_spec()) is True
-    assert _is_list_selector(retrieve_spec()) is False
-    assert _is_list_selector(ping_spec()) is False
-
-
-def test_derive_instructions_matches_the_public_surface():
-    toolset = SpecToolset({"list": list_spec()})
-    assert _derive_instructions(toolset) == SpecCapability({"list": list_spec()}).get_instructions()
 
 
 # --- agent-run integration ---------------------------------------------------
 #
 # Drive a real ``Agent`` run loop (FunctionModel — no provider, no network)
 # through the *capability* path: the wrapped toolset's tools execute in-process,
-# and the capability's instructions reach the model's request.
+# and its instructions reach the model's request exactly once.
 
 
 async def test_capability_executes_its_tool_in_process():
@@ -199,7 +146,7 @@ async def test_capability_executes_its_tool_in_process():
     assert seen["user"] == "alice"
 
 
-async def test_capability_instructions_reach_the_model():
+async def test_capability_instructions_reach_the_model_exactly_once():
     captured = {}
 
     def model_fn(messages, info):
@@ -213,6 +160,8 @@ async def test_capability_instructions_reach_the_model():
     )
     result = await agent.run("go", deps=AgentDeps(user="alice"))
     assert result.output == "done"
-    assert captured["instructions"] is not None
-    assert "business-rule failure" in captured["instructions"]
-    assert _LIST_INSTRUCTION in captured["instructions"]
+    instr = captured["instructions"]
+    assert instr is not None
+    assert _LIST_INSTRUCTION in instr
+    # The conventions come from the toolset only — not doubled by the capability.
+    assert instr.count(_BASE_INSTRUCTIONS) == 1

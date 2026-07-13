@@ -170,6 +170,10 @@ class SpecToolset(AbstractToolset[Any]):
     field) is fed back to the model before the run aborts with
     ``UnexpectedModelBehavior``. Defaults to ``1``, matching pydantic-ai's own
     function-tool default.
+
+    ``instructions`` overrides the auto-derived conventions block that
+    :meth:`get_instructions` teaches the model (pagination + error contract);
+    pass a string to replace it, or leave it ``None`` to derive from the specs.
     """
 
     def __init__(
@@ -177,6 +181,7 @@ class SpecToolset(AbstractToolset[Any]):
         specs: Mapping[str, Spec],
         *,
         id: str = "drf-specs",
+        instructions: str | None = None,
         get_user: UserExtractor | None = None,
         unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
         query_params: Sequence[QueryParam] = (),
@@ -186,6 +191,7 @@ class SpecToolset(AbstractToolset[Any]):
         _validate_tool_names(specs)
         _validate_query_params(query_params, tool_query_params, specs)
         self._id = id
+        self._instructions_override = instructions
         self._specs: dict[str, Spec] = dict(specs)
         self._get_user: UserExtractor = get_user or _default_get_user
         self._unknown_arguments: UnknownArguments = unknown_arguments
@@ -218,6 +224,28 @@ class SpecToolset(AbstractToolset[Any]):
             )
             for name, tool_def in self._tool_defs.items()
         }
+
+    async def get_instructions(self, ctx: RunContext[Any]) -> str | None:
+        """Teach the model this toolset's conventions.
+
+        The per-tool descriptions and parameter schemas say what each tool *is*,
+        but not how the family behaves: that list tools accept ``page`` /
+        ``limit`` / ``order``, that a business failure comes back as a readable
+        ``{"error": …}`` result (a final answer, not a reason to retry) while a
+        bad argument comes back as a retry request, and that a permission error
+        is final. Pydantic-AI appends this block to the system prompt each turn —
+        for a toolset attached directly *or* wrapped by a capability — so the
+        model doesn't rediscover the conventions by failing a call.
+
+        Returns the ``instructions`` override when one was given, else a block
+        derived from the specs: the pagination line appears only when a list
+        selector is present, and the read-shaping line only when some
+        ``QueryParam`` is declared, keeping the prompt free of advice that can't
+        fire.
+        """
+        if self._instructions_override is not None:
+            return self._instructions_override
+        return _derive_instructions(self._specs, self._tool_query_params)
 
     async def call_tool(
         self,
@@ -286,6 +314,52 @@ def _merge_query_params(
 def _default_get_user(ctx: RunContext[Any]) -> Any:
     """Read the acting user off ``ctx.deps.user`` (the ``AgentDeps`` default)."""
     return ctx.deps.user
+
+
+# The conventions block :meth:`SpecToolset.get_instructions` teaches the model.
+# Kept out of per-tool descriptions because they describe the *family*'s behaviour
+# (the error contract, pagination) rather than any one tool.
+_BASE_INSTRUCTIONS = (
+    "The following tools call Django REST Framework services and selectors.\n"
+    "- A successful call returns the tool's data. A business-rule failure returns a JSON "
+    'object like {"error": "..."} — that is a final answer explaining why the operation '
+    "could not complete; read it and report it, do not retry the same call.\n"
+    "- An invalid or missing argument comes back as a retry request naming the problem; "
+    "correct the argument and call again.\n"
+    "- A permission error is final: the current user may not perform that call — do not "
+    "retry it.\n"
+    "- Only pass documented parameters; unknown arguments are rejected."
+)
+
+_LIST_INSTRUCTION = (
+    "- Read-only tools that return a collection accept optional `page`, `limit`, and "
+    "`order`: `limit` caps the number of items, `page` (1-based, requires `limit`) selects "
+    "the page, and `order` is a comma-separated list of fields (prefix a field with `-` for "
+    "descending)."
+)
+
+
+def _derive_instructions(
+    specs: Mapping[str, Spec],
+    tool_query_params: Mapping[str, Sequence[QueryParam]],
+) -> str:
+    """Build the conventions block from the specs / query params.
+
+    The pagination line appears only when a list selector is present and the
+    read-shaping line only when some ``QueryParam`` is declared, so the system
+    prompt never carries advice that can't fire.
+    """
+    lines = [_BASE_INSTRUCTIONS]
+    if any(_is_list_selector(spec) for spec in specs.values()):
+        lines.append(_LIST_INSTRUCTION)
+    query_param_names = sorted({qp.name for params in tool_query_params.values() for qp in params})
+    if query_param_names:
+        joined = ", ".join(f"`{name}`" for name in query_param_names)
+        lines.append(
+            f"- Some tools accept read-shaping parameters ({joined}) that adjust the shape "
+            "of the returned data without filtering it."
+        )
+    return "\n".join(lines)
 
 
 def _build_tool_def(
