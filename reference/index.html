@@ -398,6 +398,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#speccapability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SpecCapability
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecCapability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SpecCapability
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="SpecCapability">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecCapability.from_toolset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        from_toolset
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#queryparam" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -515,6 +554,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#speccapability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SpecCapability
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecCapability" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SpecCapability
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="SpecCapability">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecCapability.from_toolset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        from_toolset
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#queryparam" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -601,7 +679,7 @@
 
 
 <h1 id="reference">Reference<a class="headerlink" href="#reference" title="Permanent link">&para;</a></h1>
-<p>The public API is three symbols, all importable from the package root.</p>
+<p>The public API is four symbols, all importable from the package root.</p>
 <h2 id="spectoolset"><code>SpecToolset</code><a class="headerlink" href="#spectoolset" title="Permanent link">&para;</a></h2>
 
 
@@ -686,6 +764,115 @@ function-tool default.</p>
 
 
 
+
+
+
+  </div>
+
+    </div>
+
+</div><h2 id="speccapability"><code>SpecCapability</code><a class="headerlink" href="#speccapability" title="Permanent link">&para;</a></h2>
+
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="rest_framework_pydantic_ai.SpecCapability" class="doc doc-heading">
+            <span class="doc doc-object-name doc-class-name">SpecCapability</span>
+
+
+<a href="#rest_framework_pydantic_ai.SpecCapability" class="headerlink" title="Permanent link">&para;</a></h2>
+
+
+    <div class="doc doc-contents first">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="pydantic_ai.capabilities.AbstractCapability">AbstractCapability</span>[<span title="typing.Any">Any</span>]</code></p>
+
+
+
+        <p>A Pydantic-AI capability exposing drf-services specs as tools <em>and</em> teaching
+the model the conventions <code>SpecToolset</code> alone leaves in human docs.</p>
+<p>:class:<code>~rest_framework_pydantic_ai.SpecToolset</code> ships the tools but says
+nothing to the model about how they behave: that list tools accept <code>page</code> /
+<code>limit</code> / <code>order</code>, that a business failure comes back as a readable
+<code>{"error": …}</code> result (a final answer, not a reason to retry) while a bad
+argument comes back as a retry request, or that a permission error is final.
+<code>SpecCapability</code> wraps the toolset and carries those conventions to the model
+through <code>get_instructions()</code> — the system prompt Pydantic-AI appends each
+turn — so the model doesn't rediscover them by failing a call.</p>
+<p>Construct it the same way as <code>SpecToolset</code> (it forwards the toolset knobs)::</p>
+<div class="language-text highlight"><pre><span></span><code>agent = Agent(
+    model,
+    deps_type=AgentDeps,
+    capabilities=[SpecCapability({
+        &quot;list_orders&quot;: orders_selector_spec,   # SelectorSpec -&gt; read-only tool
+        &quot;create_order&quot;: create_order_spec,     # ServiceSpec  -&gt; mutation tool
+    })],
+)
+</code></pre></div>
+<p>or wrap an already-built toolset with :meth:<code>from_toolset</code>. Either way the
+exposed tool set is identical to the toolset's; only the instructions are added.</p>
+<p><code>instructions</code> overrides the auto-derived conventions text. <code>defer_loading</code>
+(which needs the stable <code>id</code>) hides the whole spec toolset and its
+instructions behind Pydantic-AI's native <code>load_capability</code> tool until the
+model loads it — progressive disclosure for a large spec map. The remaining
+keywords (<code>get_user</code> / <code>unknown_arguments</code> / <code>query_params</code> /
+<code>tool_query_params</code> / <code>max_retries</code>) are forwarded verbatim to the
+<code>SpecToolset</code> it builds; see there for their semantics.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="rest_framework_pydantic_ai.SpecCapability.from_toolset" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">from_toolset</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#rest_framework_pydantic_ai.SpecCapability.from_toolset" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_toolset</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">toolset</span><span class="p">:</span> <span class="n">SpecToolset</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">defer_loading</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">instructions</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SpecCapability</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Wrap an already-built :class:<code>SpecToolset</code> (the compose path).</p>
+<p>The capability adopts the toolset's <code>id</code> and derives its instructions
+from the same specs, so <code>SpecCapability.from_toolset(ts)</code> and
+<code>SpecCapability(specs, …)</code> produce the same model-facing behaviour.</p>
+
+
+    </div>
+
+</div>
 
 
 
