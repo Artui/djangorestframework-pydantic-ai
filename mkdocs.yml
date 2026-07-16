@@ -71,4 +71,5 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Polymorphic actions: polymorphic-actions.md
   - Reference: reference.md

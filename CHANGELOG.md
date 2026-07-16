@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-07-16
+
+### Changed
+
+- Raise the `djangorestframework-services` ceiling from `<0.25` to `<0.26`
+  (floor unchanged at `>=0.23`) so the toolset installs alongside drf-services
+  0.25.x. 0.25.0 is additive for this adapter; the one relevant change is the
+  bugfix giving `collection_selector_spec` selectors the view's URL kwargs on
+  the bulk path, which flows through `dispatch_spec` automatically. Tested
+  ceiling raised to 0.25.x.
+
+### Added
+
+- Docs: [Polymorphic actions as tools](polymorphic-actions.md) — expand a
+  drf-services 0.25 `PolymorphicServiceSpec` into one flat tool per variant
+  rather than handing `SpecToolset` a union tool.
+
 ## [0.6.0] — 2026-07-13
 
 ### Added
@@ -212,7 +229,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.3.2...v0.4.0
