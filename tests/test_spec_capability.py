@@ -9,7 +9,7 @@ from rest_framework_services import (
     ServiceSpec,
 )
 
-from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecCapability, SpecToolset
+from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecCapability, SpecToolset, UrlKwarg
 from rest_framework_pydantic_ai.spec_toolset import _BASE_INSTRUCTIONS, _LIST_INSTRUCTION
 from tests.testapp.models import Widget
 from tests.testapp.serializers import WidgetSerializer
@@ -114,6 +114,12 @@ def test_from_toolset_honours_defer_loading():
     toolset = SpecToolset({"go": ping_spec()})
     cap = SpecCapability.from_toolset(toolset, defer_loading=True)
     assert cap.defer_loading is True
+
+
+async def test_url_kwargs_forward_to_the_built_toolset():
+    cap = SpecCapability({"list": list_spec()}, url_kwargs=[UrlKwarg("parent_pk")])
+    tools = await cap.get_toolset().get_tools(None)
+    assert "parent_pk" in tools["list"].tool_def.parameters_json_schema["properties"]
 
 
 # --- agent-run integration ---------------------------------------------------

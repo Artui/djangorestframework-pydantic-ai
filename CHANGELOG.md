@@ -6,6 +6,39 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-24
+
+### Added
+
+- **`UrlKwarg` — expose a URL route capture as a tool arg.** The off-HTTP
+  counterpart of a nested route's URL captures (the `project_pk` of
+  `/projects/{project_pk}/widgets/`). Register them on `SpecToolset` /
+  `SpecCapability` toolset-wide (`url_kwargs=`) or per-tool
+  (`tool_url_kwargs=`), the same shape as `QueryParam` / `tool_query_params`.
+  Each is advertised as a tool arg, then popped at call time and seeded into
+  `build_offline_context(kwargs=…)` — from where drf-services spreads it into
+  the selector / target pools, authoritative over the spec `params` and below a
+  `spec.kwargs` provider (mirroring HTTP's `extra_url_kwargs=view.kwargs`
+  precedence). Because it is popped, it never reaches the spec as an ordinary
+  input, so `unknown_arguments` never flags it — which is what makes the
+  provider-read case work: a value a scoping `spec.kwargs` provider reads off
+  `view.kwargs` (a tenant/role lookup keyed on `project_pk`), which ordinary
+  `params` cannot deliver. A selector that reads the value from its
+  `**extras: Unpack[TypedDict]` needs no `UrlKwarg` (drf-services reflects the
+  key and delivers it through `params`), but a key may be **both** reflected and
+  `UrlKwarg`-registered — the explicit `UrlKwarg` schema wins the merge, and the
+  authoritative `kwargs=` spread still reaches the selector. Names can't be
+  `page` / `limit` / `order`, nor be registered as both a `QueryParam` and a
+  `UrlKwarg` on the same tool.
+
+### Changed
+
+- **Raise the `djangorestframework-services` floor from `>=0.23` to `>=0.26`**
+  (ceiling `<0.26` → `<0.27`). `UrlKwarg` relies on drf-services 0.26 spreading
+  the off-HTTP view's `kwargs` into the dispatch pools (and reflecting a
+  selector's `Unpack[TypedDict]` extras into the tool schema), so the floor
+  moves up with the feature. Tested ceiling raised to 0.26.x.
+
 ## [0.6.1] — 2026-07-16
 
 ### Changed
@@ -229,7 +262,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.4.0...v0.5.0

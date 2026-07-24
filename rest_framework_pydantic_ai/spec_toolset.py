@@ -67,12 +67,13 @@ from rest_framework_services import (
 )
 
 from rest_framework_pydantic_ai.types.query_param import QueryParam
+from rest_framework_pydantic_ai.types.url_kwarg import UrlKwarg
 
 Spec = ServiceSpec[Any, Any, Any] | SelectorSpec[Any, Any]
 UserExtractor = Callable[[RunContext[Any]], Any]
 
-# List-selector pagination args own these names; a registered ``QueryParam`` may
-# not shadow them.
+# List-selector pagination args own these names; a registered ``QueryParam`` or
+# ``UrlKwarg`` may not shadow them.
 _RESERVED_PARAM_NAMES = frozenset({"page", "limit", "order"})
 
 # Tool names are surfaced verbatim to the model provider, which constrains them
@@ -165,6 +166,22 @@ class SpecToolset(AbstractToolset[Any]):
     through as ordinary ``params`` (which ``dispatch_spec`` hands the FilterSet as
     ``filter_data``), so the model can filter with no extra declaration.
 
+    ``url_kwargs`` / ``tool_url_kwargs`` register
+    :class:`~rest_framework_pydantic_ai.UrlKwarg` args — URL route captures
+    (``parent_pk``) seeded into ``build_offline_context(kwargs=…)`` and spread by
+    drf-services into the selector / target pools, authoritative over ``params``.
+    Same shape as ``query_params`` / ``tool_query_params`` (toolset-wide + per-tool,
+    per-tool overriding by name), advertised as a tool arg then popped at call
+    time. Use them for a URL-derived value **not** already in the tool schema — a
+    scoping ``spec.kwargs`` provider that reads ``view.kwargs`` (the case
+    ``params`` alone cannot cover), or a closed-surface route capture. A selector
+    that reads the value from its ``**extras: Unpack[TypedDict]`` needs none —
+    drf-services reflects the key and delivers it through ``params`` — though a
+    key may be *both* reflected and ``UrlKwarg``-registered (the ``UrlKwarg``
+    schema wins, and the authoritative ``kwargs=`` spread still reaches the
+    selector). A name cannot be both a ``QueryParam`` and a ``UrlKwarg`` on the
+    same tool (a value cannot route to two channels).
+
     ``max_retries`` is each tool's retry budget: how many times a
     :class:`pydantic_ai.ModelRetry` (a validation failure, a bad ``order``
     field) is fed back to the model before the run aborts with
@@ -186,10 +203,13 @@ class SpecToolset(AbstractToolset[Any]):
         unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
         query_params: Sequence[QueryParam] = (),
         tool_query_params: Mapping[str, Sequence[QueryParam]] | None = None,
+        url_kwargs: Sequence[UrlKwarg] = (),
+        tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None = None,
         max_retries: int = 1,
     ) -> None:
         _validate_tool_names(specs)
         _validate_query_params(query_params, tool_query_params, specs)
+        _validate_url_kwargs(url_kwargs, tool_url_kwargs, specs)
         self._id = id
         self._instructions_override = instructions
         self._specs: dict[str, Spec] = dict(specs)
@@ -202,11 +222,19 @@ class SpecToolset(AbstractToolset[Any]):
             name: _merge_query_params(query_params, (tool_query_params or {}).get(name, ()))
             for name in self._specs
         }
+        # Same shape for URL kwargs (the ``kwargs=`` channel).
+        self._tool_url_kwargs: dict[str, tuple[UrlKwarg, ...]] = {
+            name: _merge_url_kwargs(url_kwargs, (tool_url_kwargs or {}).get(name, ()))
+            for name in self._specs
+        }
+        _validate_no_param_channel_overlap(self._tool_query_params, self._tool_url_kwargs)
         # Schemas derive purely from the specs (no DB), so the tool defs are
         # built once up front. ``ToolDefinition`` defaults to ``kind="function"``
         # — the in-process kind the run loop routes into ``call_tool``.
         self._tool_defs: dict[str, ToolDefinition] = {
-            name: _build_tool_def(name, spec, self._tool_query_params[name])
+            name: _build_tool_def(
+                name, spec, self._tool_query_params[name], self._tool_url_kwargs[name]
+            )
             for name, spec in self._specs.items()
         }
 
@@ -266,6 +294,7 @@ class SpecToolset(AbstractToolset[Any]):
             dict(tool_args),
             unknown_arguments=self._unknown_arguments,
             query_params=self._tool_query_params[name],
+            url_kwargs=self._tool_url_kwargs[name],
         )
 
 
@@ -309,6 +338,59 @@ def _merge_query_params(
     for qp in per_tool:
         merged[qp.name] = qp
     return tuple(merged.values())
+
+
+def _validate_url_kwargs(
+    url_kwargs: Sequence[UrlKwarg],
+    tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None,
+    specs: Mapping[str, Spec],
+) -> None:
+    """Fail fast on an unknown per-tool key or a reserved URL-kwarg name."""
+    declared = list(url_kwargs)
+    for tool_name, kwargs in (tool_url_kwargs or {}).items():
+        if tool_name not in specs:
+            raise ValueError(
+                f"tool_url_kwargs references unknown tool {tool_name!r}; "
+                f"known tools: {sorted(specs)}."
+            )
+        declared.extend(kwargs)
+    reserved = sorted({uk.name for uk in declared} & _RESERVED_PARAM_NAMES)
+    if reserved:
+        raise ValueError(
+            f"UrlKwarg name(s) {reserved} are reserved for list-selector "
+            "pagination (page / limit / order)."
+        )
+
+
+def _merge_url_kwargs(
+    toolset_wide: Sequence[UrlKwarg], per_tool: Sequence[UrlKwarg]
+) -> tuple[UrlKwarg, ...]:
+    """Toolset-wide kwargs, then per-tool overriding by name (per-tool wins)."""
+    merged: dict[str, UrlKwarg] = {uk.name: uk for uk in toolset_wide}
+    for uk in per_tool:
+        merged[uk.name] = uk
+    return tuple(merged.values())
+
+
+def _validate_no_param_channel_overlap(
+    tool_query_params: Mapping[str, Sequence[QueryParam]],
+    tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]],
+) -> None:
+    """Fail fast when a name is both a QueryParam and a UrlKwarg on one tool.
+
+    Both channels pop the arg at call time, so a shared name would route to only
+    one of ``query_params=`` / ``kwargs=`` (whichever pops first) — an ambiguity
+    the caller must resolve, not the toolset.
+    """
+    for tool_name, query_params in tool_query_params.items():
+        clash = sorted(
+            {qp.name for qp in query_params} & {uk.name for uk in tool_url_kwargs[tool_name]}
+        )
+        if clash:
+            raise ValueError(
+                f"name(s) {clash} are registered as both a QueryParam and a UrlKwarg on "
+                f"tool {tool_name!r}; a value cannot route to two channels."
+            )
 
 
 def _default_get_user(ctx: RunContext[Any]) -> Any:
@@ -363,12 +445,15 @@ def _derive_instructions(
 
 
 def _build_tool_def(
-    name: str, spec: Spec, query_params: Sequence[QueryParam] = ()
+    name: str,
+    spec: Spec,
+    query_params: Sequence[QueryParam] = (),
+    url_kwargs: Sequence[UrlKwarg] = (),
 ) -> ToolDefinition:
     return ToolDefinition(
         name=name,
         description=_spec_description(spec),
-        parameters_json_schema=_input_schema(spec, query_params),
+        parameters_json_schema=_input_schema(spec, query_params, url_kwargs),
         metadata={"annotations": {"readOnlyHint": isinstance(spec, SelectorSpec)}},
     )
 
@@ -379,18 +464,27 @@ def _spec_description(spec: Spec) -> str | None:
     return inspect.getdoc(callable_) if callable_ is not None else None
 
 
-def _input_schema(spec: Spec, query_params: Sequence[QueryParam] = ()) -> dict[str, Any]:
+def _input_schema(
+    spec: Spec,
+    query_params: Sequence[QueryParam] = (),
+    url_kwargs: Sequence[UrlKwarg] = (),
+) -> dict[str, Any]:
     """The tool's parameter schema, with list-selector pagination + registered
-    query params merged into ``properties``.
+    query params + URL kwargs merged into ``properties``.
 
     ``spec_to_json_schema(phase="input")`` always returns a dict (only the
     output phase is nullable), so the result is narrowed for the type-checker.
+    The registered declarations are merged **over** the reflected properties, so
+    an explicit ``UrlKwarg`` for a key drf-services already reflected (from a
+    selector's ``Unpack[TypedDict]``) wins — it is the intentional one. The
+    reflected ``required`` list is preserved untouched.
     """
     schema = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input"))
     extra: dict[str, Any] = {}
     if _is_list_selector(spec):
         extra.update(_LIST_PARAM_SCHEMA)
     extra.update({qp.name: qp.json_schema() for qp in query_params})
+    extra.update({uk.name: uk.json_schema() for uk in url_kwargs})
     if not extra:
         return schema
     return {
@@ -411,6 +505,7 @@ def _call_spec(
     *,
     unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
     query_params: Sequence[QueryParam] = (),
+    url_kwargs: Sequence[UrlKwarg] = (),
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
 
@@ -424,7 +519,18 @@ def _call_spec(
     # args as ``filter_data``). Popped first so they never reach the spec as
     # inputs, so ``unknown_arguments`` (REJECT by default) can't flag them.
     query_param_values = _pop_query_params(query_params, args)
-    context = build_offline_context(user, args, query_params=query_param_values or None)
+    # Pop the registered URL kwargs into the off-HTTP view's ``kwargs`` (from
+    # where drf-services spreads them into the selector / target pools). Popping
+    # them out of the spec args is what makes the provider-only case work: a
+    # ``project_pk`` a scoping provider reads off ``view.kwargs`` (never a spec
+    # input) would otherwise be flagged by ``unknown_arguments``.
+    url_kwarg_values = _pop_url_kwargs(url_kwargs, args)
+    context = build_offline_context(
+        user,
+        args,
+        kwargs=url_kwarg_values or None,
+        query_params=query_param_values or None,
+    )
     # Two-layer authorization, mirroring a DRF view: the upfront call runs the
     # class-level ``has_permission`` (covers create / list-payload targets), and
     # the ``on_target_resolved`` hook runs ``has_object_permission`` on the
@@ -505,6 +611,22 @@ def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) 
             values[query_param.name] = args.pop(query_param.name)
         elif query_param.default is not None:
             values[query_param.name] = query_param.default
+    return values
+
+
+def _pop_url_kwargs(url_kwargs: Sequence[UrlKwarg], args: dict[str, Any]) -> dict[str, Any]:
+    """Strip the registered URL kwargs from ``args`` into a plain ``dict``.
+
+    A declared kwarg the model supplied is popped; one it omitted contributes its
+    ``default`` if set, else nothing. The result is handed to
+    ``build_offline_context(kwargs=…)``.
+    """
+    values: dict[str, Any] = {}
+    for url_kwarg in url_kwargs:
+        if url_kwarg.name in args:
+            values[url_kwarg.name] = args.pop(url_kwarg.name)
+        elif url_kwarg.default is not None:
+            values[url_kwarg.name] = url_kwarg.default
     return values
 
 

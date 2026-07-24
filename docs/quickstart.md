@@ -128,6 +128,50 @@ it; a declared `default` is seeded when the model omits the arg. (Names can't be
 Requires `djangorestframework-services>=0.23`, which added the
 `build_offline_context(query_params=…)` seam.
 
+## URL-derived values (route captures)
+
+Over HTTP a nested route (`/projects/{project_pk}/widgets/`) supplies
+`project_pk` from the URL, and a selector reads it from `view.kwargs` — directly,
+or through a `spec.kwargs` provider that scopes by it (a tenant/role lookup). Off
+the HTTP path there is no route, so register the value with
+[`UrlKwarg`](reference.md#rest_framework_pydantic_ai.UrlKwarg). It is advertised
+as a tool arg, then popped and seeded into `build_offline_context(kwargs=…)`,
+from where drf-services spreads it into the selector / target pools —
+authoritative over the spec `params`, below a `spec.kwargs` provider (mirroring
+HTTP precedence exactly).
+
+```python
+from rest_framework_pydantic_ai import UrlKwarg
+
+toolset = SpecToolset(
+    specs,
+    url_kwargs=[UrlKwarg("project_pk", type="integer", description="owning project")],
+    # or scope to one tool: tool_url_kwargs={"list_widgets": [UrlKwarg("project_pk")]}
+)
+```
+
+Reach for `UrlKwarg` when the value is **not** already in the tool schema:
+
+- a scoping `spec.kwargs` provider that reads `view.kwargs` — the case ordinary
+  `params` cannot cover, because the provider reads `view.kwargs`, not `params`;
+- a closed-surface spec whose route capture must be model-suppliable.
+
+!!! note "You don't need this when the selector reads it from `**extras`"
+    A selector typed `def list_widgets(user, **extras: Unpack[WidgetExtras])`
+    that reads `extras["project_pk"]` already has that key reflected into the
+    tool schema by drf-services (0.26+), delivered through `params` — no
+    `UrlKwarg` needed. A key can still be **both** reflected *and*
+    `UrlKwarg`-registered (a `project_pk` the selector reads *and* a scoping
+    provider reads off `view.kwargs`): the explicit `UrlKwarg` schema wins the
+    merge, and the authoritative `kwargs=` spread still reaches the selector.
+
+Like `QueryParam`, a registered kwarg is popped before dispatch (so
+`unknown_arguments` never flags it) and its `default` is seeded when the model
+omits it. A name can't be `page` / `limit` / `order`, nor be registered as both a
+`QueryParam` and a `UrlKwarg` on the same tool. Requires
+`djangorestframework-services>=0.26`, which delivers view `kwargs` into the
+off-HTTP dispatch pools.
+
 ## Error handling
 
 The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:

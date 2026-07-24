@@ -19,8 +19,9 @@ from rest_framework_services import (
     ServiceValidationError,
     UnknownArguments,
 )
+from typing_extensions import TypedDict, Unpack
 
-from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset
+from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset, UrlKwarg
 from rest_framework_pydantic_ai.spec_toolset import (
     _BASE_INSTRUCTIONS,
     _LIST_INSTRUCTION,
@@ -777,3 +778,200 @@ def test_filter_set_filters_via_ordinary_params_not_query_params():
     # as filter_data. No QueryParam involved.
     result = _call_spec(_filtered_list_spec(), user, {"min_price": "5"})
     assert [w["name"] for w in result] == ["pricey"]
+
+
+# --- UrlKwarg registration ---------------------------------------------------
+
+
+async def test_toolset_wide_url_kwargs_appear_in_every_tool_schema():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "get_widget": retrieve_spec()},
+        url_kwargs=[UrlKwarg("project_pk", type="integer", description="owning project")],
+    )
+    tools = await toolset.get_tools(None)
+    for name in ("list_widgets", "get_widget"):
+        props = tools[name].tool_def.parameters_json_schema["properties"]
+        assert props["project_pk"] == {"type": "integer", "description": "owning project"}
+
+
+async def test_per_tool_url_kwargs_only_apply_to_that_tool():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "get_widget": retrieve_spec()},
+        tool_url_kwargs={"list_widgets": [UrlKwarg("parent_pk")]},
+    )
+    tools = await toolset.get_tools(None)
+    assert "parent_pk" in tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    get_widget_props = tools["get_widget"].tool_def.parameters_json_schema.get("properties", {})
+    assert "parent_pk" not in get_widget_props
+
+
+async def test_per_tool_url_kwarg_overrides_toolset_wide_by_name():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()},
+        url_kwargs=[UrlKwarg("parent_pk", description="wide")],
+        tool_url_kwargs={"list_widgets": [UrlKwarg("parent_pk", description="specific")]},
+    )
+    tools = await toolset.get_tools(None)
+    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    assert props["parent_pk"]["description"] == "specific"
+
+
+async def test_url_kwarg_default_appears_in_schema():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()}, url_kwargs=[UrlKwarg("parent_pk", default="1")]
+    )
+    tools = await toolset.get_tools(None)
+    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    assert props["parent_pk"]["default"] == "1"
+
+
+def test_reserved_url_kwarg_name_is_rejected():
+    with pytest.raises(ValueError, match="reserved"):
+        SpecToolset({"list_widgets": list_spec()}, url_kwargs=[UrlKwarg("order")])
+
+
+def test_reserved_per_tool_url_kwarg_name_is_rejected():
+    with pytest.raises(ValueError, match="reserved"):
+        SpecToolset(
+            {"list_widgets": list_spec()},
+            tool_url_kwargs={"list_widgets": [UrlKwarg("limit")]},
+        )
+
+
+def test_unknown_per_tool_url_kwarg_key_is_rejected():
+    with pytest.raises(ValueError, match="unknown tool"):
+        SpecToolset(
+            {"list_widgets": list_spec()},
+            tool_url_kwargs={"nope": [UrlKwarg("parent_pk")]},
+        )
+
+
+def test_name_registered_as_both_query_param_and_url_kwarg_is_rejected():
+    with pytest.raises(ValueError, match="two channels"):
+        SpecToolset(
+            {"list_widgets": list_spec()},
+            query_params=[QueryParam("scope")],
+            url_kwargs=[UrlKwarg("scope")],
+        )
+
+
+def _ceiling_from_project(view):
+    """Scoping provider: derive a price ceiling from the URL's ``project_pk``.
+
+    Stands in for the consumer's ``team_role`` fallback that reads
+    ``view.kwargs["project_pk"]`` — a value that lives only on the transport.
+    """
+    pk = view.kwargs.get("project_pk")
+    return {"ceiling": int(pk) if pk is not None else 0}
+
+
+def list_under_ceiling(user, ceiling):
+    """List the user's widgets priced at or below the project's ceiling."""
+    return Widget.objects.filter(owner=user, price__lte=ceiling)
+
+
+def _provider_scoped_spec():
+    # ``project_pk`` is consumed by the provider off ``view.kwargs`` — the
+    # selector never declares it, so it is a pure provider-read (not a spec input).
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_under_ceiling,
+        output_serializer=WidgetSerializer,
+        kwargs=_ceiling_from_project,
+    )
+
+
+@pytest.mark.django_db
+def test_url_kwarg_reaches_a_scoping_provider_via_view_kwargs():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="cheap", price=5, owner=user)
+    Widget.objects.create(name="dear", price=15, owner=user)
+    result = _call_spec(
+        _provider_scoped_spec(),
+        user,
+        {"project_pk": "10"},
+        url_kwargs=(UrlKwarg("project_pk"),),
+    )
+    assert [w["name"] for w in result] == ["cheap"]
+
+
+@pytest.mark.django_db
+def test_url_kwarg_is_popped_before_dispatch_so_reject_ignores_it():
+    # The selector's declared set is closed and does not include ``project_pk``;
+    # left in params under REJECT it would raise. Popping it into ``kwargs=`` is
+    # what makes the provider-read case work.
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="cheap", price=5, owner=user)
+    result = _call_spec(
+        _provider_scoped_spec(),
+        user,
+        {"project_pk": "10"},
+        url_kwargs=(UrlKwarg("project_pk"),),
+        unknown_arguments=UnknownArguments.REJECT,
+    )
+    assert [w["name"] for w in result] == ["cheap"]
+
+
+@pytest.mark.django_db
+def test_url_kwarg_default_is_seeded_when_the_model_omits_it():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="cheap", price=5, owner=user)
+    Widget.objects.create(name="dear", price=15, owner=user)
+    result = _call_spec(
+        _provider_scoped_spec(),
+        user,
+        {},
+        url_kwargs=(UrlKwarg("project_pk", default="10"),),
+    )
+    assert [w["name"] for w in result] == ["cheap"]
+
+
+@pytest.mark.django_db
+def test_url_kwarg_omitted_without_default_seeds_nothing():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="cheap", price=5, owner=user)
+    # No project_pk, no default → view.kwargs empty → provider ceiling 0 → nothing.
+    result = _call_spec(_provider_scoped_spec(), user, {}, url_kwargs=(UrlKwarg("project_pk"),))
+    assert result == []
+
+
+class _ProjectExtras(TypedDict, total=False):
+    project_pk: int
+
+
+def list_in_project(user, **extras: Unpack[_ProjectExtras]):
+    """List the user's widgets in the given project (price ceiling as proxy)."""
+    pk = extras.get("project_pk")
+    qs = Widget.objects.filter(owner=user)
+    return qs.filter(price__lte=pk) if pk is not None else qs.none()
+
+
+def _dual_declared_spec():
+    return SelectorSpec(
+        kind=SelectorKind.LIST, selector=list_in_project, output_serializer=WidgetSerializer
+    )
+
+
+async def test_dual_declared_url_kwarg_schema_wins_over_reflected_property():
+    # ``project_pk`` is reflected by drf-services (the selector's Unpack extras)
+    # *and* registered as a UrlKwarg; the explicit UrlKwarg schema wins the merge.
+    toolset = SpecToolset(
+        {"list_in_project": _dual_declared_spec()},
+        url_kwargs=[UrlKwarg("project_pk", type="integer", description="the project")],
+    )
+    tools = await toolset.get_tools(None)
+    props = tools["list_in_project"].tool_def.parameters_json_schema["properties"]
+    assert props["project_pk"] == {"type": "integer", "description": "the project"}
+
+
+@pytest.mark.django_db
+def test_dual_declared_url_kwarg_delivers_to_the_selector_pool():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="cheap", price=5, owner=user)
+    Widget.objects.create(name="dear", price=15, owner=user)
+    # Popped from params into kwargs=, then drf-services' authoritative spread
+    # delivers it to the selector pool where the Unpack extras read it.
+    result = _call_spec(
+        _dual_declared_spec(), user, {"project_pk": 10}, url_kwargs=(UrlKwarg("project_pk"),)
+    )
+    assert [w["name"] for w in result] == ["cheap"]
