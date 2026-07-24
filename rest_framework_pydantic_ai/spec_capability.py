@@ -10,6 +10,7 @@ from rest_framework_services import UnknownArguments
 
 from rest_framework_pydantic_ai.spec_toolset import Spec, SpecToolset, UserExtractor
 from rest_framework_pydantic_ai.types.query_param import QueryParam
+from rest_framework_pydantic_ai.types.url_kwarg import UrlKwarg
 
 
 class SpecCapability(AbstractCapability[Any]):
@@ -45,8 +46,9 @@ class SpecCapability(AbstractCapability[Any]):
     Pydantic-AI's native ``load_capability`` tool until the model loads it —
     progressive disclosure for a large spec map. The remaining keywords
     (``get_user`` / ``unknown_arguments`` / ``query_params`` /
-    ``tool_query_params`` / ``max_retries``) are forwarded verbatim to the
-    ``SpecToolset`` it builds; see there for their semantics.
+    ``tool_query_params`` / ``url_kwargs`` / ``tool_url_kwargs`` /
+    ``max_retries``) are forwarded verbatim to the ``SpecToolset`` it builds; see
+    there for their semantics.
     """
 
     def __init__(
@@ -60,6 +62,8 @@ class SpecCapability(AbstractCapability[Any]):
         unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
         query_params: Sequence[QueryParam] = (),
         tool_query_params: Mapping[str, Sequence[QueryParam]] | None = None,
+        url_kwargs: Sequence[UrlKwarg] = (),
+        tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None = None,
         max_retries: int = 1,
     ) -> None:
         toolset = SpecToolset(
@@ -70,6 +74,8 @@ class SpecCapability(AbstractCapability[Any]):
             unknown_arguments=unknown_arguments,
             query_params=query_params,
             tool_query_params=tool_query_params,
+            url_kwargs=url_kwargs,
+            tool_url_kwargs=tool_url_kwargs,
             max_retries=max_retries,
         )
         self._configure(toolset, defer_loading=defer_loading)
