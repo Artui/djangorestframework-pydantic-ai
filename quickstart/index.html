@@ -417,6 +417,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#url-derived-values-route-captures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        URL-derived values (route captures)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#error-handling" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -582,6 +593,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#url-derived-values-route-captures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        URL-derived values (route captures)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#error-handling" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -721,6 +743,46 @@ it; a declared <code>default</code> is seeded when the model omits the arg. (Nam
 <code>page</code> / <code>limit</code> / <code>order</code> — those are reserved for list-selector pagination.)
 Requires <code>djangorestframework-services&gt;=0.23</code>, which added the
 <code>build_offline_context(query_params=…)</code> seam.</p>
+<h2 id="url-derived-values-route-captures">URL-derived values (route captures)<a class="headerlink" href="#url-derived-values-route-captures" title="Permanent link">&para;</a></h2>
+<p>Over HTTP a nested route (<code>/projects/{project_pk}/widgets/</code>) supplies
+<code>project_pk</code> from the URL, and a selector reads it from <code>view.kwargs</code> — directly,
+or through a <code>spec.kwargs</code> provider that scopes by it (a tenant/role lookup). Off
+the HTTP path there is no route, so register the value with
+<a href="../reference/#rest_framework_pydantic_ai.UrlKwarg"><code>UrlKwarg</code></a>. It is advertised
+as a tool arg, then popped and seeded into <code>build_offline_context(kwargs=…)</code>,
+from where drf-services spreads it into the selector / target pools —
+authoritative over the spec <code>params</code>, below a <code>spec.kwargs</code> provider (mirroring
+HTTP precedence exactly).</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">UrlKwarg</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">specs</span><span class="p">,</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">url_kwargs</span><span class="o">=</span><span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;owning project&quot;</span><span class="p">)],</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="c1"># or scope to one tool: tool_url_kwargs={&quot;list_widgets&quot;: [UrlKwarg(&quot;project_pk&quot;)]}</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>Reach for <code>UrlKwarg</code> when the value is <strong>not</strong> already in the tool schema:</p>
+<ul>
+<li>a scoping <code>spec.kwargs</code> provider that reads <code>view.kwargs</code> — the case ordinary
+  <code>params</code> cannot cover, because the provider reads <code>view.kwargs</code>, not <code>params</code>;</li>
+<li>a closed-surface spec whose route capture must be model-suppliable.</li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">You don't need this when the selector reads it from <code>**extras</code></p>
+<p>A selector typed <code>def list_widgets(user, **extras: Unpack[WidgetExtras])</code>
+that reads <code>extras["project_pk"]</code> already has that key reflected into the
+tool schema by drf-services (0.26+), delivered through <code>params</code> — no
+<code>UrlKwarg</code> needed. A key can still be <strong>both</strong> reflected <em>and</em>
+<code>UrlKwarg</code>-registered (a <code>project_pk</code> the selector reads <em>and</em> a scoping
+provider reads off <code>view.kwargs</code>): the explicit <code>UrlKwarg</code> schema wins the
+merge, and the authoritative <code>kwargs=</code> spread still reaches the selector.</p>
+</div>
+<p>Like <code>QueryParam</code>, a registered kwarg is popped before dispatch (so
+<code>unknown_arguments</code> never flags it) and its <code>default</code> is seeded when the model
+omits it. A name can't be <code>page</code> / <code>limit</code> / <code>order</code>, nor be registered as both a
+<code>QueryParam</code> and a <code>UrlKwarg</code> on the same tool. Requires
+<code>djangorestframework-services&gt;=0.26</code>, which delivers view <code>kwargs</code> into the
+off-HTTP dispatch pools.</p>
 <h2 id="error-handling">Error handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h2>
 <p>The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:</p>
 <table>
@@ -765,7 +827,7 @@ Requires <code>djangorestframework-services&gt;=0.23</code>, which added the
 <code>max_retries</code> failed attempts (default <code>1</code>, pydantic-ai's function-tool
 default) the run aborts with <code>UnexpectedModelBehavior</code>. Raise it for models
 that need more attempts to converge:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 </span></code></pre></div>
 
 
