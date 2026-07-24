@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-24
+
 ### Added
 
 - **`UrlKwarg` — expose a URL route capture as a tool arg.** The off-HTTP
@@ -260,7 +262,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.4.0...v0.5.0
