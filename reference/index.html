@@ -316,6 +316,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../spec-registry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Shared spec registry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../polymorphic-actions/" class="md-nav__link">
         
   
@@ -852,6 +879,18 @@ docstring, the parameter schema comes from <code>spec_to_json_schema</code> (wit
 list selector's <code>page</code> / <code>limit</code> / <code>order</code> args merged in), and the
 <code>readOnlyHint</code> annotation is derived from the spec kind (selectors read,
 services mutate).</p>
+<p><code>specs</code> also accepts a
+:class:<code>~rest_framework_services.registry.spec_registry.SpecRegistry</code>
+(drf-services 0.27+) — the shared declaration site for a project that
+exposes the same specs over more than one transport, so the agent reads
+the same source MCP and the HTTP views do instead of repeating the list::</p>
+<div class="language-text highlight"><pre><span></span><code>toolset = SpecToolset(registry)                     # every entry
+read_only = SpecToolset(registry.by_tag(&quot;read&quot;), id=&quot;reads&quot;)
+</code></pre></div>
+<p>A filtered view is itself a registry, so several toolsets can be projected
+from one declaration with no shared state. Names come from the registry;
+everything else on this signature stays per-toolset, because it is
+transport-specific and the registry deliberately carries none of it.</p>
 <p><code>get_user</code> overrides how the acting identity is read off the run context;
 it defaults to <code>ctx.deps.user</code>.</p>
 <p><code>unknown_arguments</code> controls what happens to tool args outside a spec's
@@ -1007,6 +1046,17 @@ the same model-facing instructions, exactly once.</p>
 </code></pre></div>
 <p>or wrap an already-built toolset with :meth:<code>from_toolset</code> (the compose path).
 Either way the exposed tool set and instructions are the toolset's.</p>
+<p><code>specs</code> accepts a
+:class:<code>~rest_framework_services.registry.spec_registry.SpecRegistry</code>
+wherever it accepts a mapping (drf-services 0.27+), so a project declaring
+its specs once can project several capabilities from filtered views::</p>
+<div class="language-text highlight"><pre><span></span><code>AgentConfig(capabilities=[
+    SpecCapability(registry.by_tag(&quot;read&quot;), id=&quot;reads&quot;),
+    SpecCapability(registry.by_tag(&quot;admin&quot;), id=&quot;admin&quot;, defer_loading=True),
+])
+</code></pre></div>
+<p>Give each its own <code>id</code> — the id keys <code>defer_loading</code>'s catalog entry, so
+two capabilities sharing one would collide.</p>
 <p><code>instructions</code> overrides the toolset's auto-derived conventions text — it is
 forwarded to the <code>SpecToolset</code> this builds. <code>defer_loading</code> (which needs
 the stable <code>id</code>) hides the whole spec toolset and its instructions behind
