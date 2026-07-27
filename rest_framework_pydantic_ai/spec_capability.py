@@ -8,7 +8,7 @@ from typing import Any
 from pydantic_ai.capabilities import AbstractCapability
 from rest_framework_services import UnknownArguments
 
-from rest_framework_pydantic_ai.spec_toolset import Spec, SpecToolset, UserExtractor
+from rest_framework_pydantic_ai.spec_toolset import SpecSource, SpecToolset, UserExtractor
 from rest_framework_pydantic_ai.types.query_param import QueryParam
 from rest_framework_pydantic_ai.types.url_kwarg import UrlKwarg
 
@@ -40,6 +40,19 @@ class SpecCapability(AbstractCapability[Any]):
     or wrap an already-built toolset with :meth:`from_toolset` (the compose path).
     Either way the exposed tool set and instructions are the toolset's.
 
+    ``specs`` accepts a
+    :class:`~rest_framework_services.registry.spec_registry.SpecRegistry`
+    wherever it accepts a mapping (drf-services 0.27+), so a project declaring
+    its specs once can project several capabilities from filtered views::
+
+        AgentConfig(capabilities=[
+            SpecCapability(registry.by_tag("read"), id="reads"),
+            SpecCapability(registry.by_tag("admin"), id="admin", defer_loading=True),
+        ])
+
+    Give each its own ``id`` — the id keys ``defer_loading``'s catalog entry, so
+    two capabilities sharing one would collide.
+
     ``instructions`` overrides the toolset's auto-derived conventions text — it is
     forwarded to the ``SpecToolset`` this builds. ``defer_loading`` (which needs
     the stable ``id``) hides the whole spec toolset and its instructions behind
@@ -53,7 +66,7 @@ class SpecCapability(AbstractCapability[Any]):
 
     def __init__(
         self,
-        specs: Mapping[str, Spec],
+        specs: SpecSource,
         *,
         id: str = "drf-specs",
         defer_loading: bool = False,
