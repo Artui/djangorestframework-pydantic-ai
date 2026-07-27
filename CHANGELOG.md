@@ -6,6 +6,47 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-07-27
+
+### Added
+
+- **`SpecToolset` and `SpecCapability` accept a `SpecRegistry`** wherever they
+  accept a `name -> spec` mapping (`djangorestframework-services` 0.27+). A
+  project exposing the same specs over more than one transport — this toolset
+  plus an MCP server, plus HTTP views — otherwise writes the list once per
+  transport, and the copies drift. The registry is the one declaration site:
+
+  ```python
+  agent = Agent(model, deps_type=AgentDeps, toolsets=[SpecToolset(registry)])
+  ```
+
+  Deliberately **not** a `from_registry` constructor. `registry.specs()` is
+  already the dict these accept, so the only thing a classmethod would add is a
+  restatement of all nine keyword arguments it forwards — in two more places,
+  free to drift from the signature they mirror. Widening the parameter gets the
+  same ergonomics with none of that, and works on `SpecCapability` for free
+  since it forwards `specs` straight through.
+  - **Filtered views project several toolsets from one declaration.**
+    `registry.by_tag("read")` returns a new registry, so
+    `SpecToolset(registry.by_tag("read"), id="reads")` and its admin sibling
+    share no state. Give each capability its own `id` — the id keys
+    `defer_loading`'s catalog entry.
+  - **Nothing else moves.** The registry carries only the invariant part of an
+    operation (which spec, its name, its tags); `get_user`,
+    `unknown_arguments`, `max_retries` and the `QueryParam` / `UrlKwarg`
+    registrations stay per-toolset, because they are transport-specific.
+    Per-tool maps key off the registry's names, and an unknown key still
+    raises.
+  - **Name validation is unchanged**, which matters here: registry names are
+    free-form but model providers constrain tool names to
+    `[a-zA-Z0-9_-]{1,64}`, so a registry name outside that shape still fails
+    fast at construction rather than at the provider boundary.
+
+### Changed
+
+- **`djangorestframework-services` floor raised to `>=0.27,<0.28`** (from
+  `>=0.26,<0.27`) — `SpecRegistry` is imported at module level.
+
 ## [0.7.0] — 2026-07-24
 
 ### Added
@@ -262,7 +303,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.5.0...v0.6.0

@@ -37,4 +37,6 @@ on `djangorestframework-services` and `pydantic-ai-slim`.
 ## Next steps
 
 - [Quickstart](quickstart.md) — wire a toolset to an agent.
+- [Shared spec registry](spec-registry.md) — declare your specs once when
+  more than one transport exposes them.
 - [Reference](reference.md) — the public API.

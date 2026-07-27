@@ -58,6 +58,7 @@ from rest_framework_services import (
     ServiceError,
     ServiceSpec,
     ServiceValidationError,
+    SpecRegistry,
     UnknownArguments,
     build_offline_context,
     dispatch_spec,
@@ -70,7 +71,19 @@ from rest_framework_pydantic_ai.types.query_param import QueryParam
 from rest_framework_pydantic_ai.types.url_kwarg import UrlKwarg
 
 Spec = ServiceSpec[Any, Any, Any] | SelectorSpec[Any, Any]
+# Anywhere a ``name -> spec`` mapping is accepted, a ``SpecRegistry`` is too —
+# it *is* that mapping plus tags and ordering, and ``registry.specs()`` hands
+# back the plain dict. Widening the parameter beats a ``from_registry``
+# constructor, which would have to restate every keyword of the signature it
+# forwards to (and then drift from it).
+SpecSource = Mapping[str, Spec] | SpecRegistry
 UserExtractor = Callable[[RunContext[Any]], Any]
+
+
+def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
+    """Normalise a ``SpecSource`` to the plain mapping the internals expect."""
+    return specs.specs() if isinstance(specs, SpecRegistry) else specs
+
 
 # List-selector pagination args own these names; a registered ``QueryParam`` or
 # ``UrlKwarg`` may not shadow them.
@@ -137,6 +150,20 @@ class SpecToolset(AbstractToolset[Any]):
     ``readOnlyHint`` annotation is derived from the spec kind (selectors read,
     services mutate).
 
+    ``specs`` also accepts a
+    :class:`~rest_framework_services.registry.spec_registry.SpecRegistry`
+    (drf-services 0.27+) — the shared declaration site for a project that
+    exposes the same specs over more than one transport, so the agent reads
+    the same source MCP and the HTTP views do instead of repeating the list::
+
+        toolset = SpecToolset(registry)                     # every entry
+        read_only = SpecToolset(registry.by_tag("read"), id="reads")
+
+    A filtered view is itself a registry, so several toolsets can be projected
+    from one declaration with no shared state. Names come from the registry;
+    everything else on this signature stays per-toolset, because it is
+    transport-specific and the registry deliberately carries none of it.
+
     ``get_user`` overrides how the acting identity is read off the run context;
     it defaults to ``ctx.deps.user``.
 
@@ -195,7 +222,7 @@ class SpecToolset(AbstractToolset[Any]):
 
     def __init__(
         self,
-        specs: Mapping[str, Spec],
+        specs: SpecSource,
         *,
         id: str = "drf-specs",
         instructions: str | None = None,
@@ -207,12 +234,13 @@ class SpecToolset(AbstractToolset[Any]):
         tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None = None,
         max_retries: int = 1,
     ) -> None:
-        _validate_tool_names(specs)
-        _validate_query_params(query_params, tool_query_params, specs)
-        _validate_url_kwargs(url_kwargs, tool_url_kwargs, specs)
+        resolved = _resolve_specs(specs)
+        _validate_tool_names(resolved)
+        _validate_query_params(query_params, tool_query_params, resolved)
+        _validate_url_kwargs(url_kwargs, tool_url_kwargs, resolved)
         self._id = id
         self._instructions_override = instructions
-        self._specs: dict[str, Spec] = dict(specs)
+        self._specs: dict[str, Spec] = dict(resolved)
         self._get_user: UserExtractor = get_user or _default_get_user
         self._unknown_arguments: UnknownArguments = unknown_arguments
         self._max_retries = max_retries

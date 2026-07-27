@@ -71,5 +71,6 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Quickstart: quickstart.md
+  - Shared spec registry: spec-registry.md
   - Polymorphic actions: polymorphic-actions.md
   - Reference: reference.md
