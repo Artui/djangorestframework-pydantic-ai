@@ -39,7 +39,7 @@ dependencies = [
     "django>=4.2",
     "djangorestframework>=3.14",
     # 0.27 floor: ``SpecRegistry`` (accepted anywhere a spec mapping is) landed there.
-    "djangorestframework-services>=0.27,<0.28",
+    "djangorestframework-services>=0.28.1,<0.29",
     "pydantic-ai-slim>=2,<3",
 ]
 

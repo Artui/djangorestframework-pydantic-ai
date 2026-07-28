@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import django_filters
 import pytest
 from django.contrib.auth.models import User
+from django.core.exceptions import ImproperlyConfigured
 from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -590,12 +591,15 @@ async def test_query_param_default_appears_in_schema():
 
 
 def test_reserved_query_param_name_is_rejected():
-    with pytest.raises(ValueError, match="reserved"):
+    # ``ImproperlyConfigured`` since 0.9.0: reserved-name checking moved to
+    # drf-services' shared validator, so one exception type now covers every bad
+    # declaration instead of ValueError-for-pagination / something-else-for-seeds.
+    with pytest.raises(ImproperlyConfigured, match="reserved transport keys"):
         SpecToolset({"list_widgets": list_spec()}, query_params=[QueryParam("order")])
 
 
 def test_reserved_per_tool_query_param_name_is_rejected():
-    with pytest.raises(ValueError, match="reserved"):
+    with pytest.raises(ImproperlyConfigured, match="reserved transport keys"):
         SpecToolset(
             {"list_widgets": list_spec()},
             tool_query_params={"list_widgets": [QueryParam("limit")]},
@@ -826,12 +830,12 @@ async def test_url_kwarg_default_appears_in_schema():
 
 
 def test_reserved_url_kwarg_name_is_rejected():
-    with pytest.raises(ValueError, match="reserved"):
+    with pytest.raises(ImproperlyConfigured, match="reserved transport keys"):
         SpecToolset({"list_widgets": list_spec()}, url_kwargs=[UrlKwarg("order")])
 
 
 def test_reserved_per_tool_url_kwarg_name_is_rejected():
-    with pytest.raises(ValueError, match="reserved"):
+    with pytest.raises(ImproperlyConfigured, match="reserved transport keys"):
         SpecToolset(
             {"list_widgets": list_spec()},
             tool_url_kwargs={"list_widgets": [UrlKwarg("limit")]},
@@ -975,3 +979,73 @@ def test_dual_declared_url_kwarg_delivers_to_the_selector_pool():
         _dual_declared_spec(), user, {"project_pk": 10}, url_kwargs=(UrlKwarg("project_pk"),)
     )
     assert [w["name"] for w in result] == ["cheap"]
+
+
+# --- required URL kwargs (drf-services 0.28) ---------------------------------
+
+
+async def test_required_url_kwarg_is_advertised_as_required():
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()},
+        url_kwargs=[UrlKwarg("project_pk", type="integer", required=True)],
+    )
+    tools = await toolset.get_tools(None)
+    schema = tools["list_widgets"].tool_def.parameters_json_schema
+    assert schema["required"] == ["project_pk"]
+
+
+async def test_per_tool_override_can_add_requiredness():
+    # Per-tool wins by name, so an override may tighten a toolset-wide optional
+    # declaration into a required one for a single tool.
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "get_widget": retrieve_spec()},
+        url_kwargs=[UrlKwarg("project_pk")],
+        tool_url_kwargs={"list_widgets": [UrlKwarg("project_pk", required=True)]},
+    )
+    tools = await toolset.get_tools(None)
+    assert tools["list_widgets"].tool_def.parameters_json_schema["required"] == ["project_pk"]
+    assert "required" not in tools["get_widget"].tool_def.parameters_json_schema
+
+
+def test_omitting_a_required_url_kwarg_raises_model_retry():
+    # Schema ``required`` is a hint models routinely ignore, so the runtime has
+    # to give the model a way back: ModelRetry naming the argument, not a crash.
+    with pytest.raises(ModelRetry, match="project_pk"):
+        _call_spec(list_spec(), None, {}, url_kwargs=[UrlKwarg("project_pk", required=True)])
+
+
+@pytest.mark.django_db
+def test_supplying_a_required_url_kwarg_dispatches_normally():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    result = _call_spec(
+        list_spec(),
+        user,
+        {"project_pk": "P1"},
+        url_kwargs=[UrlKwarg("project_pk", required=True)],
+    )
+    assert [w["name"] for w in result] == ["a"]
+
+
+def test_required_url_kwarg_with_a_default_is_rejected():
+    with pytest.raises(ImproperlyConfigured, match="cannot also be required"):
+        SpecToolset(
+            {"list_widgets": list_spec()},
+            url_kwargs=[UrlKwarg("project_pk", default="P1", required=True)],
+        )
+
+
+def test_a_pool_seed_name_is_now_rejected():
+    # Previously only the pagination names were checked here, so ``user`` — a
+    # dispatcher-controlled seed — passed registration in this toolset while
+    # being rejected by the MCP transport. The shared validator closes that.
+    with pytest.raises(ImproperlyConfigured, match="reserved transport keys"):
+        SpecToolset({"list_widgets": list_spec()}, url_kwargs=[UrlKwarg("user")])
+
+
+def test_the_lifted_types_are_the_sister_repo_types():
+    from rest_framework_services.types.query_param import QueryParam as SharedQueryParam
+    from rest_framework_services.types.url_kwarg import UrlKwarg as SharedUrlKwarg
+
+    assert UrlKwarg is SharedUrlKwarg
+    assert QueryParam is SharedQueryParam

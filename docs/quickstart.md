@@ -167,10 +167,30 @@ Reach for `UrlKwarg` when the value is **not** already in the tool schema:
 
 Like `QueryParam`, a registered kwarg is popped before dispatch (so
 `unknown_arguments` never flags it) and its `default` is seeded when the model
-omits it. A name can't be `page` / `limit` / `order`, nor be registered as both a
-`QueryParam` and a `UrlKwarg` on the same tool. Requires
-`djangorestframework-services>=0.26`, which delivers view `kwargs` into the
-off-HTTP dispatch pools.
+omits it. A name can't be `page` / `limit` / `order`, nor one of drf-services'
+pool seeds (`request` / `user` / `data` / `instance` / `serializer` /
+`collection` — a caller must not be able to route a value onto those), nor be
+registered as both a `QueryParam` and a `UrlKwarg` on the same tool.
+
+A capture the spec genuinely cannot run without takes `required=True`:
+
+```python
+UrlKwarg("project_pk", type="integer", required=True)
+```
+
+The name joins the tool's `required` list, so the model is told up front. Because
+a schema hint is only a hint — models omit required arguments routinely — a call
+that omits it raises `ModelRetry` naming the argument, giving the model a turn to
+supply it rather than failing deeper in. `required` can't be combined with a
+`default` (a default always satisfies the argument, so requiring it would be a
+no-op); that raises at construction.
+
+`UrlKwarg` and `QueryParam` are
+[drf-services' types](https://github.com/Artui/djangorestframework-services/blob/main/rest_framework_services/types/url_kwarg.py),
+re-exported here — the declaration is the same whichever transport carries it,
+and this package's copy had drifted from the MCP transport's on which names each
+reserved. `from rest_framework_pydantic_ai import UrlKwarg, QueryParam` keeps
+working. Requires `djangorestframework-services>=0.28.1`.
 
 ## Error handling
 
