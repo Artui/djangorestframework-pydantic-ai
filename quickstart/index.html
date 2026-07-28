@@ -806,10 +806,25 @@ merge, and the authoritative <code>kwargs=</code> spread still reaches the selec
 </div>
 <p>Like <code>QueryParam</code>, a registered kwarg is popped before dispatch (so
 <code>unknown_arguments</code> never flags it) and its <code>default</code> is seeded when the model
-omits it. A name can't be <code>page</code> / <code>limit</code> / <code>order</code>, nor be registered as both a
-<code>QueryParam</code> and a <code>UrlKwarg</code> on the same tool. Requires
-<code>djangorestframework-services&gt;=0.26</code>, which delivers view <code>kwargs</code> into the
-off-HTTP dispatch pools.</p>
+omits it. A name can't be <code>page</code> / <code>limit</code> / <code>order</code>, nor one of drf-services'
+pool seeds (<code>request</code> / <code>user</code> / <code>data</code> / <code>instance</code> / <code>serializer</code> /
+<code>collection</code> — a caller must not be able to route a value onto those), nor be
+registered as both a <code>QueryParam</code> and a <code>UrlKwarg</code> on the same tool.</p>
+<p>A capture the spec genuinely cannot run without takes <code>required=True</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The name joins the tool's <code>required</code> list, so the model is told up front. Because
+a schema hint is only a hint — models omit required arguments routinely — a call
+that omits it raises <code>ModelRetry</code> naming the argument, giving the model a turn to
+supply it rather than failing deeper in. <code>required</code> can't be combined with a
+<code>default</code> (a default always satisfies the argument, so requiring it would be a
+no-op); that raises at construction.</p>
+<p><code>UrlKwarg</code> and <code>QueryParam</code> are
+<a href="https://github.com/Artui/djangorestframework-services/blob/main/rest_framework_services/types/url_kwarg.py">drf-services' types</a>,
+re-exported here — the declaration is the same whichever transport carries it,
+and this package's copy had drifted from the MCP transport's on which names each
+reserved. <code>from rest_framework_pydantic_ai import UrlKwarg, QueryParam</code> keeps
+working. Requires <code>djangorestframework-services&gt;=0.28.1</code>.</p>
 <h2 id="error-handling">Error handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h2>
 <p>The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:</p>
 <table>
@@ -854,7 +869,7 @@ off-HTTP dispatch pools.</p>
 <code>max_retries</code> failed attempts (default <code>1</code>, pydantic-ai's function-tool
 default) the run aborts with <code>UnexpectedModelBehavior</code>. Raise it for models
 that need more attempts to converge:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 </span></code></pre></div>
 
 
