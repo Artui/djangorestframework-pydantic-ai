@@ -6,6 +6,45 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-07-28
+
+### Added
+
+- **`UrlKwarg(required=True)` — advertise a route capture the spec can't run
+  without.** The name joins the tool's `required` list, and a call that omits it
+  raises `ModelRetry` naming the argument, so the model gets a turn to supply it
+  instead of the run failing somewhere less legible. Schema `required` is only a
+  hint; advertising it without enforcing it would have changed nothing.
+- **The reflected `required` list is now extended rather than merely preserved.**
+  drf-services 0.28 contributes keys a selector's own extras `TypedDict` marks
+  `InputRequired`; registered `UrlKwarg`s add theirs. A key that is both appears
+  once — the same statement made in two places is one requirement.
+
+### Changed
+
+- **`UrlKwarg` and `QueryParam` now come from `djangorestframework-services`**
+  (0.28), which owns the single definitions. This package and
+  `djangorestframework-mcp-server` each carried a `UrlKwarg`, and the copies had
+  **already drifted**: this one reserved only `page` / `limit` / `order` while
+  the MCP transport also reserved the dispatcher's pool seeds, so
+  `UrlKwarg("user")` was legal here and rejected there, and `UrlKwarg("order")`
+  the reverse. `QueryParam` had no second copy yet — lifting it now prevents the
+  fork rather than repairing one. Both import paths are preserved permanently.
+- **⚠ Bad channel declarations now raise `ImproperlyConfigured`, not
+  `ValueError`.** Reserved-name checking moved to drf-services'
+  `validate_channel_names`, so one exception type covers every bad declaration
+  instead of `ValueError` for pagination names and something else for pool seeds.
+  The unknown-per-tool-key check still raises `ValueError` — it is about the
+  mapping's keys, not a declaration.
+- **A pool-seed name is now rejected.** Previously only the pagination names were
+  checked here, so `UrlKwarg("user")` — a name that overrides a
+  dispatcher-controlled seed — passed construction in this toolset while the MCP
+  transport rejected it.
+- **Declaration checks run after the toolset-wide/per-tool merge**, which is what
+  actually reaches the schema. Validating the pre-merge concatenation would have
+  read an intentional per-tool override as a duplicate.
+- **Requires `djangorestframework-services>=0.28.1,<0.29`** (was `>=0.27,<0.28`).
+
 ## [0.8.0] — 2026-07-27
 
 ### Added
@@ -303,7 +342,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.0...v0.6.1

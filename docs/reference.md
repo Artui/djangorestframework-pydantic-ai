@@ -12,11 +12,11 @@ The public API is five symbols, all importable from the package root.
 
 ## `QueryParam`
 
-::: rest_framework_pydantic_ai.QueryParam
+::: rest_framework_services.types.query_param.QueryParam
 
 ## `UrlKwarg`
 
-::: rest_framework_pydantic_ai.UrlKwarg
+::: rest_framework_services.types.url_kwarg.UrlKwarg
 
 ## `AgentDeps`
 

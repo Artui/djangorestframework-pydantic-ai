@@ -66,6 +66,7 @@ from rest_framework_services import (
     render_spec_output,
     spec_to_json_schema,
 )
+from rest_framework_services.types.validate_channel_names import validate_channel_names
 
 from rest_framework_pydantic_ai.types.query_param import QueryParam
 from rest_framework_pydantic_ai.types.url_kwarg import UrlKwarg
@@ -256,6 +257,14 @@ class SpecToolset(AbstractToolset[Any]):
             for name in self._specs
         }
         _validate_no_param_channel_overlap(self._tool_query_params, self._tool_url_kwargs)
+        # Run drf-services' shared checks on the **merged** tuples, not the raw
+        # declarations: toolset-wide and per-tool entries of the same name are an
+        # intentional override, and the shared check would read the pre-merge
+        # concatenation as a duplicate. Post-merge is also what actually reaches
+        # the schema, so it is the honest thing to validate.
+        for name in self._specs:
+            _validate_channel_declarations(name, self._tool_query_params[name], "query_params")
+            _validate_channel_declarations(name, self._tool_url_kwargs[name], "url_kwargs")
         # Schemas derive purely from the specs (no DB), so the tool defs are
         # built once up front. ``ToolDefinition`` defaults to ``kind="function"``
         # — the in-process kind the run loop routes into ``call_tool``.
@@ -341,21 +350,19 @@ def _validate_query_params(
     tool_query_params: Mapping[str, Sequence[QueryParam]] | None,
     specs: Mapping[str, Spec],
 ) -> None:
-    """Fail fast on an unknown per-tool key or a reserved query-param name."""
-    declared = list(query_params)
-    for tool_name, params in (tool_query_params or {}).items():
+    """Fail fast on a per-tool key naming a tool this toolset does not expose.
+
+    Name-level checks (reserved names, duplicates) run **after** the merge, in
+    :func:`_validate_channel_declarations` — see there for why post-merge is the
+    honest place. This one has to run first, because the merge indexes by tool
+    name and a typo'd key would otherwise be silently dropped.
+    """
+    for tool_name in tool_query_params or {}:
         if tool_name not in specs:
             raise ValueError(
                 f"tool_query_params references unknown tool {tool_name!r}; "
                 f"known tools: {sorted(specs)}."
             )
-        declared.extend(params)
-    reserved = sorted({qp.name for qp in declared} & _RESERVED_PARAM_NAMES)
-    if reserved:
-        raise ValueError(
-            f"QueryParam name(s) {reserved} are reserved for list-selector "
-            "pagination (page / limit / order)."
-        )
 
 
 def _merge_query_params(
@@ -373,21 +380,35 @@ def _validate_url_kwargs(
     tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None,
     specs: Mapping[str, Spec],
 ) -> None:
-    """Fail fast on an unknown per-tool key or a reserved URL-kwarg name."""
-    declared = list(url_kwargs)
-    for tool_name, kwargs in (tool_url_kwargs or {}).items():
+    """Fail fast on a per-tool key naming a tool this toolset does not expose.
+
+    See :func:`_validate_query_params` — name-level checks run post-merge.
+    """
+    for tool_name in tool_url_kwargs or {}:
         if tool_name not in specs:
             raise ValueError(
                 f"tool_url_kwargs references unknown tool {tool_name!r}; "
                 f"known tools: {sorted(specs)}."
             )
-        declared.extend(kwargs)
-    reserved = sorted({uk.name for uk in declared} & _RESERVED_PARAM_NAMES)
-    if reserved:
-        raise ValueError(
-            f"UrlKwarg name(s) {reserved} are reserved for list-selector "
-            "pagination (page / limit / order)."
-        )
+
+
+def _validate_channel_declarations(tool_name: str, declarations: Sequence[Any], kind: str) -> None:
+    """Apply drf-services' shared channel checks to one tool's merged tuple.
+
+    Adds what the local checks above never covered: the dispatcher's pool seeds
+    (``request`` / ``user`` / ``data`` / …, which a caller must not be able to
+    route a value onto) and the contradiction of ``required=True`` with a
+    ``default``. The pagination names stay ours to contribute — this toolset
+    reserves ``order`` where the MCP transport reserves ``ordering``, which is
+    exactly the kind of divergence that let the two adapters' copies of these
+    types drift apart in the first place.
+    """
+    validate_channel_names(
+        label=f"SpecToolset tool {tool_name!r}",
+        kind=kind,
+        declarations=declarations,
+        reserved=_RESERVED_PARAM_NAMES,
+    )
 
 
 def _merge_url_kwargs(
@@ -504,8 +525,13 @@ def _input_schema(
     output phase is nullable), so the result is narrowed for the type-checker.
     The registered declarations are merged **over** the reflected properties, so
     an explicit ``UrlKwarg`` for a key drf-services already reflected (from a
-    selector's ``Unpack[TypedDict]``) wins — it is the intentional one. The
-    reflected ``required`` list is preserved untouched.
+    selector's ``Unpack[TypedDict]``) wins — it is the intentional one.
+
+    The reflected ``required`` list is preserved and *extended*: drf-services
+    contributes keys the selector's own ``TypedDict`` marks ``InputRequired``,
+    and a ``UrlKwarg(required=True)`` adds the ones declared here. A key that is
+    both reflected-required and registered-required appears once — the two are
+    the same statement made in two places, not two requirements.
     """
     schema = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input"))
     extra: dict[str, Any] = {}
@@ -513,13 +539,18 @@ def _input_schema(
         extra.update(_LIST_PARAM_SCHEMA)
     extra.update({qp.name: qp.json_schema() for qp in query_params})
     extra.update({uk.name: uk.json_schema() for uk in url_kwargs})
+    required: list[str] = list(schema.get("required", []))
+    required.extend(uk.name for uk in url_kwargs if uk.required and uk.name not in required)
     if not extra:
         return schema
-    return {
+    merged: dict[str, Any] = {
         **schema,
         "type": "object",
         "properties": {**schema.get("properties", {}), **extra},
     }
+    if required:
+        merged["required"] = required
+    return merged
 
 
 def _is_list_selector(spec: Spec) -> bool:
@@ -648,13 +679,26 @@ def _pop_url_kwargs(url_kwargs: Sequence[UrlKwarg], args: dict[str, Any]) -> dic
     A declared kwarg the model supplied is popped; one it omitted contributes its
     ``default`` if set, else nothing. The result is handed to
     ``build_offline_context(kwargs=…)``.
+
+    A kwarg registered ``required=True`` that the model omitted raises
+    ``ModelRetry`` naming it, so the model gets a chance to supply the argument
+    on the next turn. Schema ``required`` is only a hint — models omit required
+    arguments routinely — and without this the run would fail deeper in, where
+    the reason is far less legible. (Registration forbids ``required`` alongside
+    a ``default``, so such a kwarg is never satisfiable from the declaration.)
     """
     values: dict[str, Any] = {}
+    missing: list[str] = []
     for url_kwarg in url_kwargs:
         if url_kwarg.name in args:
             values[url_kwarg.name] = args.pop(url_kwarg.name)
         elif url_kwarg.default is not None:
             values[url_kwarg.name] = url_kwarg.default
+        elif url_kwarg.required:
+            missing.append(url_kwarg.name)
+    if missing:
+        names = ", ".join(f"`{name}`" for name in sorted(missing))
+        raise ModelRetry(f"Missing required argument(s): {names}.")
     return values
 
 
