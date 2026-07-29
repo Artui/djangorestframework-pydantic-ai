@@ -425,6 +425,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="URL-derived values (route captures)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-reflected-extras-key-is-not-a-route-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A reflected **extras key is not a route capture
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -628,6 +645,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="URL-derived values (route captures)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#a-reflected-extras-key-is-not-a-route-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        A reflected **extras key is not a route capture
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -788,22 +822,14 @@ HTTP precedence exactly).</p>
 </span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="c1"># or scope to one tool: tool_url_kwargs={&quot;list_widgets&quot;: [UrlKwarg(&quot;project_pk&quot;)]}</span>
 </span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="p">)</span>
 </span></code></pre></div>
-<p>Reach for <code>UrlKwarg</code> when the value is <strong>not</strong> already in the tool schema:</p>
+<p>Reach for <code>UrlKwarg</code> when the value is <strong>request state</strong> rather than an ordinary
+argument to the callable — the axis is where the value has to land, not whether
+it is advertised:</p>
 <ul>
 <li>a scoping <code>spec.kwargs</code> provider that reads <code>view.kwargs</code> — the case ordinary
   <code>params</code> cannot cover, because the provider reads <code>view.kwargs</code>, not <code>params</code>;</li>
 <li>a closed-surface spec whose route capture must be model-suppliable.</li>
 </ul>
-<div class="admonition note">
-<p class="admonition-title">You don't need this when the selector reads it from <code>**extras</code></p>
-<p>A selector typed <code>def list_widgets(user, **extras: Unpack[WidgetExtras])</code>
-that reads <code>extras["project_pk"]</code> already has that key reflected into the
-tool schema by drf-services (0.26+), delivered through <code>params</code> — no
-<code>UrlKwarg</code> needed. A key can still be <strong>both</strong> reflected <em>and</em>
-<code>UrlKwarg</code>-registered (a <code>project_pk</code> the selector reads <em>and</em> a scoping
-provider reads off <code>view.kwargs</code>): the explicit <code>UrlKwarg</code> schema wins the
-merge, and the authoritative <code>kwargs=</code> spread still reaches the selector.</p>
-</div>
 <p>Like <code>QueryParam</code>, a registered kwarg is popped before dispatch (so
 <code>unknown_arguments</code> never flags it) and its <code>default</code> is seeded when the model
 omits it. A name can't be <code>page</code> / <code>limit</code> / <code>order</code>, nor one of drf-services'
@@ -819,6 +845,71 @@ that omits it raises <code>ModelRetry</code> naming the argument, giving the mod
 supply it rather than failing deeper in. <code>required</code> can't be combined with a
 <code>default</code> (a default always satisfies the argument, so requiring it would be a
 no-op); that raises at construction.</p>
+<h3 id="a-reflected-extras-key-is-not-a-route-capture">A reflected <code>**extras</code> key is not a route capture<a class="headerlink" href="#a-reflected-extras-key-is-not-a-route-capture" title="Permanent link">&para;</a></h3>
+<p>A selector typed <code>def list_widgets(user, **extras: Unpack[WidgetExtras])</code> that
+reads <code>extras["project_pk"]</code> already has that key reflected into the tool schema
+by drf-services (0.26+) — no <code>UrlKwarg</code> needed <strong>for the selector itself</strong>, which
+receives it through <code>params</code>. Marking it <code>InputRequired</code> makes the model supply
+it; that is a <em>schema</em> statement and changes nothing about where the value lands.</p>
+<p>The two declarations answer different questions, and only one of them puts a
+value on the request:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>reflected <code>**extras</code> key (± <code>InputRequired</code>)</th>
+<th>registered <code>UrlKwarg</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>In the tool schema</td>
+<td>yes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Can be required</td>
+<td>yes (<code>InputRequired</code>)</td>
+<td>yes (<code>required=True</code>, plus a <code>ModelRetry</code> when omitted)</td>
+</tr>
+<tr>
+<td>Reaches the selector</td>
+<td>yes, via <code>params</code></td>
+<td>yes, via the <code>view.kwargs</code> spread</td>
+</tr>
+<tr>
+<td>Reaches <code>view.kwargs</code></td>
+<td><strong>no</strong></td>
+<td>yes</td>
+</tr>
+<tr>
+<td>Ranks above caller-supplied <code>params</code></td>
+<td>no — it <em>is</em> caller input</td>
+<td>yes</td>
+</tr>
+</tbody>
+</table>
+<p>So anything that reads request state rather than its own arguments — a
+<code>spec.kwargs</code> provider, <code>extend_queryset</code>, a permission class, an
+<code>output_serializer_context</code> provider — sees nothing for a reflected-only key. A
+scoping provider doing <code>view.kwargs.get("project_pk")</code> returns <code>None</code> and
+<strong>mis-scopes every call</strong> instead of failing, which is the failure mode worth
+naming: it is silent.</p>
+<p>Register the <code>UrlKwarg</code> as well when the value is scope. It is a strict superset
+— the selector still receives it in <code>**extras</code>, the schema keeps one property and
+one <code>required</code> entry (an explicit <code>UrlKwarg</code> wins the merge over a reflected key
+of the same name), and the provider gets its value:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># project_pk reflected from WidgetExtras *and* registered here:</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1">#   selector&#39;s extras -&gt; 7      view.kwargs -&gt; {&quot;project_pk&quot;: 7}</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">specs</span><span class="p">,</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">tool_url_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;list_widgets&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)]},</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>That split mirrors HTTP, where a route capture arrives in the URL and never in
+the body — which is what makes it unspoofable. Off the HTTP path, <code>params</code> are
+whatever the model chose; a <code>UrlKwarg</code> value outranks them. If a provider scopes
+by it, it has to come through the channel that carries that precedence.</p>
 <p><code>UrlKwarg</code> and <code>QueryParam</code> are
 <a href="https://github.com/Artui/djangorestframework-services/blob/main/rest_framework_services/types/url_kwarg.py">drf-services' types</a>,
 re-exported here — the declaration is the same whichever transport carries it,
@@ -869,7 +960,7 @@ working. Requires <code>djangorestframework-services&gt;=0.28.1</code>.</p>
 <code>max_retries</code> failed attempts (default <code>1</code>, pydantic-ai's function-tool
 default) the run aborts with <code>UnexpectedModelBehavior</code>. Raise it for models
 that need more attempts to converge:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 </span></code></pre></div>
 
 
