@@ -969,6 +969,37 @@ async def test_dual_declared_url_kwarg_schema_wins_over_reflected_property():
 
 
 @pytest.mark.django_db
+def test_reflected_extras_key_never_reaches_view_kwargs():
+    """The distinction consumers get wrong: reflected ≠ route capture.
+
+    A key reflected from the selector's ``Unpack`` extras (``InputRequired`` or
+    not) is delivered as a spec *param*. It never lands on ``view.kwargs``, so a
+    scoping ``spec.kwargs`` provider reads ``None`` and silently mis-scopes.
+    Registering the same name as a ``UrlKwarg`` is what routes it — and is a
+    strict superset, since the authoritative spread still reaches the selector
+    (covered by the two tests below).
+    """
+    seen = {}
+
+    def scope_provider(view):
+        seen["view_kwargs"] = dict(view.kwargs)
+        return {}
+
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="cheap", price=5, owner=user)
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_in_project,
+        output_serializer=WidgetSerializer,
+        kwargs=scope_provider,
+    )
+    # Supplied as an ordinary argument, with no ``UrlKwarg`` registered.
+    result = _call_spec(spec, user, {"project_pk": 10})
+    assert [w["name"] for w in result] == ["cheap"]  # the selector did get it
+    assert seen["view_kwargs"] == {}  # the provider did not
+
+
+@pytest.mark.django_db
 def test_dual_declared_url_kwarg_delivers_to_the_selector_pool():
     user = User.objects.create(username="u")
     Widget.objects.create(name="cheap", price=5, owner=user)
@@ -1049,3 +1080,55 @@ def test_the_lifted_types_are_the_sister_repo_types():
 
     assert UrlKwarg is SharedUrlKwarg
     assert QueryParam is SharedQueryParam
+
+
+# --- DRF's baseline serializer context ---------------------------------------
+
+
+@pytest.mark.django_db
+def test_render_supplies_the_request_in_the_serializer_context():
+    """A serializer reading ``self.context["request"]`` renders as it does on HTTP.
+
+    Off the HTTP path there is no view to call ``get_serializer_context()`` on,
+    so drf-services synthesizes the baseline (``request`` / ``format`` /
+    ``view``) from the offline pair. Without it this raised ``KeyError:
+    'request'`` on a serializer that works behind a view.
+    """
+
+    class ContextReadingSerializer(serializers.ModelSerializer):
+        owned_by = serializers.SerializerMethodField()
+
+        class Meta:
+            model = Widget
+            fields = ("id", "name", "owned_by")
+
+        def get_owned_by(self, _):
+            return self.context["request"].user.username
+
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=ContextReadingSerializer,
+    )
+    assert [w["owned_by"] for w in _call_spec(spec, user, {})] == ["u"]
+
+
+@pytest.mark.django_db
+def test_input_validation_supplies_the_request_in_the_serializer_context():
+    class ContextReadingInput(serializers.Serializer):
+        name = serializers.CharField()
+        price = serializers.IntegerField()
+
+        def validate_name(self, value):
+            return f"{value}-{self.context['request'].user.username}"
+
+    user = User.objects.create(username="u")
+    spec = ServiceSpec(
+        service=create_widget,
+        input_serializer=ContextReadingInput,
+        atomic=False,
+    )
+    _call_spec(spec, user, {"name": "a", "price": 1})
+    assert Widget.objects.get().name == "a-u"

@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-07-29
+
+### Fixed
+
+- **Tool calls whose serializer reads `self.context["request"]` no longer raise
+  `KeyError`.** Over HTTP DRF hands every serializer
+  `get_serializer_context()` — `request` / `format` / `view` — so serializers
+  read those keys unguarded (`request.user`, an ownership check in a
+  `SerializerMethodField`). Off the HTTP path there is no view to ask, and
+  drf-services passed only what a spec's `*_serializer_context` provider
+  returned — nothing at all when none was declared — so a serializer that
+  renders behind a view failed the tool call here. Fixed in
+  `djangorestframework-services` 0.29.0, which this release requires: input
+  validation and output rendering both start from that baseline, with the
+  spec's provider merged over it. `request` is the synthetic one
+  `build_offline_context` builds, so `request.user` is the acting user.
+
+### Changed
+
+- Requires `djangorestframework-services>=0.29.0` (was `>=0.28.1,<0.29`).
+
 ## [0.9.0] — 2026-07-28
 
 ### Added
@@ -342,7 +363,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.6.1...v0.7.0
