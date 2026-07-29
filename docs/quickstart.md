@@ -230,6 +230,27 @@ and this package's copy had drifted from the MCP transport's on which names each
 reserved. `from rest_framework_pydantic_ai import UrlKwarg, QueryParam` keeps
 working. Requires `djangorestframework-services>=0.28.1`.
 
+## Absolute URLs (file and hyperlinked fields)
+
+Off the HTTP path there is no ambient request, so there is no origin to build
+absolute URLs from — and DRF's `FileField`, `HyperlinkedIdentityField`, and
+`HyperlinkedRelatedField` call `request.build_absolute_uri()` for every value.
+Name your origin and they resolve:
+
+```python
+toolset = SpecToolset(specs, host="https://app.example.com")
+```
+
+`host` accepts `"example.com"`, `"example.com:8000"`, or a full origin whose
+scheme decides whether links are https. It is toolset-wide, with no per-tool
+variant: an origin is a property of the deployment, not of a tool.
+
+Left unset, those fields produce **relative** URLs (`/media/doc.pdf`) — usable,
+and exactly what they fall back to on their own when no request is in the
+serializer context. Nothing is inferred: only your project knows its public
+origin, and a guess would emit confidently-wrong links that look valid.
+Requires `djangorestframework-services>=0.29.1`.
+
 ## Error handling
 
 The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:

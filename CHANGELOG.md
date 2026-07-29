@@ -6,6 +6,35 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-07-29
+
+### Added
+
+- **`SpecToolset(host=…)` — an origin for absolute URLs.** DRF's `FileField`,
+  `HyperlinkedIdentityField`, and `HyperlinkedRelatedField` call
+  `request.build_absolute_uri()` for every value once a `request` is in the
+  serializer context — which, since drf-services 0.29.0, it always is off the
+  HTTP path. But an in-process toolset has no ambient request and so no origin,
+  and this package owns the `build_offline_context` call, leaving a user no way
+  to supply one. Now:
+
+  ```python
+  toolset = SpecToolset(specs, host="https://app.example.com")
+  ```
+
+  Accepts `"example.com"`, `"example.com:8000"`, or a full origin whose scheme
+  decides whether links are https. Toolset-wide, with no per-tool variant: an
+  origin is a property of the deployment, not of a tool. Left unset, those
+  fields produce relative URLs — what they fall back to on their own when no
+  request is in the context — and nothing is inferred, since a guessed origin
+  would emit confidently-wrong links that look valid.
+
+### Changed
+
+- Requires `djangorestframework-services>=0.29.1` (was `>=0.29.0`), which adds
+  the `build_offline_context(host=…)` seam this threads through — and fixes the
+  `KeyError: 'SERVER_NAME'` a file field hit on the 0.29.0 render path.
+
 ## [0.9.1] — 2026-07-29
 
 ### Fixed
@@ -363,7 +392,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.7.0...v0.8.0

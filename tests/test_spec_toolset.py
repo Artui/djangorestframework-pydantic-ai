@@ -1132,3 +1132,67 @@ def test_input_validation_supplies_the_request_in_the_serializer_context():
     )
     _call_spec(spec, user, {"name": "a", "price": 1})
     assert Widget.objects.get().name == "a-u"
+
+
+# --- host (absolute URLs off the HTTP path) ----------------------------------
+
+
+class FileishSerializer(serializers.ModelSerializer):
+    """Mirrors DRF's ``FileField.to_representation`` branch for a URL."""
+
+    doc_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Widget
+        fields = ("id", "name", "doc_url")
+
+    def get_doc_url(self, _):
+        request = self.context.get("request", None)
+        if request is not None:
+            return request.build_absolute_uri("/media/doc.pdf")
+        return "/media/doc.pdf"
+
+
+def fileish_spec():
+    return SelectorSpec(
+        kind=SelectorKind.LIST, selector=list_widgets, output_serializer=FileishSerializer
+    )
+
+
+@pytest.mark.django_db
+def test_without_a_host_file_urls_are_relative():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    assert [w["doc_url"] for w in _call_spec(fileish_spec(), user, {})] == ["/media/doc.pdf"]
+
+
+@pytest.mark.django_db
+def test_host_makes_file_urls_absolute():
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    result = _call_spec(fileish_spec(), user, {}, host="https://files.example.com")
+    assert [w["doc_url"] for w in result] == ["https://files.example.com/media/doc.pdf"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_toolset_threads_its_host_into_the_call():
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    toolset = SpecToolset({"list_widgets": fileish_spec()}, host="app.example.com:8000")
+    tools = await toolset.get_tools(None)
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+    assert [w["doc_url"] for w in result] == ["http://app.example.com:8000/media/doc.pdf"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_toolset_without_a_host_still_renders():
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    toolset = SpecToolset({"list_widgets": fileish_spec()})
+    tools = await toolset.get_tools(None)
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+    assert [w["doc_url"] for w in result] == ["/media/doc.pdf"]
