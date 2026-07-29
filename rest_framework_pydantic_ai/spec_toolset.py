@@ -210,6 +210,18 @@ class SpecToolset(AbstractToolset[Any]):
     selector). A name cannot be both a ``QueryParam`` and a ``UrlKwarg`` on the
     same tool (a value cannot route to two channels).
 
+    ``host`` gives the synthesized request an origin, so ``build_absolute_uri``
+    builds real absolute URLs — DRF's ``FileField`` and the ``Hyperlinked*``
+    fields call it for every value once a ``request`` is in the serializer
+    context, which off the HTTP path it always is. Accepts ``"example.com"``,
+    ``"example.com:8000"``, or a full origin like ``"https://example.com"``
+    whose scheme decides whether links are https. There is no default and none is
+    inferred: only the project knows its public origin, and guessing one would
+    emit confidently-wrong links that look valid. Left unset, those fields
+    produce **relative** URLs — usable, and what they fall back to on their own
+    when no request is in the context. Toolset-wide only, with no per-tool
+    variant: an origin is a property of the deployment, not of a tool.
+
     ``max_retries`` is each tool's retry budget: how many times a
     :class:`pydantic_ai.ModelRetry` (a validation failure, a bad ``order``
     field) is fed back to the model before the run aborts with
@@ -233,6 +245,7 @@ class SpecToolset(AbstractToolset[Any]):
         tool_query_params: Mapping[str, Sequence[QueryParam]] | None = None,
         url_kwargs: Sequence[UrlKwarg] = (),
         tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None = None,
+        host: str | None = None,
         max_retries: int = 1,
     ) -> None:
         resolved = _resolve_specs(specs)
@@ -244,6 +257,7 @@ class SpecToolset(AbstractToolset[Any]):
         self._specs: dict[str, Spec] = dict(resolved)
         self._get_user: UserExtractor = get_user or _default_get_user
         self._unknown_arguments: UnknownArguments = unknown_arguments
+        self._host = host
         self._max_retries = max_retries
         # The effective (deduped) query params for each tool: toolset-wide first,
         # then per-tool overriding by name. Built once — declarations are static.
@@ -332,6 +346,7 @@ class SpecToolset(AbstractToolset[Any]):
             unknown_arguments=self._unknown_arguments,
             query_params=self._tool_query_params[name],
             url_kwargs=self._tool_url_kwargs[name],
+            host=self._host,
         )
 
 
@@ -565,6 +580,7 @@ def _call_spec(
     unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
     query_params: Sequence[QueryParam] = (),
     url_kwargs: Sequence[UrlKwarg] = (),
+    host: str | None = None,
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
 
@@ -589,6 +605,7 @@ def _call_spec(
         args,
         kwargs=url_kwarg_values or None,
         query_params=query_param_values or None,
+        host=host,
     )
     # Two-layer authorization, mirroring a DRF view: the upfront call runs the
     # class-level ``has_permission`` (covers create / list-payload targets), and
