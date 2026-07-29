@@ -1049,3 +1049,55 @@ def test_the_lifted_types_are_the_sister_repo_types():
 
     assert UrlKwarg is SharedUrlKwarg
     assert QueryParam is SharedQueryParam
+
+
+# --- DRF's baseline serializer context ---------------------------------------
+
+
+@pytest.mark.django_db
+def test_render_supplies_the_request_in_the_serializer_context():
+    """A serializer reading ``self.context["request"]`` renders as it does on HTTP.
+
+    Off the HTTP path there is no view to call ``get_serializer_context()`` on,
+    so drf-services synthesizes the baseline (``request`` / ``format`` /
+    ``view``) from the offline pair. Without it this raised ``KeyError:
+    'request'`` on a serializer that works behind a view.
+    """
+
+    class ContextReadingSerializer(serializers.ModelSerializer):
+        owned_by = serializers.SerializerMethodField()
+
+        class Meta:
+            model = Widget
+            fields = ("id", "name", "owned_by")
+
+        def get_owned_by(self, _):
+            return self.context["request"].user.username
+
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=ContextReadingSerializer,
+    )
+    assert [w["owned_by"] for w in _call_spec(spec, user, {})] == ["u"]
+
+
+@pytest.mark.django_db
+def test_input_validation_supplies_the_request_in_the_serializer_context():
+    class ContextReadingInput(serializers.Serializer):
+        name = serializers.CharField()
+        price = serializers.IntegerField()
+
+        def validate_name(self, value):
+            return f"{value}-{self.context['request'].user.username}"
+
+    user = User.objects.create(username="u")
+    spec = ServiceSpec(
+        service=create_widget,
+        input_serializer=ContextReadingInput,
+        atomic=False,
+    )
+    _call_spec(spec, user, {"name": "a", "price": 1})
+    assert Widget.objects.get().name == "a-u"
