@@ -931,6 +931,17 @@ key may be <em>both</em> reflected and <code>UrlKwarg</code>-registered (the <co
 schema wins, and the authoritative <code>kwargs=</code> spread still reaches the
 selector). A name cannot be both a <code>QueryParam</code> and a <code>UrlKwarg</code> on the
 same tool (a value cannot route to two channels).</p>
+<p><code>host</code> gives the synthesized request an origin, so <code>build_absolute_uri</code>
+builds real absolute URLs — DRF's <code>FileField</code> and the <code>Hyperlinked*</code>
+fields call it for every value once a <code>request</code> is in the serializer
+context, which off the HTTP path it always is. Accepts <code>"example.com"</code>,
+<code>"example.com:8000"</code>, or a full origin like <code>"https://example.com"</code>
+whose scheme decides whether links are https. There is no default and none is
+inferred: only the project knows its public origin, and guessing one would
+emit confidently-wrong links that look valid. Left unset, those fields
+produce <strong>relative</strong> URLs — usable, and what they fall back to on their own
+when no request is in the context. Toolset-wide only, with no per-tool
+variant: an origin is a property of the deployment, not of a tool.</p>
 <p><code>max_retries</code> is each tool's retry budget: how many times a
 :class:<code>pydantic_ai.ModelRetry</code> (a validation failure, a bad <code>order</code>
 field) is fed back to the model before the run aborts with
