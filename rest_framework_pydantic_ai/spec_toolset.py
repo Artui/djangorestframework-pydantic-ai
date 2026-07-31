@@ -53,6 +53,7 @@ from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_core import SchemaValidator, core_schema
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework_services import (
+    AdditionalInputRequired,
     SelectorKind,
     SelectorSpec,
     ServiceError,
@@ -631,6 +632,20 @@ def _call_spec(
         # subclass — caught here, before the business-error clause below). Both
         # mean "the arguments were wrong", so the model retries with the detail.
         raise ModelRetry(str(exc.detail)) from exc
+    except AdditionalInputRequired as exc:
+        # ⚠ **Must precede the ``ServiceError`` arm below** — this is a subclass
+        # of it, and the generic handler would report a request for input as a
+        # terminal failure. drf-services subclasses it deliberately so an
+        # unaware transport still says something sensible; catching it first is
+        # what a transport that can do better owes in return.
+        #
+        # ⭐ A model *is* the thing that can answer, and ``ModelRetry`` is
+        # already the "here is what to fix, call me again" channel — so the
+        # service's message plus the shape of what it wants is exactly a retry
+        # prompt. No dialog, no elicitation surface, no second result type: the
+        # answer comes back as an ordinary argument on the next call, which is
+        # the whole premise of the exception.
+        raise ModelRetry(_missing_input_prompt(exc)) from exc
     except ServiceError as exc:
         return {"error": str(exc)}
     if result.kind == "not_found":
@@ -653,6 +668,22 @@ def _call_spec(
         view=context.view,
         extras=_output_extras(spec, value, many=many),
     )
+
+
+def _missing_input_prompt(exc: AdditionalInputRequired) -> str:
+    """The service's message, plus the names it wants the answer back under.
+
+    ``schema`` is a JSON-Schema *properties* mapping keyed by input name, so the
+    keys alone are what the model needs — it is about to call the same tool
+    again, and those are the arguments to add. The full schema is deliberately
+    not rendered: the tool's own parameter schema already describes them, and a
+    second, differently-shaped description in prose is how a model ends up
+    inventing a nested object.
+    """
+    if not exc.schema:
+        return str(exc)
+    names: str = ", ".join(f"`{name}`" for name in exc.schema)
+    return f"{exc} Call this tool again, additionally supplying: {names}."
 
 
 def _pop_pagination(spec: Spec, args: dict[str, Any]) -> _PageArgs | None:

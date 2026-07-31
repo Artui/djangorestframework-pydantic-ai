@@ -449,7 +449,7 @@ requires-dist = [
     { name = "django", specifier = ">=4.2" },
     { name = "django-filter", marker = "extra == 'filter'", specifier = ">=23" },
     { name = "djangorestframework", specifier = ">=3.14" },
-    { name = "djangorestframework-services", specifier = ">=0.29.1,<0.30" },
+    { name = "djangorestframework-services", specifier = ">=0.32,<0.33" },
     { name = "pydantic-ai-slim", specifier = ">=2,<3" },
 ]
 provides-extras = ["filter"]
@@ -477,7 +477,7 @@ docs = [
 
 [[package]]
 name = "djangorestframework-services"
-version = "0.29.1"
+version = "0.32.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django" },
@@ -485,9 +485,9 @@ dependencies = [
     { name = "djangorestframework-dataclasses" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/96/cf/21812b3de61fd532b9df22026af6d2fdee90fe95aac068f39828a1cf9251/djangorestframework_services-0.29.1.tar.gz", hash = "sha256:630f1dabad317c4f430b0a12734e40317a8b86067067c2b5c8265c5c6cdb0c97", size = 426133, upload-time = "2026-07-29T09:53:50.353Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/65/254f25a05d982cbd8a9cbe41fcdb3af29f2bd1b75f3d1699078d549308b7/djangorestframework_services-0.32.0.tar.gz", hash = "sha256:a68458bf63cbd51264b8d27f8a76b820b968cd5f0eef64f298220aafc3b1410b", size = 446527, upload-time = "2026-07-31T13:35:48.74Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/52/18/7b9cfbb98e7b42afa09f9e91c8b88ff3a16d84ecba3fab92d17a9f05b236/djangorestframework_services-0.29.1-py3-none-any.whl", hash = "sha256:402596fceaf5d66d4da1af5b530e6c02d58b3a2454a852a24660d38a52b9d015", size = 204635, upload-time = "2026-07-29T09:53:48.896Z" },
+    { url = "https://files.pythonhosted.org/packages/08/b0/8580a37c94253a76e0117d0b9b74c17865ff7bff7482e99577c323f88cfc/djangorestframework_services-0.32.0-py3-none-any.whl", hash = "sha256:8a7096cf3cd9042d7e41d01e51d81d3855492ecb822d0fb3b96f0affc3c9eb8d", size = 213877, upload-time = "2026-07-31T13:35:47.372Z" },
 ]
 
 [[package]]

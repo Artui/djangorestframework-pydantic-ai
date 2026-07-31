@@ -6,6 +6,55 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- ⚠ **The `djangorestframework-services` floor moves to `>=0.32,<0.33`,** from
+  `>=0.29.1,<0.30`. ⛔ **This unblocks a live install conflict, not just a stale
+  pin:** drf-mcp-server 0.24.0 requires `>=0.32`, so the two packages were
+  **mutually uninstallable** — any project depending on both had no solution.
+  Confirmed with a resolver, not inferred from reading pins.
+
+  Nothing in the band required adaptation. 0.30 adds the `progress` pool seed
+  (⚠ so a `UrlKwarg` or `QueryParam` named `progress` is now refused at
+  registration, upstream), 0.31 adds a consumer-owned spec `metadata` mapping
+  this package never reads, and 0.32 adds `AdditionalInputRequired` — which this
+  release does adopt, below.
+
+### Added
+
+- **A service asking for input it was not given becomes a `ModelRetry`.** When a
+  service raises drf-services' `AdditionalInputRequired`, the toolset now tells
+  the model what is missing and asks it to call the tool again, instead of
+  returning a terminal `{"error": …}`:
+
+  ```python
+  def delete_rows(*, data, confirmed: bool = False):
+      doomed = rows_matching(data)
+      if len(doomed) > 100 and not confirmed:
+          raise AdditionalInputRequired(
+              f"{len(doomed)} rows match. Confirm to proceed.",
+              schema={"confirmed": {"type": "boolean"}},
+          )
+  ```
+
+  ⭐ **On this transport the mechanism already existed.** A model *is* the party
+  that can answer, and `ModelRetry` is already the "here is what to fix, call me
+  again" channel — so nothing new was needed: no elicitation surface, no second
+  result type, no dialog. The answer arrives as an ordinary argument on the next
+  call, which is exactly what the exception promises on every transport. (Where
+  the answering party is a *person*, as over MCP, the same exception needs a
+  real protocol surface — drf-mcp-server 0.24.0 has one.)
+
+  The retry message is the service's own, plus the argument names taken from
+  `schema`'s keys. The schema itself is deliberately not rendered into the
+  prose: the tool's parameter schema already describes those arguments, and a
+  second differently-shaped description is how a model ends up inventing a
+  nested object.
+
+  ⚠ **Ordering matters and is pinned by a test.** `AdditionalInputRequired`
+  subclasses `ServiceError`, so the generic business-error arm would swallow it
+  and report a request for input as a failure — the arm has to come first.
+
 ## [0.10.0] — 2026-07-29
 
 ### Added

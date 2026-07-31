@@ -13,6 +13,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
 from rest_framework_services import (
+    AdditionalInputRequired,
     SelectorKind,
     SelectorSpec,
     ServiceError,
@@ -331,6 +332,57 @@ def test_service_error_is_returned_as_payload():
 def test_service_validation_error_is_model_retry():
     with pytest.raises(ModelRetry):
         _call_spec(ServiceSpec(service=reject, atomic=False), object(), {})
+
+
+# --- a service asking for input it was not given -----------------------------
+
+
+def needs_confirmation(*, data=None, **_):
+    """A service that discovers mid-run that it needs one more argument."""
+    raise AdditionalInputRequired(
+        "9412 rows match. Confirm to proceed.",
+        schema={"confirmed": {"type": "boolean"}},
+    )
+
+
+def needs_something_unnamed(**_):
+    raise AdditionalInputRequired("This needs something I cannot describe.")
+
+
+def test_a_request_for_input_is_a_retry_not_a_dead_end():
+    """⭐ A model *is* the thing that can answer, and ``ModelRetry`` is already
+    the "here is what to fix, call me again" channel — so no elicitation surface
+    or second result type is needed on this transport."""
+    with pytest.raises(ModelRetry) as caught:
+        _call_spec(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
+    assert "9412 rows match" in str(caught.value)
+
+
+def test_the_retry_names_the_arguments_to_add() -> None:
+    """The keys of ``schema`` are input names, and the model is about to call the
+    same tool again — so the names are the actionable part."""
+    with pytest.raises(ModelRetry) as caught:
+        _call_spec(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
+    assert "`confirmed`" in str(caught.value)
+
+
+def test_a_bare_message_still_retries() -> None:
+    """``schema`` is optional upstream. A message alone is less actionable but
+    still better as a retry than as a terminal error."""
+    with pytest.raises(ModelRetry) as caught:
+        _call_spec(ServiceSpec(service=needs_something_unnamed, atomic=False), object(), {})
+    assert str(caught.value) == "This needs something I cannot describe."
+
+
+def test_it_is_not_swallowed_by_the_generic_service_error_arm() -> None:
+    """⚠ The ordering trap drf-services documents: ``AdditionalInputRequired``
+    subclasses ``ServiceError``, so a handler for the parent catches it first
+    unless the specific arm precedes it — which would report a request for input
+    as a terminal failure."""
+    result = _call_spec(ServiceSpec(service=boom, atomic=False), object(), {})
+    assert result == {"error": "nope"}, "the generic arm must still work"
+    with pytest.raises(ModelRetry):
+        _call_spec(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
 
 
 # --- permissions -------------------------------------------------------------
