@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.1] — 2026-08-02
+
 ### Changed
 
 - **Requires `djangorestframework-services>=0.33`** (was `>=0.32`).
@@ -464,7 +466,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.0...v0.9.1
