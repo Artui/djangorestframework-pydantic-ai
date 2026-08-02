@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires `djangorestframework-services>=0.33`** (was `>=0.32`).
+
+  ⚠ **Take this one promptly.** 0.33.0 closes an authorization bypass: in 0.32
+  and earlier a spec's nested target resolution (`instance_selector_spec` /
+  `collection_selector_spec`) built its kwarg pool without stripping the reserved
+  dispatcher seeds, so a caller-supplied `user` key outranked the authenticated
+  one in the pool that decides **which row gets mutated** and **which set gets
+  bulk-deleted**. An agent toolset supplies those params straight from the model's
+  tool call, so this is directly reachable here.
+
+  Exploitation needs a selector that declares a reserved seed name (`user` being
+  the realistic one). If any of your specs do, treat this as urgent.
+
+  The floor moves to `>=0.33` rather than merely widening the ceiling: a pairing
+  that resolves cleanly and leaves the bypass live is exactly what a resolver
+  cannot see.
+
+  No source changes — the fix arrives through `dispatch_spec` unchanged.
+
 ## [0.11.0] — 2026-07-31
 
 ### Changed
