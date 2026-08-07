@@ -117,7 +117,7 @@ checker. Use `# ty: ignore[<rule>]`, not the mypy-style comment.
 | Axis | Floor | Tested ceiling |
 |---|---|---|
 | Python | 3.10 | 3.14 |
-| Django | 4.2 | 6.0 |
+| Django | 4.2 | 6.1 |
 | DRF | 3.14 | latest |
 | drf-services | 0.27 | 0.27.x |
 | Pydantic-AI | 2.0 (`pydantic-ai-slim`) | latest |

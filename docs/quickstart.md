@@ -8,9 +8,11 @@ define for `djangorestframework-services`. A read selector and a write service:
 ```python
 from rest_framework_services import SelectorKind, SelectorSpec, ServiceSpec
 
+
 def list_orders(user):
     """List the current user's orders."""
     return Order.objects.filter(owner=user)
+
 
 list_orders_spec = SelectorSpec(
     kind=SelectorKind.LIST,
@@ -18,9 +20,11 @@ list_orders_spec = SelectorSpec(
     output_serializer=OrderSerializer,
 )
 
+
 def create_order(data, user):
     """Create an order for the current user."""
     return Order.objects.create(owner=user, **data)
+
 
 create_order_spec = ServiceSpec(
     service=create_order,
@@ -37,10 +41,12 @@ create_order_spec = ServiceSpec(
 ```python
 from rest_framework_pydantic_ai import SpecToolset
 
-toolset = SpecToolset({
-    "list_orders": list_orders_spec,
-    "create_order": create_order_spec,
-})
+toolset = SpecToolset(
+    {
+        "list_orders": list_orders_spec,
+        "create_order": create_order_spec,
+    }
+)
 ```
 
 Each key is the tool name. The description comes from the selector/service
