@@ -77,10 +77,12 @@ With capabilities, give each its own `id` — the id keys `defer_loading`'s
 catalog entry, so two capabilities sharing one would collide:
 
 ```python
-AgentConfig(capabilities=[
-    SpecCapability(registry.by_tag("read"), id="reads"),
-    SpecCapability(registry.by_tag("admin"), id="admin", defer_loading=True),
-])
+AgentConfig(
+    capabilities=[
+        SpecCapability(registry.by_tag("read"), id="reads"),
+        SpecCapability(registry.by_tag("admin"), id="admin", defer_loading=True),
+    ]
+)
 ```
 
 Here `defer_loading` hides the admin tools behind Pydantic-AI's native

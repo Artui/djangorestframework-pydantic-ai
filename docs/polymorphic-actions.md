@@ -23,18 +23,20 @@ from rest_framework_services import PolymorphicServiceSpec, ServiceSpec
 from rest_framework_pydantic_ai import SpecToolset
 
 moderate = PolymorphicServiceSpec(
-    discriminator=lambda *, data: data["op"],       # HTTP-only; unused here
+    discriminator=lambda *, data: data["op"],  # HTTP-only; unused here
     specs={
         "approve": ServiceSpec(service=approve_document, output_selector_spec=DOC_OUT),
         "reject": ServiceSpec(service=reject_document, output_selector_spec=DOC_OUT),
     },
 )
 
-toolset = SpecToolset({
-    "list_orders": orders_selector_spec,
-    # one tool per variant → moderate_document_approve, moderate_document_reject
-    **{f"moderate_document_{key}": variant for key, variant in moderate.specs.items()},
-})
+toolset = SpecToolset(
+    {
+        "list_orders": orders_selector_spec,
+        # one tool per variant → moderate_document_approve, moderate_document_reject
+        **{f"moderate_document_{key}": variant for key, variant in moderate.specs.items()},
+    }
+)
 ```
 
 Each expanded entry is an ordinary service tool: its parameter schema comes

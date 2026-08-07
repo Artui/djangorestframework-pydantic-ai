@@ -6,6 +6,29 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-07
+
+### Changed
+
+- **Requires `djangorestframework-services>=0.34`.** The floor moves for
+  `preconditions` — a declared, pool-bound slot for state and database business
+  rules that fires after validation and target resolution, so a rule reaches
+  every transport instead of settling in a view method. A `SpecToolset` built
+  from a spec carrying them gets them for free; no adapter code was needed.
+
+- **Tested against Django 6.1**, and the lock moved to
+  `djangorestframework>=3.18`. ⚠ Not cosmetic: Django 6.1 removed
+  `django.utils.cache.cc_delim_re`, which DRF 3.17.x imports at module level, so
+  that pairing fails at `import rest_framework`. The declared floor stays
+  `>=3.14` — the constraint that actually bit was the **lockfile**, which CI
+  obeys and which pinned 3.17.1 while `pyproject` had no ceiling at all.
+
+- **`pydantic-ai-slim` exercised at 2.26** (from 2.6 in the lock — twenty
+  minors). No adaptation was required, which is the same shape the CEIL wave
+  found twice: *before pricing an upstream jump, check what the consumer
+  actually touches.* This adapter binds to `AbstractToolset` and the tool-schema
+  surface, and neither moved.
+
 ## [0.11.1] — 2026-08-02
 
 ### Changed
@@ -466,7 +489,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.9.1...v0.10.0
