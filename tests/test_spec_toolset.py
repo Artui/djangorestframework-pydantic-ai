@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from types import SimpleNamespace
 
 import django_filters
@@ -11,7 +13,7 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import BasePermission
+from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework_services import (
     AdditionalInputRequired,
     SelectorKind,
@@ -27,12 +29,16 @@ from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset, UrlKw
 from rest_framework_pydantic_ai.spec_toolset import (
     _BASE_INSTRUCTIONS,
     _LIST_INSTRUCTION,
+    UndescribedToolWarning,
+    UnguardedSpecWarning,
     _call_spec,
+    _default_get_progress,
     _derive_instructions,
     _is_list_selector,
+    _ordering_values,
     _output_extras,
     _paginate,
-    _split_order,
+    _with_deadline,
 )
 from tests.testapp.models import Widget
 from tests.testapp.serializers import WidgetInputSerializer, WidgetSerializer
@@ -66,6 +72,9 @@ def reject():
 
 
 def list_spec(**kwargs):
+    # Guarded by default: ``require_permissions`` defaults to True, so an
+    # unguarded spec is a construction error and every fixture would trip it.
+    kwargs.setdefault("permission_classes", [AllowAny])
     return SelectorSpec(
         kind=SelectorKind.LIST,
         selector=list_widgets,
@@ -75,6 +84,9 @@ def list_spec(**kwargs):
 
 
 def retrieve_spec(**kwargs):
+    # Guarded by default: ``require_permissions`` defaults to True, so an
+    # unguarded spec is a construction error and every fixture would trip it.
+    kwargs.setdefault("permission_classes", [AllowAny])
     return SelectorSpec(
         kind=SelectorKind.RETRIEVE,
         selector=get_widget,
@@ -84,6 +96,9 @@ def retrieve_spec(**kwargs):
 
 
 def create_spec(**kwargs):
+    # Guarded by default: ``require_permissions`` defaults to True, so an
+    # unguarded spec is a construction error and every fixture would trip it.
+    kwargs.setdefault("permission_classes", [AllowAny])
     return ServiceSpec(
         service=create_widget,
         input_serializer=WidgetInputSerializer,
@@ -191,7 +206,9 @@ async def test_list_selector_tool_advertises_pagination_args():
     toolset = SpecToolset({"list_widgets": list_spec()})
     tools = await toolset.get_tools(None)
     props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
-    assert {"page", "limit", "order"} <= set(props)
+    assert {"page", "limit"} <= set(props)
+    # ``ordering`` is opt-in: nothing declared, nothing advertised.
+    assert "ordering" not in props
 
 
 async def test_annotations_mark_read_vs_write():
@@ -202,8 +219,14 @@ async def test_annotations_mark_read_vs_write():
 
 
 async def test_selector_without_callable_has_no_description():
-    spec = SelectorSpec(kind=SelectorKind.LIST, selector=None, output_serializer=WidgetSerializer)
-    toolset = SpecToolset({"empty": spec})
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=None,
+        output_serializer=WidgetSerializer,
+        permission_classes=[AllowAny],
+    )
+    with pytest.warns(UndescribedToolWarning):
+        toolset = SpecToolset({"empty": spec})
     tools = await toolset.get_tools(None)
     assert tools["empty"].tool_def.description is None
 
@@ -231,7 +254,9 @@ async def test_call_tool_uses_default_deps_user():
         seen["user"] = user
         return {"ok": True}
 
-    toolset = SpecToolset({"ping": ServiceSpec(service=ping, atomic=False)})
+    toolset = SpecToolset(
+        {"ping": ServiceSpec(service=ping, permission_classes=[AllowAny], atomic=False)}
+    )
     result = await toolset.call_tool("ping", {}, ctx_for("alice"), None)
     assert result == {"ok": True}
     assert seen["user"] == "alice"
@@ -246,7 +271,8 @@ async def test_call_tool_honours_custom_get_user():
         return {"ok": True}
 
     toolset = SpecToolset(
-        {"ping": ServiceSpec(service=ping, atomic=False)}, get_user=lambda ctx: ctx.principal
+        {"ping": ServiceSpec(service=ping, permission_classes=[AllowAny], atomic=False)},
+        get_user=lambda ctx: ctx.principal,
     )
     await toolset.call_tool("ping", {}, SimpleNamespace(principal="bob"), None)
     assert seen["user"] == "bob"
@@ -270,7 +296,9 @@ def test_list_selector_orders_and_limits():
     user = User.objects.create(username="u")
     for name, price in [("a", 3), ("b", 1), ("c", 2)]:
         Widget.objects.create(name=name, price=price, owner=user)
-    result = _call_spec(list_spec(), user, {"order": "price", "limit": 2})
+    result = _call_spec(
+        list_spec(), user, {"ordering": "price", "limit": 2}, ordering_fields=["price"]
+    )
     assert [w["name"] for w in result] == ["b", "c"]
 
 
@@ -279,16 +307,28 @@ def test_list_selector_second_page():
     user = User.objects.create(username="u")
     for name, price in [("a", 1), ("b", 2), ("c", 3)]:
         Widget.objects.create(name=name, price=price, owner=user)
-    result = _call_spec(list_spec(), user, {"order": "price", "page": 2, "limit": 2})
+    result = _call_spec(
+        list_spec(),
+        user,
+        {"ordering": "price", "page": 2, "limit": 2},
+        ordering_fields=["price"],
+    )
     assert [w["name"] for w in result] == ["c"]
 
 
 @pytest.mark.django_db
-def test_bad_order_field_becomes_model_retry():
+def test_a_declared_field_that_is_not_a_column_becomes_a_retry():
+    """The remaining way to reach a ``FieldError`` — and it is the author's fault.
+
+    Enum validation stops a model from naming an arbitrary column, so what is
+    left is ``ordering_fields=["nope"]``: a declaration that cannot be checked
+    at construction, because knowing whether a name is a real column means
+    asking a queryset that does not exist yet.
+    """
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    with pytest.raises(ModelRetry):
-        _call_spec(list_spec(), user, {"order": "nope"})
+    with pytest.raises(ModelRetry, match="invalid ordering"):
+        _call_spec(list_spec(), user, {"ordering": "nope"}, ordering_fields=["nope"])
 
 
 @pytest.mark.django_db
@@ -396,12 +436,12 @@ def test_denied_permission_raises():
 # --- pure helpers ------------------------------------------------------------
 
 
-def test_split_order_variants():
-    assert _split_order(None) == []
-    assert _split_order("") == []
-    assert _split_order("name") == ["name"]
-    assert _split_order(" -price , name ") == ["-price", "name"]
-    assert _split_order("a,,b") == ["a", "b"]
+def test_ordering_values_pairs_each_field_with_its_descending_form():
+    # The same construction the MCP transport uses, so one registry exposed over
+    # both surfaces advertises one vocabulary.
+    assert _ordering_values([]) == []
+    assert _ordering_values(["name"]) == ["name", "-name"]
+    assert _ordering_values(["name", "price"]) == ["name", "-name", "price", "-price"]
 
 
 def test_paginate_variants():
@@ -457,8 +497,8 @@ def test_bool_page_is_model_retry():
 
 
 def test_non_string_order_is_model_retry():
-    with pytest.raises(ModelRetry, match="order"):
-        _call_spec(list_spec(), object(), {"order": ["price"]})
+    with pytest.raises(ModelRetry, match="ordering"):
+        _call_spec(list_spec(), object(), {"ordering": ["price"]}, ordering_fields=["price"])
 
 
 # --- unknown-arguments knob --------------------------------------------------
@@ -647,7 +687,7 @@ def test_reserved_query_param_name_is_rejected():
     # drf-services' shared validator, so one exception type now covers every bad
     # declaration instead of ValueError-for-pagination / something-else-for-seeds.
     with pytest.raises(ImproperlyConfigured, match="reserved transport keys"):
-        SpecToolset({"list_widgets": list_spec()}, query_params=[QueryParam("order")])
+        SpecToolset({"list_widgets": list_spec()}, query_params=[QueryParam("ordering")])
 
 
 def test_reserved_per_tool_query_param_name_is_rejected():
@@ -741,7 +781,9 @@ async def test_agent_run_executes_spec_tool_in_process():
         seen["user"] = user
         return {"ok": True}
 
-    toolset = SpecToolset({"ping": ServiceSpec(service=ping, atomic=False)})
+    toolset = SpecToolset(
+        {"ping": ServiceSpec(service=ping, permission_classes=[AllowAny], atomic=False)}
+    )
     agent = Agent(_tool_calling_model("ping", {}, {}), deps_type=AgentDeps, toolsets=[toolset])
     result = await agent.run("go", deps=AgentDeps(user="alice"))
     assert result.output == "done"
@@ -784,7 +826,14 @@ async def test_agent_run_recovers_from_model_retry():
         return {"ok": True}
 
     toolset = SpecToolset(
-        {"flaky": ServiceSpec(service=flaky, input_serializer=_ModeInputSerializer, atomic=False)}
+        {
+            "flaky": ServiceSpec(
+                service=flaky,
+                input_serializer=_ModeInputSerializer,
+                permission_classes=[AllowAny],
+                atomic=False,
+            )
+        }
     )
     agent = Agent(
         _tool_calling_model("flaky", {"mode": "bad"}, {"mode": "good"}),
@@ -813,6 +862,7 @@ def _filtered_list_spec():
         selector=list_widgets,
         output_serializer=WidgetSerializer,
         filter_set=_WidgetFilterSet,
+        permission_classes=[AllowAny],
     )
 
 
@@ -883,7 +933,7 @@ async def test_url_kwarg_default_appears_in_schema():
 
 def test_reserved_url_kwarg_name_is_rejected():
     with pytest.raises(ImproperlyConfigured, match="reserved transport keys"):
-        SpecToolset({"list_widgets": list_spec()}, url_kwargs=[UrlKwarg("order")])
+        SpecToolset({"list_widgets": list_spec()}, url_kwargs=[UrlKwarg("ordering")])
 
 
 def test_reserved_per_tool_url_kwarg_name_is_rejected():
@@ -1004,7 +1054,10 @@ def list_in_project(user, **extras: Unpack[_ProjectExtras]):
 
 def _dual_declared_spec():
     return SelectorSpec(
-        kind=SelectorKind.LIST, selector=list_in_project, output_serializer=WidgetSerializer
+        kind=SelectorKind.LIST,
+        selector=list_in_project,
+        output_serializer=WidgetSerializer,
+        permission_classes=[AllowAny],
     )
 
 
@@ -1207,7 +1260,10 @@ class FileishSerializer(serializers.ModelSerializer):
 
 def fileish_spec():
     return SelectorSpec(
-        kind=SelectorKind.LIST, selector=list_widgets, output_serializer=FileishSerializer
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=FileishSerializer,
+        permission_classes=[AllowAny],
     )
 
 
@@ -1248,3 +1304,364 @@ async def test_toolset_without_a_host_still_renders():
     tools = await toolset.get_tools(None)
     result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
     assert [w["doc_url"] for w in result] == ["/media/doc.pdf"]
+
+
+# ----- registration-time honesty: permissions and descriptions -----
+
+
+def _unguarded_list_spec():
+    """Deliberately without ``permission_classes`` — the shape under test."""
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=WidgetSerializer,
+    )
+
+
+def test_an_unguarded_spec_is_refused_by_default():
+    """Over HTTP ``None`` means *inherit*; off HTTP there is nothing to inherit.
+
+    A spec guarded behind a viewset, with passing HTTP tests, is callable by
+    whatever the model decides to call the moment it reaches a toolset. There is
+    no signal anywhere, which is why this has to fire at construction.
+    """
+    with pytest.raises(ImproperlyConfigured) as excinfo:
+        SpecToolset({"list_widgets": _unguarded_list_spec()})
+
+    message = str(excinfo.value)
+    assert "'list_widgets'" in message
+    assert "require_permissions=False" in message
+
+
+def test_every_unguarded_spec_is_named_at_once():
+    """One construction, one list — not one error per fix-and-rerun cycle."""
+    with pytest.raises(ImproperlyConfigured) as excinfo:
+        SpecToolset({"a": _unguarded_list_spec(), "b": _unguarded_list_spec()})
+
+    assert "'a', 'b'" in str(excinfo.value)
+
+
+def test_require_permissions_false_downgrades_to_a_warning():
+    with pytest.warns(UnguardedSpecWarning, match="list_widgets"):
+        toolset = SpecToolset({"list_widgets": _unguarded_list_spec()}, require_permissions=False)
+
+    assert toolset.id == "drf-specs"
+
+
+def test_a_guarded_spec_says_nothing(recwarn):
+    SpecToolset({"list_widgets": list_spec()})
+    assert [w for w in recwarn.list if issubclass(w.category, UnguardedSpecWarning)] == []
+
+
+async def test_a_description_override_reaches_the_tool_def():
+    """The docstring an API developer reads is not the sentence a model needs."""
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()},
+        descriptions={"list_widgets": "Use when the user asks what they own."},
+    )
+    tools = await toolset.get_tools(None)
+    assert tools["list_widgets"].tool_def.description == "Use when the user asks what they own."
+
+
+def test_a_description_for_an_unknown_tool_is_a_typo():
+    """Dropping it silently would leave the tool with the text it was meant to lose."""
+    with pytest.raises(ValueError, match="unknown tool 'list_widget'"):
+        SpecToolset({"list_widgets": list_spec()}, descriptions={"list_widget": "…"})
+
+
+def test_a_tool_with_no_description_anywhere_warns():
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=None,
+        output_serializer=WidgetSerializer,
+        permission_classes=[AllowAny],
+    )
+    with pytest.warns(UndescribedToolWarning, match="'empty'"):
+        SpecToolset({"empty": spec})
+
+
+def test_a_whitespace_only_description_counts_as_none():
+    """Otherwise the override is a way to silence the warning without fixing it."""
+    with pytest.warns(UndescribedToolWarning, match="'list_widgets'"):
+        SpecToolset({"list_widgets": list_spec()}, descriptions={"list_widgets": "   "})
+
+
+# ----- ordering: the MCP transport's vocabulary -----
+
+
+async def test_declared_ordering_fields_become_an_enum():
+    """An enum, not a free string — the only shape that says what may be sorted."""
+    toolset = SpecToolset({"list_widgets": list_spec()}, ordering_fields=["name", "price"])
+    tools = await toolset.get_tools(None)
+    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    assert props["ordering"]["enum"] == ["name", "-name", "price", "-price"]
+
+
+async def test_per_tool_ordering_fields_replace_the_toolset_wide_set():
+    """Replace, not merge: the sort keys for two collections have nothing to do
+    with each other, unlike a query param, which is usually cross-cutting."""
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "other": list_spec()},
+        ordering_fields=["name"],
+        tool_ordering_fields={"other": ["price"]},
+    )
+    tools = await toolset.get_tools(None)
+    assert tools["list_widgets"].tool_def.parameters_json_schema["properties"]["ordering"][
+        "enum"
+    ] == ["name", "-name"]
+    assert tools["other"].tool_def.parameters_json_schema["properties"]["ordering"]["enum"] == [
+        "price",
+        "-price",
+    ]
+
+
+@pytest.mark.django_db
+def test_a_value_outside_the_enum_is_a_retry_naming_the_options():
+    """⚠ Deliberately unlike the MCP transport, which silently ignores it.
+
+    Silently returning unsorted rows to something that asked for newest-first is
+    the worst outcome available: the model cannot tell, and neither can the user
+    reading its answer.
+    """
+    with pytest.raises(ModelRetry, match="`name`, `-name`"):
+        _call_spec(list_spec(), object(), {"ordering": "price"}, ordering_fields=["name"])
+
+
+@pytest.mark.django_db
+def test_ordering_on_a_tool_that_declares_none_says_so():
+    with pytest.raises(ModelRetry, match="does not accept an `ordering` argument"):
+        _call_spec(list_spec(), object(), {"ordering": "name"})
+
+
+async def test_the_ordering_instruction_appears_only_when_some_tool_declares_fields():
+    without = await SpecToolset({"list_widgets": list_spec()}).get_instructions(None)
+    assert "accept `ordering`" not in without
+
+    with_fields = await SpecToolset(
+        {"list_widgets": list_spec()}, ordering_fields=["name"]
+    ).get_instructions(None)
+    assert "accept `ordering`" in with_fields
+
+
+# ----- progress: accepted and forwarded, never constructed -----
+
+
+class _RecordingProgress:
+    """Stands in for whatever is driving the agent — an SSE frame, a task record."""
+
+    def __init__(self):
+        self.reports = []
+
+    def __call__(self, progress, *, total=None, message=None, meta=None):
+        self.reports.append((progress, total, message, meta))
+
+
+def reporting_service(data, user, progress):
+    """Creates a widget, reporting as it goes."""
+    progress(1, total=1, message="Creating")
+    return Widget.objects.create(owner=user, **data)
+
+
+def reporting_spec():
+    return ServiceSpec(
+        service=reporting_service,
+        input_serializer=WidgetInputSerializer,
+        output_selector_spec=SelectorSpec(
+            kind=SelectorKind.RETRIEVE, output_serializer=WidgetSerializer
+        ),
+        permission_classes=[AllowAny],
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_reporter_on_the_deps_reaches_the_service():
+    """The caller supplies the sink; the toolset only carries it.
+
+    A toolset that *constructed* one — "write progress to the logger" — would
+    have picked a transport it does not own, which is the thing this package
+    exists not to do.
+    """
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    sink = _RecordingProgress()
+    toolset = SpecToolset({"create_widget": reporting_spec()})
+    tools = await toolset.get_tools(None)
+
+    await toolset.call_tool(
+        "create_widget",
+        {"name": "a", "price": 1},
+        SimpleNamespace(deps=AgentDeps(user=user, progress=sink)),
+        tools["create_widget"],
+    )
+    assert sink.reports == [(1, 1, "Creating", None)]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_the_same_service_runs_with_no_reporter_supplied():
+    """``None`` is the ordinary case: drf-services substitutes its no-op."""
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    toolset = SpecToolset({"create_widget": reporting_spec()})
+    tools = await toolset.get_tools(None)
+
+    result = await toolset.call_tool(
+        "create_widget", {"name": "a", "price": 1}, ctx_for(user), tools["create_widget"]
+    )
+    assert result["name"] == "a"
+
+
+async def test_a_deps_type_without_a_progress_field_is_fine():
+    """A project's own deps class predates this field; a missing sink is normal."""
+    assert _default_get_progress(SimpleNamespace(deps=SimpleNamespace(user=None))) is None
+    assert _default_get_progress(SimpleNamespace()) is None
+
+
+# ----- the logger -----
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_call_is_timed_at_debug(caplog):
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    toolset = SpecToolset({"list_widgets": list_spec()})
+    tools = await toolset.get_tools(None)
+
+    with caplog.at_level(logging.DEBUG, logger="rest_framework_pydantic_ai"):
+        await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert "Tool 'list_widgets' on toolset 'drf-specs' took" in caplog.text
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_denial_is_logged_at_warning_and_still_raises(caplog):
+    """⚠ The one failure with no other trace.
+
+    A retry reaches the model and an ``{"error": …}`` reaches the answer, but a
+    denial aborts the run and is absorbed by whatever is driving it — so over
+    HTTP this is a `403` in the access log and here it was nothing at all.
+    """
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    toolset = SpecToolset({"list_widgets": list_spec(permission_classes=[DenyAll])})
+    tools = await toolset.get_tools(None)
+
+    with (
+        caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"),
+        pytest.raises(PermissionDenied),
+    ):
+        await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert "Permission denied calling tool 'list_widgets'" in caplog.text
+
+
+# ----- outbound bounds -----
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_an_over_budget_result_fails_rather_than_truncating():
+    """⛔ A partial payload looks complete.
+
+    A list cut at the byte ceiling is indistinguishable from a list that had
+    that many rows, so a model would answer confidently from data it does not
+    know is missing. Refusing costs a turn; truncating costs correctness.
+    """
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    for n in range(5):
+        await sync_to_async(Widget.objects.create)(name=f"w{n}", price=n, owner=user)
+
+    toolset = SpecToolset({"list_widgets": list_spec()}, max_result_bytes=20)
+    tools = await toolset.get_tools(None)
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert "over the 20 byte ceiling" in result["error"]
+    assert "not truncated" in result["error"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_result_inside_the_ceiling_passes_through_untouched():
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+
+    toolset = SpecToolset({"list_widgets": list_spec()}, max_result_bytes=100_000)
+    tools = await toolset.get_tools(None)
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert [w["name"] for w in result] == ["a"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_per_tool_ceiling_of_none_means_no_ceiling_for_that_tool():
+    """Absent and ``None`` are different answers: one inherits, one opts out."""
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()},
+        max_result_bytes=1,
+        tool_max_result_bytes={"list_widgets": None},
+    )
+    tools = await toolset.get_tools(None)
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert [w["name"] for w in result] == ["a"]
+
+
+def test_a_per_tool_ceiling_for_an_unknown_tool_is_a_typo():
+    with pytest.raises(ValueError, match="unknown tool 'nope'"):
+        SpecToolset({"list_widgets": list_spec()}, tool_max_result_bytes={"nope": 10})
+
+
+async def test_the_page_ceiling_is_advertised_on_limit():
+    toolset = SpecToolset({"list_widgets": list_spec()}, max_page_size=50)
+    tools = await toolset.get_tools(None)
+    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    assert props["limit"]["maximum"] == 50
+
+
+@pytest.mark.django_db
+def test_the_page_ceiling_is_clamped_as_well_as_advertised():
+    """Advertising alone is a hint that nothing obliges a model to honour."""
+    user = User.objects.create(username="u")
+    for n in range(5):
+        Widget.objects.create(name=f"w{n}", price=n, owner=user)
+
+    result = _call_spec(list_spec(), user, {"limit": 1000}, max_page_size=2)
+    assert len(result) == 2
+
+
+@pytest.mark.django_db
+def test_an_omitted_limit_becomes_the_ceiling():
+    """The unbounded read is the one that hurts, and it is the one a model
+    produces by simply not thinking about pagination."""
+    user = User.objects.create(username="u")
+    for n in range(5):
+        Widget.objects.create(name=f"w{n}", price=n, owner=user)
+
+    assert len(_call_spec(list_spec(), user, {}, max_page_size=3)) == 3
+    # With no ceiling configured, an omitted limit still means "everything".
+    assert len(_call_spec(list_spec(), user, {})) == 5
+
+
+async def test_a_call_past_its_deadline_answers_instead_of_hanging():
+    async def _slow():
+        await asyncio.sleep(1)
+
+    result = await _with_deadline(_slow(), 0.01, label="list_widgets")
+    assert "longer than the 0.01s limit" in result["error"]
+
+
+async def test_no_deadline_awaits_normally():
+    async def _quick():
+        return "done"
+
+    assert await _with_deadline(_quick(), None, label="x") == "done"

@@ -336,9 +336,9 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 dependencies = [
-    { name = "asgiref" },
-    { name = "sqlparse" },
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
+    { name = "asgiref", marker = "python_full_version < '3.12'" },
+    { name = "sqlparse", marker = "python_full_version < '3.12'" },
+    { name = "tzdata", marker = "python_full_version < '3.12' and sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d5/d8/43e9d000519adceb189620b6869ff88031e046df91c2e9da72f8f6918399/django-5.2.17.tar.gz", hash = "sha256:9d4d93be539a18ab80d058eb515900e10951e04c537c5a6b394fc49528d3251f", size = 10889740, upload-time = "2026-08-04T15:04:03.173Z" }
 wheels = [
@@ -353,9 +353,9 @@ resolution-markers = [
     "python_full_version >= '3.12'",
 ]
 dependencies = [
-    { name = "asgiref" },
-    { name = "sqlparse" },
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
+    { name = "asgiref", marker = "python_full_version >= '3.12'" },
+    { name = "sqlparse", marker = "python_full_version >= '3.12'" },
+    { name = "tzdata", marker = "python_full_version >= '3.12' and sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e2/42/6cb20996733984c1f6661daeda3877990836c76c633c6c8879d39f7120eb/django-6.1.tar.gz", hash = "sha256:86a2aacd59b817e4d6ac2ebfe22356c58f66f7b24e503f71b7c2fead677ee48b", size = 11223034, upload-time = "2026-08-05T19:21:53.789Z" }
 wheels = [
@@ -475,7 +475,7 @@ requires-dist = [
     { name = "django", specifier = ">=4.2" },
     { name = "django-filter", marker = "extra == 'filter'", specifier = ">=23" },
     { name = "djangorestframework", specifier = ">=3.14" },
-    { name = "djangorestframework-services", specifier = ">=0.34,<0.35" },
+    { name = "djangorestframework-services", specifier = ">=0.35,<0.36" },
     { name = "pydantic-ai-slim", specifier = ">=2,<3" },
 ]
 provides-extras = ["filter"]
@@ -503,7 +503,7 @@ docs = [
 
 [[package]]
 name = "djangorestframework-services"
-version = "0.34.0"
+version = "0.35.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "django", version = "5.2.17", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -512,9 +512,9 @@ dependencies = [
     { name = "djangorestframework-dataclasses" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/23/f5/512f9c089261f969fa2fa17d31760738c31cda07320bd24f0faf6a8d9771/djangorestframework_services-0.34.0.tar.gz", hash = "sha256:38b4c7c77bf0f4895492c942b4c70adb7bed176dbcb8bd92b838e0d7fde427aa", size = 466411, upload-time = "2026-08-05T19:44:29.15Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/52/04/421643375f40437f726a212bdbb2000b03fbd00578117a824a8b6d051441/djangorestframework_services-0.35.0.tar.gz", hash = "sha256:c208d497c8c762e228f6ddfa079918ece9cea58783cc3c5108445a61d56bd06a", size = 475341, upload-time = "2026-08-10T05:39:56.723Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9a/a5/d30122fc6b48e3d1cf0f3353e1ae20fab9af6e2a2e9018a8eb4550caf7b2/djangorestframework_services-0.34.0-py3-none-any.whl", hash = "sha256:3f168301b79bce1530aa246341bb91fb98d8af30a80e8d1a4e92d8806294c4b2", size = 221689, upload-time = "2026-08-05T19:44:27.2Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/8d/36b0b58532c231ed40816e244f255b3dd75a5819b51b096bc0d2852b3d57/djangorestframework_services-0.35.0-py3-none-any.whl", hash = "sha256:1817f361c44664e1ee3750070eef386932727b31bf53a46da06117587413e803", size = 227651, upload-time = "2026-08-10T05:39:55.004Z" },
 ]
 
 [[package]]
@@ -536,7 +536,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [

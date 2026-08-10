@@ -41,7 +41,7 @@ dependencies = [
     # 0.34 floor: ``preconditions`` on the spec. The band also carries
     # ``AdditionalInputRequired`` (0.32), the ``progress`` pool seed (0.30) and
     # consumer-owned spec ``metadata`` (0.31).
-    "djangorestframework-services>=0.34,<0.35",
+    "djangorestframework-services>=0.35,<0.36",
     "pydantic-ai-slim>=2,<3",
 ]
 
@@ -126,7 +126,7 @@ root = ["./rest_framework_pydantic_ai"]
 # rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.12.0"
+current_version = "0.13.0"
 allow_dirty = false
 commit = false
 tag = false

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
+from rest_framework.permissions import AllowAny
 from rest_framework_services import (
     SelectorKind,
     SelectorSpec,
@@ -33,6 +34,7 @@ def ping(user):
 
 
 def list_spec(**kwargs):
+    kwargs.setdefault("permission_classes", [AllowAny])
     return SelectorSpec(
         kind=SelectorKind.LIST,
         selector=list_widgets,
@@ -42,6 +44,7 @@ def list_spec(**kwargs):
 
 
 def retrieve_spec(**kwargs):
+    kwargs.setdefault("permission_classes", [AllowAny])
     return SelectorSpec(
         kind=SelectorKind.RETRIEVE,
         selector=get_widget,
@@ -51,6 +54,7 @@ def retrieve_spec(**kwargs):
 
 
 def ping_spec(**kwargs):
+    kwargs.setdefault("permission_classes", [AllowAny])
     return ServiceSpec(service=ping, atomic=False, **kwargs)
 
 
@@ -145,7 +149,11 @@ async def test_capability_executes_its_tool_in_process():
     agent = Agent(
         FunctionModel(model_fn),
         deps_type=AgentDeps,
-        capabilities=[SpecCapability({"run": ServiceSpec(service=tool, atomic=False)})],
+        capabilities=[
+            SpecCapability(
+                {"run": ServiceSpec(service=tool, permission_classes=[AllowAny], atomic=False)}
+            )
+        ],
     )
     result = await agent.run("go", deps=AgentDeps(user="alice"))
     assert result.output == "done"
