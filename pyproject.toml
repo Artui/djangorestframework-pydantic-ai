@@ -41,7 +41,7 @@ dependencies = [
     # 0.34 floor: ``preconditions`` on the spec. The band also carries
     # ``AdditionalInputRequired`` (0.32), the ``progress`` pool seed (0.30) and
     # consumer-owned spec ``metadata`` (0.31).
-    "djangorestframework-services>=0.34,<0.35",
+    "djangorestframework-services>=0.35,<0.36",
     "pydantic-ai-slim>=2,<3",
 ]
 

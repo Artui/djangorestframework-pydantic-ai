@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from rest_framework.permissions import AllowAny
 from rest_framework_services import (
     SelectorKind,
     SelectorSpec,
@@ -30,11 +31,12 @@ def _list_spec() -> SelectorSpec:
         kind=SelectorKind.LIST,
         selector=list_widgets,
         output_serializer=WidgetSerializer,
+        permission_classes=[AllowAny],
     )
 
 
 def _create_spec() -> ServiceSpec:
-    return ServiceSpec(service=create_widget, atomic=False)
+    return ServiceSpec(service=create_widget, permission_classes=[AllowAny], atomic=False)
 
 
 def _registry() -> SpecRegistry:

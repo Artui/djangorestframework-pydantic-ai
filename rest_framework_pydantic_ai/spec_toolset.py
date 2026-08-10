@@ -13,7 +13,7 @@ shape); projects that thread identity differently pass a ``get_user`` extractor.
 
 Each call mirrors what a DRF view does, in order:
 
-1. strip a list selector's ``page`` / ``limit`` / ``order`` tool args (ordering
+1. strip a list selector's ``page`` / ``limit`` / ``ordering`` tool args (ordering
    and pagination are transport concerns, kept off the spec) plus any registered
    :class:`~rest_framework_pydantic_ai.QueryParam` args (read-shaping query
    params that seed ``request.query_params``, not spec inputs);
@@ -31,8 +31,8 @@ Error semantics map drf-services' failure kinds onto Pydantic-AI's model-loop:
   errors instead of the run dying;
 - business ``ServiceError`` and an unresolved instance (``not_found``) → a
   model-readable ``{"error": ...}`` payload;
-- a bad ``order`` field → ``ModelRetry`` (the model picked a column that does
-  not exist);
+- an ``ordering`` value outside the declared enum → ``ModelRetry`` (naming the
+  values that are accepted);
 - a denied ``permission_classes`` check raises ``PermissionDenied`` and aborts
   the run, exactly as it would over HTTP.
 """
@@ -41,12 +41,13 @@ from __future__ import annotations
 
 import inspect
 import re
+import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
 from asgiref.sync import sync_to_async
-from django.core.exceptions import FieldError
+from django.core.exceptions import FieldError, ImproperlyConfigured
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
@@ -67,6 +68,7 @@ from rest_framework_services import (
     render_spec_output,
     spec_to_json_schema,
 )
+from rest_framework_services.dispatch.unguarded_specs import unguarded_specs
 from rest_framework_services.types.validate_channel_names import validate_channel_names
 
 from rest_framework_pydantic_ai.types.query_param import QueryParam
@@ -89,7 +91,7 @@ def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
 
 # List-selector pagination args own these names; a registered ``QueryParam`` or
 # ``UrlKwarg`` may not shadow them.
-_RESERVED_PARAM_NAMES = frozenset({"page", "limit", "order"})
+_RESERVED_PARAM_NAMES = frozenset({"page", "limit", "ordering"})
 
 # Tool names are surfaced verbatim to the model provider, which constrains them
 # to this shape (OpenAI / Anthropic function-name rules). Validated at
@@ -117,12 +119,6 @@ _LIST_PARAM_SCHEMA: dict[str, Any] = {
         "minimum": 1,
         "description": "Maximum number of items to return.",
     },
-    "order": {
-        "type": "string",
-        "description": (
-            "Comma-separated fields to order by; prefix a field with `-` for descending."
-        ),
-    },
 }
 
 
@@ -132,7 +128,7 @@ class _PageArgs:
 
     page: int | None
     limit: int | None
-    order: str | None
+    ordering: str | None
 
 
 class SpecToolset(AbstractToolset[Any]):
@@ -148,7 +144,7 @@ class SpecToolset(AbstractToolset[Any]):
 
     Each key becomes one tool: the description is the spec's selector/service
     docstring, the parameter schema comes from ``spec_to_json_schema`` (with a
-    list selector's ``page`` / ``limit`` / ``order`` args merged in), and the
+    list selector's ``page`` / ``limit`` / ``ordering`` args merged in), and the
     ``readOnlyHint`` annotation is derived from the spec kind (selectors read,
     services mutate).
 
@@ -180,7 +176,7 @@ class SpecToolset(AbstractToolset[Any]):
     ``query_params`` / ``tool_query_params`` register read-shaping
     :class:`~rest_framework_pydantic_ai.QueryParam` args that seed
     ``request.query_params`` over the off-HTTP path — the extensible generalization
-    of ``page`` / ``limit`` / ``order``. ``query_params`` applies to **every** tool;
+    of ``page`` / ``limit`` / ``ordering``. ``query_params`` applies to **every** tool;
     ``tool_query_params`` maps a tool name to params for that tool only (a per-tool
     param overrides a toolset-wide one of the same name). Each is advertised as a
     tool arg, then popped at call time and handed to
@@ -224,7 +220,7 @@ class SpecToolset(AbstractToolset[Any]):
     variant: an origin is a property of the deployment, not of a tool.
 
     ``max_retries`` is each tool's retry budget: how many times a
-    :class:`pydantic_ai.ModelRetry` (a validation failure, a bad ``order``
+    :class:`pydantic_ai.ModelRetry` (a validation failure, a bad ``ordering``
     field) is fed back to the model before the run aborts with
     ``UnexpectedModelBehavior``. Defaults to ``1``, matching pydantic-ai's own
     function-tool default.
@@ -248,11 +244,17 @@ class SpecToolset(AbstractToolset[Any]):
         tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None = None,
         host: str | None = None,
         max_retries: int = 1,
+        require_permissions: bool = True,
+        descriptions: Mapping[str, str] | None = None,
+        ordering_fields: Sequence[str] = (),
+        tool_ordering_fields: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         resolved = _resolve_specs(specs)
         _validate_tool_names(resolved)
+        _validate_permissions(resolved, require=require_permissions)
         _validate_query_params(query_params, tool_query_params, resolved)
         _validate_url_kwargs(url_kwargs, tool_url_kwargs, resolved)
+        self._descriptions: dict[str, str] = _validate_descriptions(resolved, descriptions)
         self._id = id
         self._instructions_override = instructions
         self._specs: dict[str, Spec] = dict(resolved)
@@ -271,6 +273,17 @@ class SpecToolset(AbstractToolset[Any]):
             name: _merge_url_kwargs(url_kwargs, (tool_url_kwargs or {}).get(name, ()))
             for name in self._specs
         }
+        # Ordering is opt-in and per-tool, matching the MCP transport: a field
+        # nobody declared is not orderable, so a model cannot ask a list tool to
+        # sort by an arbitrary column (an unindexed one is a table scan, and a
+        # non-existent one is a wasted turn). Per-tool *replaces* rather than
+        # merges — the sensible sort keys for `list_invoices` and `list_users`
+        # have nothing to do with each other, unlike a query param, which is
+        # usually a cross-cutting concern.
+        self._tool_ordering_fields: dict[str, tuple[str, ...]] = {
+            name: tuple((tool_ordering_fields or {}).get(name, ordering_fields))
+            for name in self._specs
+        }
         _validate_no_param_channel_overlap(self._tool_query_params, self._tool_url_kwargs)
         # Run drf-services' shared checks on the **merged** tuples, not the raw
         # declarations: toolset-wide and per-tool entries of the same name are an
@@ -285,7 +298,12 @@ class SpecToolset(AbstractToolset[Any]):
         # — the in-process kind the run loop routes into ``call_tool``.
         self._tool_defs: dict[str, ToolDefinition] = {
             name: _build_tool_def(
-                name, spec, self._tool_query_params[name], self._tool_url_kwargs[name]
+                name,
+                spec,
+                self._tool_query_params[name],
+                self._tool_url_kwargs[name],
+                self._descriptions.get(name),
+                self._tool_ordering_fields[name],
             )
             for name, spec in self._specs.items()
         }
@@ -310,7 +328,7 @@ class SpecToolset(AbstractToolset[Any]):
 
         The per-tool descriptions and parameter schemas say what each tool *is*,
         but not how the family behaves: that list tools accept ``page`` /
-        ``limit`` / ``order``, that a business failure comes back as a readable
+        ``limit`` / ``ordering``, that a business failure comes back as a readable
         ``{"error": …}`` result (a final answer, not a reason to retry) while a
         bad argument comes back as a retry request, and that a permission error
         is final. Pydantic-AI appends this block to the system prompt each turn —
@@ -325,7 +343,9 @@ class SpecToolset(AbstractToolset[Any]):
         """
         if self._instructions_override is not None:
             return self._instructions_override
-        return _derive_instructions(self._specs, self._tool_query_params)
+        return _derive_instructions(
+            self._specs, self._tool_query_params, self._tool_ordering_fields
+        )
 
     async def call_tool(
         self,
@@ -347,8 +367,131 @@ class SpecToolset(AbstractToolset[Any]):
             unknown_arguments=self._unknown_arguments,
             query_params=self._tool_query_params[name],
             url_kwargs=self._tool_url_kwargs[name],
+            ordering_fields=self._tool_ordering_fields[name],
             host=self._host,
         )
+
+
+def _validate_permissions(specs: Mapping[str, Spec], *, require: bool) -> None:
+    """Refuse — or warn about — specs with nothing gating them off HTTP.
+
+    ⚠ **The defect is not "``None`` means unguarded". It is "``None`` means
+    *inherit*, and off HTTP there is nothing to inherit from."** Over HTTP,
+    ``permission_classes=None`` is a correct, working configuration: the view's
+    own ``permission_classes`` and DRF's ``DEFAULT_PERMISSION_CLASSES`` apply.
+    A toolset has neither. So a spec that is properly guarded behind a viewset,
+    with passing HTTP tests, becomes callable by whatever the agent decides to
+    call the moment it is handed to a model — with no signal anywhere.
+
+    The predicate itself lives in drf-services, which owns the off-HTTP
+    dispatch semantics that create the asymmetry and is therefore the package
+    that knows why ``None`` is ambiguous. It raises nothing and defaults
+    nothing; the policy — this flag, this default, this wording — stays here.
+
+    ⛔ **Defaults to refusing, matching the MCP transport.** Warning first and
+    tightening a minor later would leave the hole open for the length of that
+    minor and cost a second release to close, for consumers who would have to
+    act either way.
+
+    :exc:`~django.core.exceptions.ImproperlyConfigured` rather than the
+    ``ValueError`` the checks below raise: this is a deployment misconfiguration
+    rather than a coding error, it is what Django raises for the same shape of
+    problem, and it is what the MCP transport raises for this exact check —
+    a consumer running both catches one thing.
+    """
+    unguarded: list[str] = unguarded_specs(specs)
+    if not unguarded:
+        return
+    names: str = ", ".join(repr(name) for name in sorted(unguarded))
+    problem = (
+        f"SpecToolset was given spec(s) with no permission_classes: {names}. "
+        "A toolset dispatches off HTTP, where neither a viewset's "
+        "permission_classes nor REST_FRAMEWORK's DEFAULT_PERMISSION_CLASSES "
+        "apply — so nothing gates these calls and the model can make any of "
+        "them. Set spec.permission_classes on each."
+    )
+    if require:
+        # The way *out*, not the way in: the check has already raised, so
+        # pointing at the flag that would have prevented it reads as a bug
+        # report against the library.
+        raise ImproperlyConfigured(
+            f"{problem} To downgrade this to a warning while you migrate, pass "
+            "require_permissions=False."
+        )
+    warnings.warn(
+        f"{problem} This is a warning because require_permissions=False.",
+        UnguardedSpecWarning,
+        stacklevel=3,
+    )
+
+
+class UnguardedSpecWarning(UserWarning):
+    """A spec was exposed as a tool with no ``permission_classes``.
+
+    Its own category so a consumer migrating a large registry can silence it
+    deliberately — ``warnings.filterwarnings("ignore", category=…)`` — rather
+    than by muting ``UserWarning`` across the process and losing everything
+    else with it.
+    """
+
+
+class UndescribedToolWarning(UserWarning):
+    """A spec was exposed as a tool with nothing to tell the model it exists for.
+
+    Separate category from :class:`UnguardedSpecWarning` for the same reason,
+    and because the two are silenced by different people: one is a security
+    posture, the other is prompt quality.
+    """
+
+
+def _validate_descriptions(
+    specs: Mapping[str, Spec],
+    descriptions: Mapping[str, str] | None,
+) -> dict[str, str]:
+    """Resolve each tool's description, warning about the ones that say nothing.
+
+    ⚠ **A missing description is not a cosmetic problem — it is the tool being
+    invisible.** A model chooses tools almost entirely from their descriptions;
+    one that has only a name is either never called or called for the wrong
+    reason, and both failures look like "the agent is bad at this" rather than
+    like a registration defect. It is also fixable exactly once, here, where
+    every name is known.
+
+    ``descriptions`` overrides ``spec.description`` per tool — the same spec
+    serves an HTTP API whose docstring is written for a developer and an agent
+    that needs to be told when to reach for it, and those are not the same
+    sentence. A key naming a tool this toolset does not expose is a typo and
+    raises, on the same reasoning as ``tool_query_params``: silently dropping it
+    would leave the tool with the description the author thought they had
+    replaced.
+
+    Warning rather than raising, unlike the permission check: an undescribed
+    tool degrades an answer, an unguarded one exposes data.
+    """
+    for tool_name in descriptions or {}:
+        if tool_name not in specs:
+            raise ValueError(
+                f"descriptions references unknown tool {tool_name!r}; known tools: {sorted(specs)}."
+            )
+    resolved: dict[str, str] = {}
+    blank: list[str] = []
+    for name, spec in specs.items():
+        text: str = ((descriptions or {}).get(name) or _spec_description(spec) or "").strip()
+        if not text:
+            blank.append(name)
+            continue
+        resolved[name] = text
+    if blank:
+        names: str = ", ".join(repr(name) for name in sorted(blank))
+        warnings.warn(
+            f"SpecToolset tool(s) {names} have no description: neither a "
+            "descriptions={...} entry nor a docstring on the spec's callable. A "
+            "model picks tools almost entirely by description, so an undescribed "
+            "tool is one it will call at the wrong time or not at all.",
+            UndescribedToolWarning,
+            stacklevel=3,
+        )
+    return resolved
 
 
 def _validate_tool_names(specs: Mapping[str, Spec]) -> None:
@@ -479,26 +622,35 @@ _BASE_INSTRUCTIONS = (
 )
 
 _LIST_INSTRUCTION = (
-    "- Read-only tools that return a collection accept optional `page`, `limit`, and "
-    "`order`: `limit` caps the number of items, `page` (1-based, requires `limit`) selects "
-    "the page, and `order` is a comma-separated list of fields (prefix a field with `-` for "
-    "descending)."
+    "- Read-only tools that return a collection accept optional `page` and `limit`: `limit` "
+    "caps the number of items and `page` (1-based, requires `limit`) selects the page."
+)
+
+_ORDERING_INSTRUCTION = (
+    "- Some collection tools also accept `ordering`. It takes exactly one of the values "
+    "listed in that tool's schema (a field name, or the same name prefixed with `-` for "
+    "descending) — not a comma-separated list, and not an arbitrary column."
 )
 
 
 def _derive_instructions(
     specs: Mapping[str, Spec],
     tool_query_params: Mapping[str, Sequence[QueryParam]],
+    tool_ordering_fields: Mapping[str, Sequence[str]] | None = None,
 ) -> str:
-    """Build the conventions block from the specs / query params.
+    """Build the conventions block from the specs / query params / ordering.
 
-    The pagination line appears only when a list selector is present and the
-    read-shaping line only when some ``QueryParam`` is declared, so the system
-    prompt never carries advice that can't fire.
+    Every line is conditional on something being able to act on it: pagination
+    only with a list selector present, ordering only where some tool declares
+    fields, read-shaping only with a ``QueryParam``. Advice a model cannot use
+    is not neutral — it is budget spent teaching it about an argument that will
+    be rejected.
     """
     lines = [_BASE_INSTRUCTIONS]
     if any(_is_list_selector(spec) for spec in specs.values()):
         lines.append(_LIST_INSTRUCTION)
+    if any((tool_ordering_fields or {}).values()):
+        lines.append(_ORDERING_INSTRUCTION)
     query_param_names = sorted({qp.name for params in tool_query_params.values() for qp in params})
     if query_param_names:
         joined = ", ".join(f"`{name}`" for name in query_param_names)
@@ -514,11 +666,13 @@ def _build_tool_def(
     spec: Spec,
     query_params: Sequence[QueryParam] = (),
     url_kwargs: Sequence[UrlKwarg] = (),
+    description: str | None = None,
+    ordering_fields: Sequence[str] = (),
 ) -> ToolDefinition:
     return ToolDefinition(
         name=name,
-        description=_spec_description(spec),
-        parameters_json_schema=_input_schema(spec, query_params, url_kwargs),
+        description=description,
+        parameters_json_schema=_input_schema(spec, query_params, url_kwargs, ordering_fields),
         metadata={"annotations": {"readOnlyHint": isinstance(spec, SelectorSpec)}},
     )
 
@@ -533,6 +687,7 @@ def _input_schema(
     spec: Spec,
     query_params: Sequence[QueryParam] = (),
     url_kwargs: Sequence[UrlKwarg] = (),
+    ordering_fields: Sequence[str] = (),
 ) -> dict[str, Any]:
     """The tool's parameter schema, with list-selector pagination + registered
     query params + URL kwargs merged into ``properties``.
@@ -553,6 +708,14 @@ def _input_schema(
     extra: dict[str, Any] = {}
     if _is_list_selector(spec):
         extra.update(_LIST_PARAM_SCHEMA)
+        if ordering_fields:
+            # An enum, not a free string: it is the only shape that tells the
+            # model what it may sort by, and the only one this can validate
+            # without asking the database.
+            extra["ordering"] = {
+                "enum": _ordering_values(ordering_fields),
+                "description": "Sort order. Prefix a field with `-` for descending.",
+            }
     extra.update({qp.name: qp.json_schema() for qp in query_params})
     extra.update({uk.name: uk.json_schema() for uk in url_kwargs})
     required: list[str] = list(schema.get("required", []))
@@ -581,6 +744,7 @@ def _call_spec(
     unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
     query_params: Sequence[QueryParam] = (),
     url_kwargs: Sequence[UrlKwarg] = (),
+    ordering_fields: Sequence[str] = (),
     host: str | None = None,
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
@@ -588,7 +752,7 @@ def _call_spec(
     Synchronous on purpose — ``SpecToolset.call_tool`` runs it in a thread so
     the ORM stays off the event loop.
     """
-    page_args = _pop_pagination(spec, args)
+    page_args = _pop_pagination(spec, args, ordering_fields)
     # Pop the registered query params out of the spec args and seed them into the
     # off-HTTP request's ``query_params`` (for whatever reads them directly —
     # restql, a custom serializer; not a ``filter_set``, which reads the spec
@@ -658,7 +822,7 @@ def _call_spec(
         try:
             value = _shape_list(value, page_args)
         except FieldError as exc:
-            raise ModelRetry(f"invalid order parameter: {exc}") from exc
+            raise ModelRetry(f"invalid ordering: {exc}") from exc
     many = result.kind == "list"
     return render_spec_output(
         spec,
@@ -686,22 +850,28 @@ def _missing_input_prompt(exc: AdditionalInputRequired) -> str:
     return f"{exc} Call this tool again, additionally supplying: {names}."
 
 
-def _pop_pagination(spec: Spec, args: dict[str, Any]) -> _PageArgs | None:
-    """Strip + validate ``page`` / ``limit`` / ``order`` from a list selector's args.
+def _pop_pagination(
+    spec: Spec, args: dict[str, Any], ordering_fields: Sequence[str] = ()
+) -> _PageArgs | None:
+    """Strip + validate ``page`` / ``limit`` / ``ordering`` from a list selector's args.
 
-    The tool schema advertises ``page`` / ``limit`` as integers and ``order`` as
-    a string, but the toolset's argument validator is a no-op (the schema is
-    advisory), so a model that sends ``limit="2"`` or ``order=["a"]`` reaches
-    here untyped. Rather
-    than let a ``TypeError`` / ``AttributeError`` abort the run, coerce and
-    validate, mapping a bad value to :class:`ModelRetry` so the model corrects it.
+    The tool schema advertises ``page`` / ``limit`` as integers and ``ordering``
+    as an enum, but the toolset's argument validator is a no-op (the schema is
+    advisory), so a model that sends ``limit="2"`` or ``ordering=["a"]`` reaches
+    here untyped. Rather than let a ``TypeError`` / ``AttributeError`` abort the
+    run, coerce and validate, mapping a bad value to :class:`ModelRetry` so the
+    model corrects it.
+
+    ``ordering`` is popped whether or not any fields are declared: with none, it
+    was never advertised, so a model that sent it anyway is corrected rather
+    than having the value fall through to the spec as an unknown argument.
     """
     if not _is_list_selector(spec):
         return None
     return _PageArgs(
         page=_coerce_positive_int(args.pop("page", None), "page"),
         limit=_coerce_positive_int(args.pop("limit", None), "limit"),
-        order=_coerce_order(args.pop("order", None)),
+        ordering=_coerce_ordering(args.pop("ordering", None), ordering_fields),
     )
 
 
@@ -771,33 +941,55 @@ def _coerce_positive_int(value: Any, name: str) -> int | None:
     return coerced
 
 
-def _coerce_order(value: Any) -> str | None:
-    """Require ``order`` to be a string; ``ModelRetry`` otherwise."""
+def _coerce_ordering(value: Any, allowed: Sequence[str]) -> str | None:
+    """Validate ``ordering`` against the declared enum; ``ModelRetry`` otherwise.
+
+    ⚠ **A deliberate divergence from the MCP transport, in the direction this
+    wave keeps arguing for.** drf-mcp *silently ignores* an ordering value it
+    does not recognise — the rows come back in whatever order the queryset had,
+    and nothing says so. For a model that is the worst outcome available: it
+    asked for newest-first, received oldest-first, and has no way to find out.
+    A retry naming the accepted values costs one turn and is self-correcting.
+    """
     if value is None:
         return None
-    if not isinstance(value, str):
-        raise ModelRetry("`order` must be a comma-separated string of field names.")
+    values: list[str] = _ordering_values(allowed)
+    if not values:
+        # Never advertised, so the model invented it. Saying so beats a
+        # "must be one of: " with an empty list after it.
+        raise ModelRetry("This tool does not accept an `ordering` argument; omit it.")
+    options: str = ", ".join(f"`{v}`" for v in values)
+    if value not in values:
+        raise ModelRetry(f"`ordering` must be one of: {options}; got {value!r}.")
     return value
+
+
+def _ordering_values(fields: Sequence[str]) -> list[str]:
+    """Each declared field, ascending then descending — the advertised enum.
+
+    Same construction as the MCP transport's ``ordering_fields``, so a project
+    exposing one registry over both surfaces advertises one vocabulary.
+    """
+    values: list[str] = []
+    for field in fields:
+        values.append(field)
+        values.append(f"-{field}")
+    return values
 
 
 def _shape_list(value: Any, page_args: _PageArgs) -> list[Any]:
     """Order + paginate a list selector's queryset.
 
-    Forces evaluation (``list(...)``) so an invalid ``order`` field raises its
-    ``FieldError`` here — where ``_call_spec`` turns it into a ``ModelRetry`` —
-    rather than later inside the serializer.
+    Forces evaluation (``list(...)``) so a ``FieldError`` surfaces here — where
+    ``_call_spec`` turns it into a ``ModelRetry`` — rather than later inside the
+    serializer. ``ordering`` is enum-validated before it reaches this point, so
+    the remaining way to raise one is a declared field that is not a real
+    column, which is an author's error rather than a model's.
     """
     queryset = value
-    fields = _split_order(page_args.order)
-    if fields:
-        queryset = queryset.order_by(*fields)
+    if page_args.ordering:
+        queryset = queryset.order_by(page_args.ordering)
     return list(_paginate(queryset, page_args.page, page_args.limit))
-
-
-def _split_order(order: str | None) -> list[str]:
-    if not order:
-        return []
-    return [field.strip() for field in order.split(",") if field.strip()]
 
 
 def _paginate(queryset: Any, page: int | None, limit: int | None) -> Any:
