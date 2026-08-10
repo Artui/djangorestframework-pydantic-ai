@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-08-10
+
 ### Fixed
 
 - **`SpecCapability` now forwards every `SpecToolset` keyword.** It re-declares
@@ -596,7 +598,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.0...v0.11.1
