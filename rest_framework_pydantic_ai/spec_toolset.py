@@ -74,6 +74,7 @@ from rest_framework_services import (
     spec_to_json_schema,
 )
 from rest_framework_services.dispatch.unguarded_specs import unguarded_specs
+from rest_framework_services.types.progress_reporter import ProgressReporter
 from rest_framework_services.types.validate_channel_names import validate_channel_names
 
 from rest_framework_pydantic_ai.types.query_param import QueryParam
@@ -87,7 +88,7 @@ Spec = ServiceSpec[Any, Any, Any] | SelectorSpec[Any, Any]
 # forwards to (and then drift from it).
 SpecSource = Mapping[str, Spec] | SpecRegistry
 UserExtractor = Callable[[RunContext[Any]], Any]
-ProgressExtractor = Callable[[RunContext[Any]], Any]
+ProgressExtractor = Callable[[RunContext[Any]], ProgressReporter | None]
 
 logger = logging.getLogger("rest_framework_pydantic_ai")
 """The package's one logger.
@@ -744,7 +745,7 @@ async def _with_deadline(awaitable: Any, seconds: float | None, *, label: str) -
         }
 
 
-def _default_get_progress(ctx: RunContext[Any]) -> Any:
+def _default_get_progress(ctx: RunContext[Any]) -> ProgressReporter | None:
     """Read ``ctx.deps.progress``, tolerating a deps type that has no such field.
 
     ``getattr`` rather than attribute access because a project with its own deps
@@ -911,7 +912,7 @@ def _call_spec(
     max_page_size: int | None = None,
     max_result_bytes: int | None = None,
     label: str = "",
-    progress: Any = None,
+    progress: ProgressReporter | None = None,
     host: str | None = None,
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.

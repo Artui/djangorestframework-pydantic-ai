@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from rest_framework_services.types.progress_reporter import ProgressReporter
+
 
 @dataclass
 class AgentDeps:
@@ -25,12 +27,17 @@ class AgentDeps:
 
     user: Any
 
-    progress: Any = None
+    progress: ProgressReporter | None = None
     """Where a spec's ``progress(...)`` calls go for this run, or ``None``.
 
-    A :class:`~rest_framework_services.types.progress_reporter.ProgressReporter`
-    — a plain callable ``(progress, *, total, message, meta) -> None``. The
+    A plain callable ``(progress, *, total, message, meta) -> None``. The
     toolset forwards it into the kwarg pool and does nothing else with it.
+
+    Typed, unlike :attr:`user` beside it — the two look alike and are not.
+    ``user`` is genuinely ``Any``: a Django user, a custom principal, whatever
+    ``get_user`` returns. A reporter has a Protocol this package already
+    depends on, so ``Any`` here would only mean a caller passing the wrong
+    shape finds out inside their own service body.
 
     ⛔ **It arrives here rather than on the toolset because the toolset must
     never construct one.** This package is a pydantic-ai adapter; it is driven
