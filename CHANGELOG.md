@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-10
+
 ### Added
 
 - **`SpecToolset.specs`** — the resolved `name -> spec` mapping, read-only.
@@ -661,7 +663,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.12.0...v0.13.0
