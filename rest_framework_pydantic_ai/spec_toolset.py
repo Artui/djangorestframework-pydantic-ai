@@ -48,6 +48,7 @@ import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, cast
 
 from asgiref.sync import sync_to_async
@@ -437,6 +438,23 @@ class SpecToolset(AbstractToolset[Any]):
     @property
     def id(self) -> str | None:
         return self._id
+
+    @property
+    def specs(self) -> Mapping[str, Spec]:
+        """The resolved ``name -> spec`` mapping this toolset exposes.
+
+        ⚠ **The synchronous answer to "what tools are these?"** ``get_tools`` is
+        the real enumeration, but it is ``async`` and needs a ``RunContext``, so
+        it cannot answer for a *composing* caller — one wiring this toolset into
+        a name-dedup pass or a tool catalog at configuration time, with no run in
+        sight. Without this they reach for ``_specs``, which is how a private
+        becomes load-bearing across a package boundary.
+
+        Read-only: a ``MappingProxyType`` over the toolset's own dict, so a
+        caller enumerating it cannot quietly add a tool that skipped the
+        permission and description checks the constructor ran.
+        """
+        return MappingProxyType(self._specs)
 
     async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
         return {
