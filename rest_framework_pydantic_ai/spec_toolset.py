@@ -40,7 +40,9 @@ Error semantics map drf-services' failure kinds onto Pydantic-AI's model-loop:
 from __future__ import annotations
 
 import inspect
+import logging
 import re
+import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -52,6 +54,7 @@ from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_core import SchemaValidator, core_schema
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework_services import (
     AdditionalInputRequired,
@@ -82,6 +85,22 @@ Spec = ServiceSpec[Any, Any, Any] | SelectorSpec[Any, Any]
 # forwards to (and then drift from it).
 SpecSource = Mapping[str, Spec] | SpecRegistry
 UserExtractor = Callable[[RunContext[Any]], Any]
+ProgressExtractor = Callable[[RunContext[Any]], Any]
+
+logger = logging.getLogger("rest_framework_pydantic_ai")
+"""The package's one logger.
+
+⚠ **A toolset call is invisible without this, and it is the call that most
+needs to be visible.** A dispatch behind a DRF view leaves an access-log line;
+the same spec called by a model leaves nothing — no method, no path, no status
+— so "the agent did something odd" has no record to check it against. That is
+also where a permission denial lands: over HTTP it is a ``403`` in the log,
+here it is an exception the run loop absorbs into a message.
+
+Timings go to ``DEBUG`` (one line per call, which is noise in production and
+exactly what you want while tuning), denials to ``WARNING``. Named for the
+package so ``LOGGING`` can set the two independently of everything else.
+"""
 
 
 def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
@@ -237,6 +256,7 @@ class SpecToolset(AbstractToolset[Any]):
         id: str = "drf-specs",
         instructions: str | None = None,
         get_user: UserExtractor | None = None,
+        get_progress: ProgressExtractor | None = None,
         unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
         query_params: Sequence[QueryParam] = (),
         tool_query_params: Mapping[str, Sequence[QueryParam]] | None = None,
@@ -259,6 +279,7 @@ class SpecToolset(AbstractToolset[Any]):
         self._instructions_override = instructions
         self._specs: dict[str, Spec] = dict(resolved)
         self._get_user: UserExtractor = get_user or _default_get_user
+        self._get_progress: ProgressExtractor = get_progress or _default_get_progress
         self._unknown_arguments: UnknownArguments = unknown_arguments
         self._host = host
         self._max_retries = max_retries
@@ -356,20 +377,40 @@ class SpecToolset(AbstractToolset[Any]):
     ) -> Any:
         spec = self._specs[name]
         user = self._get_user(ctx)
-        # The whole pipeline touches the ORM (validation, dispatch, serializer
-        # rendering), which Django forbids on the async event loop — run it in a
-        # thread. ``dict(tool_args)`` is a private copy so popping pagination /
-        # query-param args never mutates the caller's dict.
-        return await sync_to_async(_call_spec)(
-            spec,
-            user,
-            dict(tool_args),
-            unknown_arguments=self._unknown_arguments,
-            query_params=self._tool_query_params[name],
-            url_kwargs=self._tool_url_kwargs[name],
-            ordering_fields=self._tool_ordering_fields[name],
-            host=self._host,
+        started: float = time.perf_counter()
+        try:
+            # The whole pipeline touches the ORM (validation, dispatch,
+            # serializer rendering), which Django forbids on the async event
+            # loop — run it in a thread. ``dict(tool_args)`` is a private copy
+            # so popping pagination / query-param args never mutates the
+            # caller's dict.
+            result = await sync_to_async(_call_spec)(
+                spec,
+                user,
+                dict(tool_args),
+                unknown_arguments=self._unknown_arguments,
+                query_params=self._tool_query_params[name],
+                url_kwargs=self._tool_url_kwargs[name],
+                ordering_fields=self._tool_ordering_fields[name],
+                progress=self._get_progress(ctx),
+                host=self._host,
+            )
+        except PermissionDenied:
+            # ⚠ The one failure with no other trace. A ``ModelRetry`` reaches
+            # the model and a ``{"error": …}`` reaches the answer, but a denial
+            # aborts the run and is absorbed by whatever is driving it — so
+            # without this line, "the agent said it couldn't do that" has
+            # nothing behind it. Logged at the boundary, then re-raised
+            # untouched.
+            logger.warning("Permission denied calling tool %r on toolset %r", name, self._id)
+            raise
+        logger.debug(
+            "Tool %r on toolset %r took %.1f ms",
+            name,
+            self._id,
+            (time.perf_counter() - started) * 1000,
         )
+        return result
 
 
 def _validate_permissions(specs: Mapping[str, Spec], *, require: bool) -> None:
@@ -601,6 +642,16 @@ def _validate_no_param_channel_overlap(
             )
 
 
+def _default_get_progress(ctx: RunContext[Any]) -> Any:
+    """Read ``ctx.deps.progress``, tolerating a deps type that has no such field.
+
+    ``getattr`` rather than attribute access because a project with its own deps
+    class predates this field, and a missing sink is the ordinary case — not
+    something to make a caller declare their way out of.
+    """
+    return getattr(getattr(ctx, "deps", None), "progress", None)
+
+
 def _default_get_user(ctx: RunContext[Any]) -> Any:
     """Read the acting user off ``ctx.deps.user`` (the ``AgentDeps`` default)."""
     return ctx.deps.user
@@ -745,6 +796,7 @@ def _call_spec(
     query_params: Sequence[QueryParam] = (),
     url_kwargs: Sequence[UrlKwarg] = (),
     ordering_fields: Sequence[str] = (),
+    progress: Any = None,
     host: str | None = None,
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
@@ -789,6 +841,9 @@ def _call_spec(
             view=context.view,
             unknown_arguments=unknown_arguments,
             on_target_resolved=enforce_permissions,
+            # Accepted and forwarded, never constructed — see ``AgentDeps.progress``.
+            # ``None`` becomes drf-services' no-op seed.
+            progress=progress,
         )
     except (DRFValidationError, ServiceValidationError) as exc:
         # Input-serializer validation raises DRF's ``ValidationError``; a service

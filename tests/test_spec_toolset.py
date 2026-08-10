@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import django_filters
@@ -30,6 +31,7 @@ from rest_framework_pydantic_ai.spec_toolset import (
     UndescribedToolWarning,
     UnguardedSpecWarning,
     _call_spec,
+    _default_get_progress,
     _derive_instructions,
     _is_list_selector,
     _ordering_values,
@@ -1437,3 +1439,118 @@ async def test_the_ordering_instruction_appears_only_when_some_tool_declares_fie
         {"list_widgets": list_spec()}, ordering_fields=["name"]
     ).get_instructions(None)
     assert "accept `ordering`" in with_fields
+
+
+# ----- progress: accepted and forwarded, never constructed -----
+
+
+class _RecordingProgress:
+    """Stands in for whatever is driving the agent — an SSE frame, a task record."""
+
+    def __init__(self):
+        self.reports = []
+
+    def __call__(self, progress, *, total=None, message=None, meta=None):
+        self.reports.append((progress, total, message, meta))
+
+
+def reporting_service(data, user, progress):
+    """Creates a widget, reporting as it goes."""
+    progress(1, total=1, message="Creating")
+    return Widget.objects.create(owner=user, **data)
+
+
+def reporting_spec():
+    return ServiceSpec(
+        service=reporting_service,
+        input_serializer=WidgetInputSerializer,
+        output_selector_spec=SelectorSpec(
+            kind=SelectorKind.RETRIEVE, output_serializer=WidgetSerializer
+        ),
+        permission_classes=[AllowAny],
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_reporter_on_the_deps_reaches_the_service():
+    """The caller supplies the sink; the toolset only carries it.
+
+    A toolset that *constructed* one — "write progress to the logger" — would
+    have picked a transport it does not own, which is the thing this package
+    exists not to do.
+    """
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    sink = _RecordingProgress()
+    toolset = SpecToolset({"create_widget": reporting_spec()})
+    tools = await toolset.get_tools(None)
+
+    await toolset.call_tool(
+        "create_widget",
+        {"name": "a", "price": 1},
+        SimpleNamespace(deps=AgentDeps(user=user, progress=sink)),
+        tools["create_widget"],
+    )
+    assert sink.reports == [(1, 1, "Creating", None)]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_the_same_service_runs_with_no_reporter_supplied():
+    """``None`` is the ordinary case: drf-services substitutes its no-op."""
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    toolset = SpecToolset({"create_widget": reporting_spec()})
+    tools = await toolset.get_tools(None)
+
+    result = await toolset.call_tool(
+        "create_widget", {"name": "a", "price": 1}, ctx_for(user), tools["create_widget"]
+    )
+    assert result["name"] == "a"
+
+
+async def test_a_deps_type_without_a_progress_field_is_fine():
+    """A project's own deps class predates this field; a missing sink is normal."""
+    assert _default_get_progress(SimpleNamespace(deps=SimpleNamespace(user=None))) is None
+    assert _default_get_progress(SimpleNamespace()) is None
+
+
+# ----- the logger -----
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_call_is_timed_at_debug(caplog):
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    toolset = SpecToolset({"list_widgets": list_spec()})
+    tools = await toolset.get_tools(None)
+
+    with caplog.at_level(logging.DEBUG, logger="rest_framework_pydantic_ai"):
+        await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert "Tool 'list_widgets' on toolset 'drf-specs' took" in caplog.text
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_denial_is_logged_at_warning_and_still_raises(caplog):
+    """⚠ The one failure with no other trace.
+
+    A retry reaches the model and an ``{"error": …}`` reaches the answer, but a
+    denial aborts the run and is absorbed by whatever is driving it — so over
+    HTTP this is a `403` in the access log and here it was nothing at all.
+    """
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    toolset = SpecToolset({"list_widgets": list_spec(permission_classes=[DenyAll])})
+    tools = await toolset.get_tools(None)
+
+    with (
+        caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"),
+        pytest.raises(PermissionDenied),
+    ):
+        await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert "Permission denied calling tool 'list_widgets'" in caplog.text

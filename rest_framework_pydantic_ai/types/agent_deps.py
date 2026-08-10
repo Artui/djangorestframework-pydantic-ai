@@ -25,5 +25,22 @@ class AgentDeps:
 
     user: Any
 
+    progress: Any = None
+    """Where a spec's ``progress(...)`` calls go for this run, or ``None``.
+
+    A :class:`~rest_framework_services.types.progress_reporter.ProgressReporter`
+    — a plain callable ``(progress, *, total, message, meta) -> None``. The
+    toolset forwards it into the kwarg pool and does nothing else with it.
+
+    ⛔ **It arrives here rather than on the toolset because the toolset must
+    never construct one.** This package is a pydantic-ai adapter; it is driven
+    by AG-UI, by A2A, by a management command, by a worker. Each of those has a
+    different idea of where a progress report should go — an SSE frame, a task
+    record, a log line — and a toolset that picked one would have chosen a
+    transport it does not own. The caller knows; it passes a callable.
+
+    ``None`` costs nothing: drf-services substitutes its no-op, so a service
+    declaring ``progress`` runs unchanged whether or not anyone is listening."""
+
 
 __all__ = ["AgentDeps"]
