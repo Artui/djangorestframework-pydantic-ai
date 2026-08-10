@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import inspect
+
+import pytest
+from django.core.exceptions import ImproperlyConfigured
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -11,7 +15,11 @@ from rest_framework_services import (
 )
 
 from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecCapability, SpecToolset, UrlKwarg
-from rest_framework_pydantic_ai.spec_toolset import _BASE_INSTRUCTIONS, _LIST_INSTRUCTION
+from rest_framework_pydantic_ai.spec_toolset import (
+    _BASE_INSTRUCTIONS,
+    _LIST_INSTRUCTION,
+    UnguardedSpecWarning,
+)
 from tests.testapp.models import Widget
 from tests.testapp.serializers import WidgetSerializer
 
@@ -124,6 +132,95 @@ async def test_url_kwargs_forward_to_the_built_toolset():
     cap = SpecCapability({"list": list_spec()}, url_kwargs=[UrlKwarg("parent_pk")])
     tools = await cap.get_toolset().get_tools(None)
     assert "parent_pk" in tools["list"].tool_def.parameters_json_schema["properties"]
+
+
+# --- forwarding --------------------------------------------------------------
+#
+# The capability re-declares the toolset's constructor rather than taking
+# ``**kwargs``, which buys type checking and completion at the cost of a
+# signature that can drift. These two tests are what pays that cost: a knob
+# added to ``SpecToolset`` and forgotten here is not a missing feature, it is an
+# *unreachable* one — silently so, for every consumer that composes through the
+# capability rather than attaching the toolset directly. Both of the ecosystem's
+# own wrappers do exactly that.
+
+
+def _params(func):
+    return inspect.signature(func).parameters
+
+
+def test_the_capability_accepts_every_keyword_the_toolset_does():
+    toolset, capability = _params(SpecToolset.__init__), _params(SpecCapability.__init__)
+
+    unreachable = sorted(set(toolset) - set(capability))
+    assert not unreachable, f"SpecToolset keywords with no way in: {unreachable}"
+    # And nothing extra beyond the one keyword that is genuinely the
+    # capability's own — an addition here that the toolset knows nothing about
+    # would be accepted and then quietly dropped on the floor.
+    assert set(capability) - set(toolset) == {"defer_loading"}
+
+
+def test_a_shared_keyword_means_the_same_thing_on_both():
+    """Same name is not enough — same default and same type, or it is a trap.
+
+    A default that drifts is the worse half: ``SpecCapability(specs)`` and
+    ``SpecToolset(specs)`` would disagree about a security posture with nothing
+    at either call site to show it.
+    """
+    toolset, capability = _params(SpecToolset.__init__), _params(SpecCapability.__init__)
+
+    drifted = {
+        name: ((param.default, param.annotation), (mirror.default, mirror.annotation))
+        for name, param in toolset.items()
+        if (mirror := capability[name]).default != param.default
+        or mirror.annotation != param.annotation
+    }
+    assert not drifted, f"same keyword, different meaning: {drifted}"
+
+
+def test_an_unguarded_spec_is_refused_through_the_capability_too():
+    """The check the capability path could not reach before 0.13.1.
+
+    Worth asserting on the wrapper and not only the toolset: the refusal is the
+    entire security content of ``require_permissions``, and it travelled through
+    a constructor that had never forwarded it.
+    """
+    with pytest.raises(ImproperlyConfigured, match="no permission_classes"):
+        SpecCapability({"list": list_spec(permission_classes=None)})
+
+
+def test_the_migration_escape_hatch_is_reachable_from_the_capability():
+    """``require_permissions=False`` — documented, and until now unavailable here.
+
+    A consumer with a large registry to migrate had no way to downgrade to the
+    warning short of dropping to ``from_toolset``, which the docstring never
+    told them to do.
+    """
+    with pytest.warns(UnguardedSpecWarning):
+        cap = SpecCapability(
+            {"list": list_spec(permission_classes=None)}, require_permissions=False
+        )
+
+    assert cap.get_toolset() is not None
+
+
+async def test_a_bound_forwards_all_the_way_to_what_the_model_is_told():
+    """One end-to-end forwarding case, on the arguments the model actually sees.
+
+    ``max_page_size`` and ``ordering_fields`` both change the advertised schema,
+    so this asserts the value survived the hop rather than that an attribute was
+    assigned somewhere.
+    """
+    cap = SpecCapability(
+        {"list": list_spec()},
+        max_page_size=50,
+        ordering_fields=["name", "created_at"],
+    )
+    tools = await cap.get_toolset().get_tools(None)
+    schema = tools["list"].tool_def.parameters_json_schema["properties"]
+
+    assert schema["limit"]["maximum"] == 50
+    assert set(schema["ordering"]["enum"]) == {"name", "-name", "created_at", "-created_at"}
 
 
 # --- agent-run integration ---------------------------------------------------

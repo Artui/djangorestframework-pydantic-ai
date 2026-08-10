@@ -6,6 +6,26 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.1] — 2026-08-10
+
+### Fixed
+
+- **`SpecCapability` now forwards every `SpecToolset` keyword.** It re-declares
+  the toolset's constructor rather than taking `**kwargs`, and 0.13.0 added nine
+  keywords to one side only — `require_permissions`, `descriptions`,
+  `ordering_fields`, `tool_ordering_fields`, `get_progress`, `max_result_bytes`,
+  `tool_max_result_bytes`, `max_page_size` and `dispatch_timeout` were
+  unreachable for anyone composing through the capability, which is the path
+  every wrapper in this ecosystem takes.
+
+  The one with teeth was `require_permissions`: it defaults to `True`, so the
+  refusal worked, but `require_permissions=False` — the migration escape hatch
+  0.13.0's own release notes point at — could not be passed. Callers stuck on it
+  had to drop to `SpecCapability.from_toolset(SpecToolset(…, …))`.
+
+  Forwarding is now asserted keyword-by-keyword, including matching defaults and
+  annotations, so the two signatures cannot drift apart again.
+
 ## [0.13.0] — 2026-08-10
 
 ### Changed — BREAKING
@@ -578,7 +598,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.0...v0.11.1
