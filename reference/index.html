@@ -1102,12 +1102,12 @@ fire.</p>
 <p>:class:<code>~rest_framework_pydantic_ai.SpecToolset</code> is a first-class toolset you
 can attach directly (<code>Agent(toolsets=[SpecToolset(...)])</code>); it already
 exposes the tools <em>and</em> teaches the model its conventions through
-<code>get_instructions</code> (that list tools accept <code>page</code> / <code>limit</code> / <code>order</code>,
-and how errors come back). <code>SpecCapability</code> wraps that toolset to add the
-capability-only feature: <code>defer_loading</code>. It does <strong>not</strong> re-emit the
-conventions — Pydantic-AI collects them from the owned toolset's
-<code>get_instructions</code> automatically, so wrapping vs. attaching directly yields
-the same model-facing instructions, exactly once.</p>
+<code>get_instructions</code> (that list tools accept <code>page</code> / <code>limit</code> /
+<code>ordering</code>, and how errors come back). <code>SpecCapability</code> wraps that
+toolset to add the capability-only feature: <code>defer_loading</code>. It does
+<strong>not</strong> re-emit the conventions — Pydantic-AI collects them from the owned
+toolset's <code>get_instructions</code> automatically, so wrapping vs. attaching
+directly yields the same model-facing instructions, exactly once.</p>
 <p>Construct it the same way as <code>SpecToolset</code> (it forwards the toolset knobs)::</p>
 <div class="language-text highlight"><pre><span></span><code>agent = Agent(
     model,
@@ -1131,15 +1131,19 @@ its specs once can project several capabilities from filtered views::</p>
 </code></pre></div>
 <p>Give each its own <code>id</code> — the id keys <code>defer_loading</code>'s catalog entry, so
 two capabilities sharing one would collide.</p>
-<p><code>instructions</code> overrides the toolset's auto-derived conventions text — it is
-forwarded to the <code>SpecToolset</code> this builds. <code>defer_loading</code> (which needs
-the stable <code>id</code>) hides the whole spec toolset and its instructions behind
-Pydantic-AI's native <code>load_capability</code> tool until the model loads it —
-progressive disclosure for a large spec map. The remaining keywords
-(<code>get_user</code> / <code>unknown_arguments</code> / <code>query_params</code> /
-<code>tool_query_params</code> / <code>url_kwargs</code> / <code>tool_url_kwargs</code> /
-<code>max_retries</code>) are forwarded verbatim to the <code>SpecToolset</code> it builds; see
-there for their semantics.</p>
+<p><code>defer_loading</code> is the one keyword that is the capability's own (it needs
+the stable <code>id</code>): it hides the whole spec toolset and its instructions
+behind Pydantic-AI's native <code>load_capability</code> tool until the model loads
+it — progressive disclosure for a large spec map.</p>
+<p>⚠ <strong>Everything else <code>SpecToolset</code> accepts, this accepts, and means there.</strong>
+That is a guarantee rather than a list, and the forwarding tests in
+<code>tests/test_spec_capability.py</code> enforce it name-by-name — a knob added to
+the toolset and forgotten here is not a missing feature but an <em>unreachable</em>
+one, for every consumer that composes through a capability instead of
+attaching the toolset directly. See
+:class:<code>~rest_framework_pydantic_ai.SpecToolset</code> for what each one does; the
+safety-relevant ones are <code>require_permissions</code>, <code>max_result_bytes</code>,
+<code>max_page_size</code> and <code>dispatch_timeout</code>.</p>
 
 
 
