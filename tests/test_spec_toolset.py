@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from types import SimpleNamespace
+from typing import Any
 
 import django_filters
 import pytest
 from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.test import RequestFactory
 from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
@@ -22,6 +26,7 @@ from rest_framework_services import (
     ServiceSpec,
     ServiceValidationError,
     UnknownArguments,
+    build_offline_context,
 )
 from typing_extensions import TypedDict, Unpack
 
@@ -31,7 +36,7 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _LIST_INSTRUCTION,
     UndescribedToolWarning,
     UnguardedSpecWarning,
-    _call_spec,
+    _default_get_http_request,
     _default_get_progress,
     _derive_instructions,
     _is_list_selector,
@@ -69,6 +74,30 @@ def boom():
 def reject():
     """Always rejects its input."""
     raise ServiceValidationError("bad input")
+
+
+def _dispatch(
+    spec: Any,
+    user: Any,
+    args: dict[str, Any] | None = None,
+    *,
+    toolset_kwargs: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Run one spec through the toolset's dispatch pipeline.
+
+    Calls ``SpecToolset._call_spec`` rather than the module-level function, so
+    these tests exercise the same seam ``call_tool`` goes through — including
+    the ``build_context`` / ``translate_exception`` overrides bound to the run.
+    """
+    toolset_kwargs = toolset_kwargs or {}
+    # A throwaway toolset per call; construction validation has its own
+    # tests, so its warnings are noise here.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        toolset = SpecToolset({"t": spec}, require_permissions=False, **toolset_kwargs)
+    ctx = SimpleNamespace(deps=AgentDeps(user=user))
+    return toolset._call_spec(spec, user, dict(args or {}), ctx=ctx, **kwargs)
 
 
 def list_spec(**kwargs):
@@ -287,7 +316,7 @@ def test_list_selector_renders_owned_widgets():
     other = User.objects.create(username="o")
     Widget.objects.create(name="a", price=1, owner=user)
     Widget.objects.create(name="b", price=2, owner=other)
-    result = _call_spec(list_spec(), user, {})
+    result = _dispatch(list_spec(), user, {})
     assert [w["name"] for w in result] == ["a"]
 
 
@@ -296,7 +325,7 @@ def test_list_selector_orders_and_limits():
     user = User.objects.create(username="u")
     for name, price in [("a", 3), ("b", 1), ("c", 2)]:
         Widget.objects.create(name=name, price=price, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         list_spec(), user, {"ordering": "price", "limit": 2}, ordering_fields=["price"]
     )
     assert [w["name"] for w in result] == ["b", "c"]
@@ -307,7 +336,7 @@ def test_list_selector_second_page():
     user = User.objects.create(username="u")
     for name, price in [("a", 1), ("b", 2), ("c", 3)]:
         Widget.objects.create(name=name, price=price, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         list_spec(),
         user,
         {"ordering": "price", "page": 2, "limit": 2},
@@ -328,21 +357,21 @@ def test_a_declared_field_that_is_not_a_column_becomes_a_retry():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
     with pytest.raises(ModelRetry, match="invalid ordering"):
-        _call_spec(list_spec(), user, {"ordering": "nope"}, ordering_fields=["nope"])
+        _dispatch(list_spec(), user, {"ordering": "nope"}, ordering_fields=["nope"])
 
 
 @pytest.mark.django_db
 def test_retrieve_selector_found():
     user = User.objects.create(username="u")
     widget = Widget.objects.create(name="a", price=1, owner=user)
-    result = _call_spec(retrieve_spec(), user, {"pk": widget.pk})
+    result = _dispatch(retrieve_spec(), user, {"pk": widget.pk})
     assert result["name"] == "a"
 
 
 @pytest.mark.django_db
 def test_retrieve_selector_not_found_is_error_payload():
     user = User.objects.create(username="u")
-    result = _call_spec(retrieve_spec(), user, {"pk": 999})
+    result = _dispatch(retrieve_spec(), user, {"pk": 999})
     assert result == {"error": "not found"}
 
 
@@ -352,7 +381,7 @@ def test_retrieve_selector_not_found_is_error_payload():
 @pytest.mark.django_db
 def test_create_service_renders_output():
     user = User.objects.create(username="u")
-    result = _call_spec(create_spec(), user, {"name": "z", "price": 5})
+    result = _dispatch(create_spec(), user, {"name": "z", "price": 5})
     assert result["name"] == "z"
     assert Widget.objects.filter(name="z", owner=user).exists()
 
@@ -361,17 +390,17 @@ def test_create_service_renders_output():
 def test_create_service_validation_error_is_model_retry():
     user = User.objects.create(username="u")
     with pytest.raises(ModelRetry):
-        _call_spec(create_spec(), user, {"name": "z", "price": -1})
+        _dispatch(create_spec(), user, {"name": "z", "price": -1})
 
 
 def test_service_error_is_returned_as_payload():
-    result = _call_spec(ServiceSpec(service=boom, atomic=False), object(), {})
+    result = _dispatch(ServiceSpec(service=boom, atomic=False), object(), {})
     assert result == {"error": "nope"}
 
 
 def test_service_validation_error_is_model_retry():
     with pytest.raises(ModelRetry):
-        _call_spec(ServiceSpec(service=reject, atomic=False), object(), {})
+        _dispatch(ServiceSpec(service=reject, atomic=False), object(), {})
 
 
 # --- a service asking for input it was not given -----------------------------
@@ -394,7 +423,7 @@ def test_a_request_for_input_is_a_retry_not_a_dead_end():
     the "here is what to fix, call me again" channel — so no elicitation surface
     or second result type is needed on this transport."""
     with pytest.raises(ModelRetry) as caught:
-        _call_spec(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
+        _dispatch(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
     assert "9412 rows match" in str(caught.value)
 
 
@@ -402,7 +431,7 @@ def test_the_retry_names_the_arguments_to_add() -> None:
     """The keys of ``schema`` are input names, and the model is about to call the
     same tool again — so the names are the actionable part."""
     with pytest.raises(ModelRetry) as caught:
-        _call_spec(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
+        _dispatch(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
     assert "`confirmed`" in str(caught.value)
 
 
@@ -410,7 +439,7 @@ def test_a_bare_message_still_retries() -> None:
     """``schema`` is optional upstream. A message alone is less actionable but
     still better as a retry than as a terminal error."""
     with pytest.raises(ModelRetry) as caught:
-        _call_spec(ServiceSpec(service=needs_something_unnamed, atomic=False), object(), {})
+        _dispatch(ServiceSpec(service=needs_something_unnamed, atomic=False), object(), {})
     assert str(caught.value) == "This needs something I cannot describe."
 
 
@@ -419,10 +448,10 @@ def test_it_is_not_swallowed_by_the_generic_service_error_arm() -> None:
     subclasses ``ServiceError``, so a handler for the parent catches it first
     unless the specific arm precedes it — which would report a request for input
     as a terminal failure."""
-    result = _call_spec(ServiceSpec(service=boom, atomic=False), object(), {})
+    result = _dispatch(ServiceSpec(service=boom, atomic=False), object(), {})
     assert result == {"error": "nope"}, "the generic arm must still work"
     with pytest.raises(ModelRetry):
-        _call_spec(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
+        _dispatch(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
 
 
 # --- permissions -------------------------------------------------------------
@@ -430,7 +459,7 @@ def test_it_is_not_swallowed_by_the_generic_service_error_arm() -> None:
 
 def test_denied_permission_raises():
     with pytest.raises(PermissionDenied):
-        _call_spec(list_spec(permission_classes=[DenyAll]), object(), {})
+        _dispatch(list_spec(permission_classes=[DenyAll]), object(), {})
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -480,25 +509,25 @@ def test_string_limit_is_coerced_to_int():
     user = User.objects.create(username="u")
     Widget.objects.create(owner=user, name="a", price=1)
     Widget.objects.create(owner=user, name="b", price=2)
-    result = _call_spec(list_spec(), user, {"limit": "1"})
+    result = _dispatch(list_spec(), user, {"limit": "1"})
     assert len(result) == 1
 
 
 @pytest.mark.parametrize("value", ["abc", "2.5", "-1", 0, -3, 2.0])
 def test_non_positive_int_limit_is_model_retry(value):
     with pytest.raises(ModelRetry, match="positive integer"):
-        _call_spec(list_spec(), object(), {"limit": value})
+        _dispatch(list_spec(), object(), {"limit": value})
 
 
 def test_bool_page_is_model_retry():
     # ``True`` is an ``int`` subclass but never a valid count.
     with pytest.raises(ModelRetry, match="positive integer"):
-        _call_spec(list_spec(), object(), {"page": True})
+        _dispatch(list_spec(), object(), {"page": True})
 
 
 def test_non_string_order_is_model_retry():
     with pytest.raises(ModelRetry, match="ordering"):
-        _call_spec(list_spec(), object(), {"ordering": ["price"]}, ordering_fields=["price"])
+        _dispatch(list_spec(), object(), {"ordering": ["price"]}, ordering_fields=["price"])
 
 
 # --- unknown-arguments knob --------------------------------------------------
@@ -508,13 +537,13 @@ def test_non_string_order_is_model_retry():
 def test_unknown_argument_rejected_by_default():
     user = User.objects.create(username="u")
     with pytest.raises(ModelRetry, match="bogus"):
-        _call_spec(create_spec(), user, {"name": "z", "price": 5, "bogus": 1})
+        _dispatch(create_spec(), user, {"name": "z", "price": 5, "bogus": 1})
 
 
 @pytest.mark.django_db
 def test_unknown_argument_ignored_when_configured():
     user = User.objects.create(username="u")
-    result = _call_spec(
+    result = _dispatch(
         create_spec(),
         user,
         {"name": "z", "price": 5, "bogus": 1},
@@ -572,7 +601,7 @@ def test_object_permission_denies_cross_user_retrieve():
         permission_classes=[IsOwner],
     )
     with pytest.raises(PermissionDenied):
-        _call_spec(spec, other, {"pk": widget.pk})
+        _dispatch(spec, other, {"pk": widget.pk})
 
 
 @pytest.mark.django_db
@@ -585,7 +614,7 @@ def test_object_permission_allows_owner_retrieve():
         output_serializer=WidgetSerializer,
         permission_classes=[IsOwner],
     )
-    assert _call_spec(spec, owner, {"pk": widget.pk})["name"] == "a"
+    assert _dispatch(spec, owner, {"pk": widget.pk})["name"] == "a"
 
 
 @pytest.mark.django_db
@@ -603,7 +632,7 @@ def test_object_permission_denies_cross_user_mutation():
     # A denial aborts the run (PermissionDenied) — not a ModelRetry — before the
     # service mutates the row, exactly as it would over HTTP.
     with pytest.raises(PermissionDenied):
-        _call_spec(spec, other, {"pk": widget.pk, "name": "hacked", "price": 9})
+        _dispatch(spec, other, {"pk": widget.pk, "name": "hacked", "price": 9})
     widget.refresh_from_db()
     assert widget.name == "a"
 
@@ -710,7 +739,7 @@ def test_unknown_per_tool_key_is_rejected():
 def test_query_param_reaches_the_serializer_via_request_query_params():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         _echo_list_spec(), user, {"fields": "id,name"}, query_params=(QueryParam("fields"),)
     )
     assert result == [{"name": "a", "fields": "id,name"}]
@@ -720,7 +749,7 @@ def test_query_param_reaches_the_serializer_via_request_query_params():
 def test_query_param_default_is_seeded_when_the_model_omits_it():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         _echo_list_spec(), user, {}, query_params=(QueryParam("fields", default="id"),)
     )
     assert result == [{"name": "a", "fields": "id"}]
@@ -730,7 +759,7 @@ def test_query_param_default_is_seeded_when_the_model_omits_it():
 def test_query_param_omitted_without_default_seeds_nothing():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    result = _call_spec(_echo_list_spec(), user, {}, query_params=(QueryParam("fields"),))
+    result = _dispatch(_echo_list_spec(), user, {}, query_params=(QueryParam("fields"),))
     assert result == [{"name": "a", "fields": None}]
 
 
@@ -740,7 +769,7 @@ def test_query_param_is_popped_before_dispatch_so_reject_ignores_it():
     # ModelRetry. The query param must be popped before dispatch, so this passes.
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         list_spec(),
         user,
         {"fields": "x"},
@@ -882,7 +911,7 @@ def test_filter_set_filters_via_ordinary_params_not_query_params():
     # The filter value is an ordinary tool arg: a filter_set selector's declared
     # set is open (REJECT doesn't flag it), and dispatch hands it to the FilterSet
     # as filter_data. No QueryParam involved.
-    result = _call_spec(_filtered_list_spec(), user, {"min_price": "5"})
+    result = _dispatch(_filtered_list_spec(), user, {"min_price": "5"})
     assert [w["name"] for w in result] == ["pricey"]
 
 
@@ -992,7 +1021,7 @@ def test_url_kwarg_reaches_a_scoping_provider_via_view_kwargs():
     user = User.objects.create(username="u")
     Widget.objects.create(name="cheap", price=5, owner=user)
     Widget.objects.create(name="dear", price=15, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         _provider_scoped_spec(),
         user,
         {"project_pk": "10"},
@@ -1008,7 +1037,7 @@ def test_url_kwarg_is_popped_before_dispatch_so_reject_ignores_it():
     # what makes the provider-read case work.
     user = User.objects.create(username="u")
     Widget.objects.create(name="cheap", price=5, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         _provider_scoped_spec(),
         user,
         {"project_pk": "10"},
@@ -1023,7 +1052,7 @@ def test_url_kwarg_default_is_seeded_when_the_model_omits_it():
     user = User.objects.create(username="u")
     Widget.objects.create(name="cheap", price=5, owner=user)
     Widget.objects.create(name="dear", price=15, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         _provider_scoped_spec(),
         user,
         {},
@@ -1037,7 +1066,7 @@ def test_url_kwarg_omitted_without_default_seeds_nothing():
     user = User.objects.create(username="u")
     Widget.objects.create(name="cheap", price=5, owner=user)
     # No project_pk, no default → view.kwargs empty → provider ceiling 0 → nothing.
-    result = _call_spec(_provider_scoped_spec(), user, {}, url_kwargs=(UrlKwarg("project_pk"),))
+    result = _dispatch(_provider_scoped_spec(), user, {}, url_kwargs=(UrlKwarg("project_pk"),))
     assert result == []
 
 
@@ -1099,7 +1128,7 @@ def test_reflected_extras_key_never_reaches_view_kwargs():
         kwargs=scope_provider,
     )
     # Supplied as an ordinary argument, with no ``UrlKwarg`` registered.
-    result = _call_spec(spec, user, {"project_pk": 10})
+    result = _dispatch(spec, user, {"project_pk": 10})
     assert [w["name"] for w in result] == ["cheap"]  # the selector did get it
     assert seen["view_kwargs"] == {}  # the provider did not
 
@@ -1111,7 +1140,7 @@ def test_dual_declared_url_kwarg_delivers_to_the_selector_pool():
     Widget.objects.create(name="dear", price=15, owner=user)
     # Popped from params into kwargs=, then drf-services' authoritative spread
     # delivers it to the selector pool where the Unpack extras read it.
-    result = _call_spec(
+    result = _dispatch(
         _dual_declared_spec(), user, {"project_pk": 10}, url_kwargs=(UrlKwarg("project_pk"),)
     )
     assert [w["name"] for w in result] == ["cheap"]
@@ -1147,14 +1176,14 @@ def test_omitting_a_required_url_kwarg_raises_model_retry():
     # Schema ``required`` is a hint models routinely ignore, so the runtime has
     # to give the model a way back: ModelRetry naming the argument, not a crash.
     with pytest.raises(ModelRetry, match="project_pk"):
-        _call_spec(list_spec(), None, {}, url_kwargs=[UrlKwarg("project_pk", required=True)])
+        _dispatch(list_spec(), None, {}, url_kwargs=[UrlKwarg("project_pk", required=True)])
 
 
 @pytest.mark.django_db
 def test_supplying_a_required_url_kwarg_dispatches_normally():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    result = _call_spec(
+    result = _dispatch(
         list_spec(),
         user,
         {"project_pk": "P1"},
@@ -1217,7 +1246,7 @@ def test_render_supplies_the_request_in_the_serializer_context():
         selector=list_widgets,
         output_serializer=ContextReadingSerializer,
     )
-    assert [w["owned_by"] for w in _call_spec(spec, user, {})] == ["u"]
+    assert [w["owned_by"] for w in _dispatch(spec, user, {})] == ["u"]
 
 
 @pytest.mark.django_db
@@ -1235,7 +1264,7 @@ def test_input_validation_supplies_the_request_in_the_serializer_context():
         input_serializer=ContextReadingInput,
         atomic=False,
     )
-    _call_spec(spec, user, {"name": "a", "price": 1})
+    _dispatch(spec, user, {"name": "a", "price": 1})
     assert Widget.objects.get().name == "a-u"
 
 
@@ -1271,14 +1300,14 @@ def fileish_spec():
 def test_without_a_host_file_urls_are_relative():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    assert [w["doc_url"] for w in _call_spec(fileish_spec(), user, {})] == ["/media/doc.pdf"]
+    assert [w["doc_url"] for w in _dispatch(fileish_spec(), user, {})] == ["/media/doc.pdf"]
 
 
 @pytest.mark.django_db
 def test_host_makes_file_urls_absolute():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    result = _call_spec(fileish_spec(), user, {}, host="https://files.example.com")
+    result = _dispatch(fileish_spec(), user, {}, host="https://files.example.com")
     assert [w["doc_url"] for w in result] == ["https://files.example.com/media/doc.pdf"]
 
 
@@ -1424,13 +1453,13 @@ def test_a_value_outside_the_enum_is_a_retry_naming_the_options():
     reading its answer.
     """
     with pytest.raises(ModelRetry, match="`name`, `-name`"):
-        _call_spec(list_spec(), object(), {"ordering": "price"}, ordering_fields=["name"])
+        _dispatch(list_spec(), object(), {"ordering": "price"}, ordering_fields=["name"])
 
 
 @pytest.mark.django_db
 def test_ordering_on_a_tool_that_declares_none_says_so():
     with pytest.raises(ModelRetry, match="does not accept an `ordering` argument"):
-        _call_spec(list_spec(), object(), {"ordering": "name"})
+        _dispatch(list_spec(), object(), {"ordering": "name"})
 
 
 async def test_the_ordering_instruction_appears_only_when_some_tool_declares_fields():
@@ -1635,7 +1664,7 @@ def test_the_page_ceiling_is_clamped_as_well_as_advertised():
     for n in range(5):
         Widget.objects.create(name=f"w{n}", price=n, owner=user)
 
-    result = _call_spec(list_spec(), user, {"limit": 1000}, max_page_size=2)
+    result = _dispatch(list_spec(), user, {"limit": 1000}, max_page_size=2)
     assert len(result) == 2
 
 
@@ -1647,9 +1676,9 @@ def test_an_omitted_limit_becomes_the_ceiling():
     for n in range(5):
         Widget.objects.create(name=f"w{n}", price=n, owner=user)
 
-    assert len(_call_spec(list_spec(), user, {}, max_page_size=3)) == 3
+    assert len(_dispatch(list_spec(), user, {}, max_page_size=3)) == 3
     # With no ceiling configured, an omitted limit still means "everything".
-    assert len(_call_spec(list_spec(), user, {})) == 5
+    assert len(_dispatch(list_spec(), user, {})) == 5
 
 
 async def test_a_call_past_its_deadline_answers_instead_of_hanging():
@@ -1665,3 +1694,220 @@ async def test_no_deadline_awaits_normally():
         return "done"
 
     assert await _with_deadline(_quick(), None, label="x") == "done"
+
+
+# --- the overridable middle (A2 / A3 / A6) -----------------------------------
+#
+# Everything between argument intake and result rendering used to be sealed in a
+# module-level private: a subclass could replace ``call_tool`` wholesale or
+# nothing at all. These cover the two seams and the two knobs that ride on them.
+
+
+class _Boom(Exception):
+    """Stands in for an exception this package knows nothing about."""
+
+
+def test_an_unmapped_exception_still_aborts_the_run():
+    """The default is unchanged — a genuine bug must not become a tool result."""
+
+    def boom(user):
+        """Boom."""
+        raise _Boom("kaboom")
+
+    with pytest.raises(_Boom):
+        _dispatch(ServiceSpec(service=boom, atomic=False), object())
+
+
+def test_exception_map_turns_an_unknown_exception_into_a_result():
+    """⭐ The motivating case: Django's ``ValidationError``, not DRF's.
+
+    Raised by ``full_clean`` and any custom model validator, absent from the
+    translated set, and so fatal to the run where the DRF twin would have been a
+    retry. Broadening the built-in set fixes that one; a map fixes the class.
+    """
+
+    def boom(user):
+        """Boom."""
+        raise DjangoValidationError("that name is taken")
+
+    result = _dispatch(
+        ServiceSpec(service=boom, atomic=False),
+        object(),
+        toolset_kwargs={"exception_map": {DjangoValidationError: lambda exc: {"error": str(exc)}}},
+    )
+    assert "that name is taken" in result["error"]
+
+
+def test_a_handler_may_retry_instead_of_returning():
+    """Both outcomes of the model loop are reachable from one map."""
+
+    def boom(user):
+        """Boom."""
+        raise _Boom("try again")
+
+    with pytest.raises(ModelRetry, match="try again"):
+        _dispatch(
+            ServiceSpec(service=boom, atomic=False),
+            object(),
+            toolset_kwargs={
+                "exception_map": {_Boom: lambda exc: (_ for _ in ()).throw(ModelRetry(str(exc)))}
+            },
+        )
+
+
+def test_a_base_class_registration_catches_a_subclass():
+    """Registering ``Exception`` should not require enumerating every subclass."""
+
+    def boom(user):
+        """Boom."""
+        raise _Boom("anything")
+
+    result = _dispatch(
+        ServiceSpec(service=boom, atomic=False),
+        object(),
+        toolset_kwargs={"exception_map": {Exception: lambda exc: {"error": "caught"}}},
+    )
+    assert result == {"error": "caught"}
+
+
+def test_the_most_specific_registration_wins():
+    """MRO order, so a narrow handler is not shadowed by a broad one."""
+
+    def boom(user):
+        """Boom."""
+        raise _Boom("x")
+
+    result = _dispatch(
+        ServiceSpec(service=boom, atomic=False),
+        object(),
+        toolset_kwargs={
+            "exception_map": {
+                Exception: lambda exc: {"error": "broad"},
+                _Boom: lambda exc: {"error": "narrow"},
+            }
+        },
+    )
+    assert result == {"error": "narrow"}
+
+
+def test_the_map_overrides_a_built_in_arm():
+    """Deliberate: the built-ins are this package's guess, not a law.
+
+    A ``ServiceError`` normally becomes ``{"error": …}``. A project that would
+    rather the model retry must be able to say so, or the map is only half a
+    seam.
+    """
+
+    def boom(user):
+        """Boom."""
+        raise ServiceError("nope")
+
+    with pytest.raises(ModelRetry):
+        _dispatch(
+            ServiceSpec(service=boom, atomic=False),
+            object(),
+            toolset_kwargs={
+                "exception_map": {
+                    ServiceError: lambda exc: (_ for _ in ()).throw(ModelRetry(str(exc)))
+                }
+            },
+        )
+
+
+@pytest.mark.django_db
+def test_http_request_is_forwarded_to_the_offline_context():
+    """A3 — the parameter existed upstream all along and was never passed."""
+    request = RequestFactory().get("/", HTTP_X_TENANT="acme")
+    seen = {}
+
+    def peek(user, request=None, **_):
+        """Peek."""
+        seen["tenant"] = request.META.get("HTTP_X_TENANT")
+        return {"ok": True}
+
+    _dispatch(
+        ServiceSpec(service=peek, atomic=False),
+        object(),
+        toolset_kwargs={"http_request": request},
+    )
+    assert seen["tenant"] == "acme"
+
+
+@pytest.mark.django_db
+def test_get_http_request_can_vary_the_request_per_run():
+    """The per-run form, mirroring ``get_user`` — the point of routing A3 through A2."""
+    seen = {}
+
+    def peek(user, request=None, **_):
+        """Peek."""
+        seen["tenant"] = request.META.get("HTTP_X_TENANT")
+        return {"ok": True}
+
+    def from_deps(ctx):
+        return RequestFactory().get("/", HTTP_X_TENANT=ctx.deps.user)
+
+    _dispatch(
+        ServiceSpec(service=peek, atomic=False),
+        "beta-corp",
+        toolset_kwargs={"get_http_request": from_deps},
+    )
+    assert seen["tenant"] == "beta-corp"
+
+
+def test_no_request_arrives_unless_one_was_configured():
+    """⛔ The honest default — a request nothing declared is one nobody can audit."""
+    assert _default_get_http_request(SimpleNamespace(deps=AgentDeps(user=object()))) is None
+
+
+@pytest.mark.django_db
+def test_build_context_is_overridable_and_sees_the_run():
+    """A2 proper: a subclass reaches dispatch with the run's typed deps in hand."""
+    seen = {}
+
+    def peek(user, request=None, **_):
+        """Peek."""
+        seen["tenant"] = request.META.get("HTTP_X_TENANT")
+        return {"ok": True}
+
+    class TenantToolset(SpecToolset):
+        def build_context(self, user, params, *, ctx, **kwargs):
+            # The whole ask: per-run typed deps informing dispatch, with no
+            # generic "set attributes on the request" knob in sight.
+            # ``ctx.deps`` is the whole point: the tenant is per-run, so it
+            # cannot be baked into the toolset at construction. ⚠ Overriding
+            # ``build_context`` rather than the extractor — ``_get_http_request``
+            # is an instance attribute assigned in ``__init__``, so a method of
+            # that name would be shadowed by it. This is the documented seam.
+            return build_offline_context(
+                user,
+                params,
+                http_request=RequestFactory().get("/", HTTP_X_TENANT=ctx.deps.user),
+                **kwargs,
+            )
+
+    spec = ServiceSpec(service=peek, atomic=False, permission_classes=[AllowAny])
+    toolset = TenantToolset({"t": spec})
+    ctx = SimpleNamespace(deps=AgentDeps(user="gamma-ltd"))
+    toolset._call_spec(spec, "gamma-ltd", {}, ctx=ctx)
+
+    assert seen["tenant"] == "gamma-ltd"
+
+
+def test_translate_exception_is_overridable_without_a_map():
+    """The method is the seam; ``exception_map`` is the declarative shortcut."""
+
+    def boom(user):
+        """Boom."""
+        raise _Boom("subclassed")
+
+    class Translating(SpecToolset):
+        def translate_exception(self, exc, *, ctx):
+            if isinstance(exc, _Boom):
+                return lambda e: {"error": f"handled {e}"}
+            return super().translate_exception(exc, ctx=ctx)
+
+    spec = ServiceSpec(service=boom, atomic=False, permission_classes=[AllowAny])
+    toolset = Translating({"t": spec})
+    ctx = SimpleNamespace(deps=AgentDeps(user=object()))
+
+    assert toolset._call_spec(spec, object(), {}, ctx=ctx) == {"error": "handled subclassed"}
