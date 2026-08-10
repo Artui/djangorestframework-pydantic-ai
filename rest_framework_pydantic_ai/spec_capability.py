@@ -5,10 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from django.http import HttpRequest
 from pydantic_ai.capabilities import AbstractCapability
 from rest_framework_services import UnknownArguments
 
 from rest_framework_pydantic_ai.spec_toolset import (
+    ExceptionHandler,
+    HttpRequestExtractor,
     ProgressExtractor,
     SpecSource,
     SpecToolset,
@@ -98,6 +101,9 @@ class SpecCapability(AbstractCapability[Any]):
         descriptions: Mapping[str, str] | None = None,
         ordering_fields: Sequence[str] = (),
         tool_ordering_fields: Mapping[str, Sequence[str]] | None = None,
+        http_request: HttpRequest | None = None,
+        get_http_request: HttpRequestExtractor | None = None,
+        exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
     ) -> None:
         toolset = SpecToolset(
             specs,
@@ -120,6 +126,9 @@ class SpecCapability(AbstractCapability[Any]):
             descriptions=descriptions,
             ordering_fields=ordering_fields,
             tool_ordering_fields=tool_ordering_fields,
+            http_request=http_request,
+            get_http_request=get_http_request,
+            exception_map=exception_map,
         )
         self._configure(toolset, defer_loading=defer_loading)
 

@@ -6,6 +6,53 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-10
+
+### Added
+
+- **The middle of a tool call is overridable.** Everything between argument
+  intake and result rendering lived in a module-level private, so a subclass
+  could replace `call_tool` wholesale or nothing at all. Two protected methods
+  are now the seam, and **both receive the live `RunContext`** — which is the
+  point: a project's per-run typed deps (a tenant, a feature-flag snapshot) are
+  what usually need to reach dispatch, and they had no route in.
+
+  - `build_context(user, params, *, ctx, …)` — builds the off-HTTP context.
+  - `translate_exception(exc, *, ctx)` — returns a handler, or `None` to fall
+    through to the built-in arms.
+
+  ⛔ **Deliberately not added: a generic "set arbitrary attributes on the
+  synthetic request" parameter.** It was the obvious shortcut, and it makes
+  ambient-state-on-the-request the default posture for everyone. An override
+  keeps the honest path the easy one.
+
+- **`http_request=` / `get_http_request=`** — supply the `HttpRequest` the
+  off-HTTP context is built from, statically or resolved per run from
+  `RunContext`, mirroring `get_user`. ⭐ `build_offline_context` has accepted
+  `http_request` all along; this package simply never forwarded it.
+
+  ⛔ **Incidental request data, never an auth channel.** It exists so a
+  serializer or scoping provider reading `request.META` finds something
+  plausible. The acting identity is `user`, resolved from `ctx.deps`, and
+  nothing downstream re-derives it — passing an authenticated request authorizes
+  nothing, and leaning on it would put a second, invisible identity in the call.
+  There is no default: a request that appears unasked-for is one nothing
+  declared.
+
+- **`exception_map={ExcType: handler}`** — map an exception type onto a tool
+  result, or onto a `ModelRetry`. Matched along the MRO, so a base-class
+  registration catches subclasses and the most specific wins.
+
+  ⭐ **The motivating case is one type.** `django.core.exceptions.ValidationError`
+  — Django's, not DRF's — is raised by `full_clean` and by any custom model
+  validator, was not in the translated set, and so killed the run where the DRF
+  twin became a `ModelRetry`. Broadening the built-in set would have fixed that
+  one case; a map fixes the class of them.
+
+  ⚠ **The map is consulted before the built-in arms, deliberately** — those
+  encode this package's guess at what a model should see, and a project that
+  knows better should win.
+
 ## [0.13.1] — 2026-08-10
 
 ### Fixed
@@ -598,7 +645,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.11.1...v0.12.0

@@ -52,6 +52,7 @@ from typing import Any, cast
 
 from asgiref.sync import sync_to_async
 from django.core.exceptions import FieldError, ImproperlyConfigured
+from django.http import HttpRequest
 from pydantic_ai import ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
@@ -89,6 +90,19 @@ Spec = ServiceSpec[Any, Any, Any] | SelectorSpec[Any, Any]
 SpecSource = Mapping[str, Spec] | SpecRegistry
 UserExtractor = Callable[[RunContext[Any]], Any]
 ProgressExtractor = Callable[[RunContext[Any]], ProgressReporter | None]
+HttpRequestExtractor = Callable[[RunContext[Any]], HttpRequest | None]
+
+_ContextBuilder = Callable[..., Any]
+_ExceptionTranslator = Callable[[BaseException], "ExceptionHandler | None"]
+
+ExceptionHandler = Callable[[BaseException], Any]
+"""Turns one exception into a tool result.
+
+Return the value the tool should return — ``{"error": …}`` for something the
+model should report and stop on — or raise :class:`pydantic_ai.ModelRetry` to
+hand it back for another attempt. Raising anything else aborts the run, which is
+the right answer for a genuine bug.
+"""
 
 logger = logging.getLogger("rest_framework_pydantic_ai")
 """The package's one logger.
@@ -281,7 +295,25 @@ class SpecToolset(AbstractToolset[Any]):
     that hurts, and it is what a model produces by not thinking about
     pagination.
 
-    ``dispatch_timeout`` (seconds) bounds one call, answering the model instead
+    **Extending dispatch.**
+
+    ``http_request`` / ``get_http_request`` supply the ``HttpRequest`` the
+    off-HTTP context is built from — static, or resolved per run from
+    ``RunContext`` the way ``get_user`` is. ⛔ **Incidental request data, never
+    an auth channel:** it exists so a serializer or scoping provider that reads
+    ``request.META`` finds something plausible. The acting identity is ``user``,
+    and passing an authenticated request authorizes nothing.
+
+    ``exception_map`` maps an exception type to a handler returning the tool's
+    result (or raising :class:`pydantic_ai.ModelRetry`). Registrations are
+    matched along the MRO — most specific wins — and are consulted **before**
+    the built-in arms, so a project can override those too.
+
+    For anything these do not cover, :meth:`build_context` and
+    :meth:`translate_exception` are overridable and both receive the live
+    ``RunContext``, which is how per-run typed deps reach dispatch.
+
+        ``dispatch_timeout`` (seconds) bounds one call, answering the model instead
     of hanging. ⚠ It does not *stop* the work: the dispatch runs in a
     ``sync_to_async`` thread and asyncio cannot interrupt a thread parked in a
     database driver's socket read, so the query runs to completion regardless.
@@ -311,6 +343,9 @@ class SpecToolset(AbstractToolset[Any]):
         descriptions: Mapping[str, str] | None = None,
         ordering_fields: Sequence[str] = (),
         tool_ordering_fields: Mapping[str, Sequence[str]] | None = None,
+        http_request: HttpRequest | None = None,
+        get_http_request: HttpRequestExtractor | None = None,
+        exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
     ) -> None:
         resolved = _resolve_specs(specs)
         _validate_tool_names(resolved)
@@ -323,6 +358,14 @@ class SpecToolset(AbstractToolset[Any]):
         self._specs: dict[str, Spec] = dict(resolved)
         self._get_user: UserExtractor = get_user or _default_get_user
         self._get_progress: ProgressExtractor = get_progress or _default_get_progress
+        # A static request and a per-run extractor are the same knob at two
+        # lifetimes, so one resolves to the other rather than living beside it:
+        # ``http_request=`` becomes an extractor returning it, and a supplied
+        # ``get_http_request=`` wins outright. Same shape as ``get_user``.
+        self._get_http_request: HttpRequestExtractor = get_http_request or (
+            (lambda ctx: http_request) if http_request is not None else _default_get_http_request
+        )
+        self._exception_map: dict[type[BaseException], ExceptionHandler] = dict(exception_map or {})
         self._unknown_arguments: UnknownArguments = unknown_arguments
         self._host = host
         self._max_retries = max_retries
@@ -447,10 +490,11 @@ class SpecToolset(AbstractToolset[Any]):
             # so popping pagination / query-param args never mutates the
             # caller's dict.
             result = await _with_deadline(
-                sync_to_async(_call_spec)(
+                sync_to_async(self._call_spec)(
                     spec,
                     user,
                     dict(tool_args),
+                    ctx=ctx,
                     unknown_arguments=self._unknown_arguments,
                     query_params=self._tool_query_params[name],
                     url_kwargs=self._tool_url_kwargs[name],
@@ -480,6 +524,95 @@ class SpecToolset(AbstractToolset[Any]):
             (time.perf_counter() - started) * 1000,
         )
         return result
+
+    # ----- the overridable middle -----
+    #
+    # ⚠ Everything between argument intake and result rendering used to be
+    # sealed inside a module-level private, so a subclass could replace
+    # ``call_tool`` wholesale or nothing at all. These two methods are the seam.
+    # Both receive the live ``RunContext``, which is the point: a project's
+    # per-run typed deps — a tenant, a feature-flag snapshot — are what usually
+    # need to reach dispatch, and they have no other route in.
+    #
+    # ⛔ **Deliberately not offered: a generic "set arbitrary attributes on the
+    # synthetic request" parameter.** It was the obvious shortcut and it makes
+    # ambient-state-on-the-request the default posture for everyone. An
+    # override keeps the honest path the easy one.
+
+    def build_context(
+        self,
+        user: Any,
+        params: Mapping[str, Any],
+        *,
+        ctx: RunContext[Any],
+        kwargs: Mapping[str, Any] | None = None,
+        query_params: Mapping[str, Any] | None = None,
+        host: str | None = None,
+    ) -> Any:
+        """Build the off-HTTP context one call dispatches under.
+
+        Override to vary the synthetic request per run. The default forwards to
+        drf-services' :func:`build_offline_context`, resolving
+        ``http_request`` through :attr:`get_http_request`.
+
+        ⚠ **An ``http_request`` here is incidental request data — never an auth
+        channel.** It is there so a serializer or a scoping provider that reads
+        ``request.META`` / ``request.headers`` finds something plausible. The
+        acting identity is ``user``, resolved from ``ctx.deps``, and nothing
+        downstream re-derives it from the request; passing an authenticated
+        request does **not** authorize anything, and relying on it would put a
+        second, invisible identity in the call.
+        """
+        return build_offline_context(
+            user,
+            params,
+            http_request=self._get_http_request(ctx),
+            kwargs=kwargs,
+            query_params=query_params,
+            host=host,
+        )
+
+    def translate_exception(
+        self, exc: BaseException, *, ctx: RunContext[Any]
+    ) -> ExceptionHandler | None:
+        """Return a handler for ``exc``, or ``None`` to leave it to the defaults.
+
+        The default consults ``exception_map`` by walking the exception's MRO,
+        so a handler registered for a base class catches its subclasses and the
+        **most specific** registration wins.
+
+        ⭐ **The motivating case is one line long.** ``django.core.exceptions
+        .ValidationError`` — Django's, not DRF's — is raised by ``full_clean``
+        and by any custom model validator, is not in the translated set, and so
+        kills the whole run where the DRF twin would have become a
+        ``ModelRetry``. Broadening the built-in set would have fixed that one
+        case; a map fixes the class of them, and lets a project override the
+        built-in arms too when it knows better than this package does.
+        """
+        del ctx  # unused by the default; present so an override has it
+        for klass in type(exc).__mro__:
+            handler = self._exception_map.get(cast(type[BaseException], klass))
+            if handler is not None:
+                return handler
+        return None
+
+    def _call_spec(
+        self, spec: Spec, user: Any, args: dict[str, Any], *, ctx: RunContext[Any], **kw: Any
+    ) -> Any:
+        """Bind the two seams to this run, then run the shared pipeline.
+
+        Separate from :meth:`call_tool` because the pipeline is synchronous and
+        runs in a thread; separate from the module-level function because that
+        one has to stay usable without a toolset.
+        """
+        return _call_spec(
+            spec,
+            user,
+            args,
+            build_context=lambda *a, **kwargs: self.build_context(*a, ctx=ctx, **kwargs),
+            translate_exception=lambda exc: self.translate_exception(exc, ctx=ctx),
+            **kw,
+        )
 
 
 def _validate_permissions(specs: Mapping[str, Spec], *, require: bool) -> None:
@@ -755,6 +888,18 @@ def _default_get_progress(ctx: RunContext[Any]) -> ProgressReporter | None:
     return getattr(getattr(ctx, "deps", None), "progress", None)
 
 
+def _default_get_http_request(ctx: RunContext[Any]) -> HttpRequest | None:
+    """No request unless one was configured — the honest default.
+
+    ⛔ **Not read off ``ctx.deps``, unlike the user and the progress sink.** A
+    request that appears by default is one nothing declared, and the failure
+    mode is silent: a serializer starts building absolute URLs against whatever
+    host happened to be in scope. It arrives because a project asked for it.
+    """
+    del ctx
+    return None
+
+
 def _default_get_user(ctx: RunContext[Any]) -> Any:
     """Read the acting user off ``ctx.deps.user`` (the ``AgentDeps`` default)."""
     return ctx.deps.user
@@ -914,11 +1059,17 @@ def _call_spec(
     label: str = "",
     progress: ProgressReporter | None = None,
     host: str | None = None,
+    build_context: _ContextBuilder = build_offline_context,
+    translate_exception: _ExceptionTranslator | None = None,
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
 
     Synchronous on purpose — ``SpecToolset.call_tool`` runs it in a thread so
     the ORM stays off the event loop.
+
+    ``build_context`` and ``translate_exception`` are the two seams
+    :class:`SpecToolset` threads its overridable methods through; the defaults
+    keep this function usable on its own.
     """
     page_args = _pop_pagination(spec, args, ordering_fields, max_page_size)
     # Pop the registered query params out of the spec args and seed them into the
@@ -933,7 +1084,7 @@ def _call_spec(
     # ``project_pk`` a scoping provider reads off ``view.kwargs`` (never a spec
     # input) would otherwise be flagged by ``unknown_arguments``.
     url_kwarg_values = _pop_url_kwargs(url_kwargs, args)
-    context = build_offline_context(
+    context = build_context(
         user,
         args,
         kwargs=url_kwarg_values or None,
@@ -961,28 +1112,45 @@ def _call_spec(
             # ``None`` becomes drf-services' no-op seed.
             progress=progress,
         )
-    except (DRFValidationError, ServiceValidationError) as exc:
-        # Input-serializer validation raises DRF's ``ValidationError``; a service
-        # may raise drf-services' ``ServiceValidationError`` (a ``ServiceError``
-        # subclass — caught here, before the business-error clause below). Both
-        # mean "the arguments were wrong", so the model retries with the detail.
-        raise ModelRetry(str(exc.detail)) from exc
-    except AdditionalInputRequired as exc:
-        # ⚠ **Must precede the ``ServiceError`` arm below** — this is a subclass
-        # of it, and the generic handler would report a request for input as a
-        # terminal failure. drf-services subclasses it deliberately so an
-        # unaware transport still says something sensible; catching it first is
-        # what a transport that can do better owes in return.
+    except BaseException as exc:
+        # ⚠ **One arm, not a chain, because the consumer's map has to be
+        # consulted first *and* fall through when it declines.** Written as a
+        # leading ``except`` clause instead, every arm below it becomes
+        # unreachable — the ``raise`` for an unclaimed exception leaves the
+        # ``try`` entirely rather than trying the next clause.
         #
-        # ⭐ A model *is* the thing that can answer, and ``ModelRetry`` is
-        # already the "here is what to fix, call me again" channel — so the
-        # service's message plus the shape of what it wants is exactly a retry
-        # prompt. No dialog, no elicitation surface, no second result type: the
-        # answer comes back as an ordinary argument on the next call, which is
-        # the whole premise of the exception.
-        raise ModelRetry(_missing_input_prompt(exc)) from exc
-    except ServiceError as exc:
-        return {"error": str(exc)}
+        # The map wins over the built-ins deliberately: those encode this
+        # package's guess at what a model should see, and a project that knows
+        # better should be able to say so.
+        handler = translate_exception(exc) if translate_exception is not None else None
+        if handler is not None:
+            return handler(exc)
+        if isinstance(exc, DRFValidationError | ServiceValidationError):
+            # Input-serializer validation raises DRF's ``ValidationError``; a
+            # service may raise drf-services' ``ServiceValidationError`` (a
+            # ``ServiceError`` subclass — matched here, before the business-error
+            # case below). Both mean "the arguments were wrong", so the model
+            # retries with the detail.
+            raise ModelRetry(str(exc.detail)) from exc
+        if isinstance(exc, AdditionalInputRequired):
+            # ⚠ **Must precede the ``ServiceError`` case below** — this is a
+            # subclass of it, and the generic handler would report a request for
+            # input as a terminal failure. drf-services subclasses it
+            # deliberately so an unaware transport still says something
+            # sensible; matching it first is what a transport that can do better
+            # owes in return.
+            #
+            # ⭐ A model *is* the thing that can answer, and ``ModelRetry`` is
+            # already the "here is what to fix, call me again" channel — so the
+            # service's message plus the shape of what it wants is exactly a
+            # retry prompt. No dialog, no elicitation surface, no second result
+            # type: the answer comes back as an ordinary argument on the next
+            # call, which is the whole premise of the exception.
+            raise ModelRetry(_missing_input_prompt(exc)) from exc
+        if isinstance(exc, ServiceError):
+            return {"error": str(exc)}
+        raise
+
     if result.kind == "not_found":
         return {"error": "not found"}
 
