@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 
@@ -37,6 +38,7 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _ordering_values,
     _output_extras,
     _paginate,
+    _with_deadline,
 )
 from tests.testapp.models import Widget
 from tests.testapp.serializers import WidgetInputSerializer, WidgetSerializer
@@ -1554,3 +1556,112 @@ async def test_a_denial_is_logged_at_warning_and_still_raises(caplog):
         await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
 
     assert "Permission denied calling tool 'list_widgets'" in caplog.text
+
+
+# ----- outbound bounds -----
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_an_over_budget_result_fails_rather_than_truncating():
+    """⛔ A partial payload looks complete.
+
+    A list cut at the byte ceiling is indistinguishable from a list that had
+    that many rows, so a model would answer confidently from data it does not
+    know is missing. Refusing costs a turn; truncating costs correctness.
+    """
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    for n in range(5):
+        await sync_to_async(Widget.objects.create)(name=f"w{n}", price=n, owner=user)
+
+    toolset = SpecToolset({"list_widgets": list_spec()}, max_result_bytes=20)
+    tools = await toolset.get_tools(None)
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert "over the 20 byte ceiling" in result["error"]
+    assert "not truncated" in result["error"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_result_inside_the_ceiling_passes_through_untouched():
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+
+    toolset = SpecToolset({"list_widgets": list_spec()}, max_result_bytes=100_000)
+    tools = await toolset.get_tools(None)
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert [w["name"] for w in result] == ["a"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_per_tool_ceiling_of_none_means_no_ceiling_for_that_tool():
+    """Absent and ``None`` are different answers: one inherits, one opts out."""
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+
+    toolset = SpecToolset(
+        {"list_widgets": list_spec()},
+        max_result_bytes=1,
+        tool_max_result_bytes={"list_widgets": None},
+    )
+    tools = await toolset.get_tools(None)
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert [w["name"] for w in result] == ["a"]
+
+
+def test_a_per_tool_ceiling_for_an_unknown_tool_is_a_typo():
+    with pytest.raises(ValueError, match="unknown tool 'nope'"):
+        SpecToolset({"list_widgets": list_spec()}, tool_max_result_bytes={"nope": 10})
+
+
+async def test_the_page_ceiling_is_advertised_on_limit():
+    toolset = SpecToolset({"list_widgets": list_spec()}, max_page_size=50)
+    tools = await toolset.get_tools(None)
+    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    assert props["limit"]["maximum"] == 50
+
+
+@pytest.mark.django_db
+def test_the_page_ceiling_is_clamped_as_well_as_advertised():
+    """Advertising alone is a hint that nothing obliges a model to honour."""
+    user = User.objects.create(username="u")
+    for n in range(5):
+        Widget.objects.create(name=f"w{n}", price=n, owner=user)
+
+    result = _call_spec(list_spec(), user, {"limit": 1000}, max_page_size=2)
+    assert len(result) == 2
+
+
+@pytest.mark.django_db
+def test_an_omitted_limit_becomes_the_ceiling():
+    """The unbounded read is the one that hurts, and it is the one a model
+    produces by simply not thinking about pagination."""
+    user = User.objects.create(username="u")
+    for n in range(5):
+        Widget.objects.create(name=f"w{n}", price=n, owner=user)
+
+    assert len(_call_spec(list_spec(), user, {}, max_page_size=3)) == 3
+    # With no ceiling configured, an omitted limit still means "everything".
+    assert len(_call_spec(list_spec(), user, {})) == 5
+
+
+async def test_a_call_past_its_deadline_answers_instead_of_hanging():
+    async def _slow():
+        await asyncio.sleep(1)
+
+    result = await _with_deadline(_slow(), 0.01, label="list_widgets")
+    assert "longer than the 0.01s limit" in result["error"]
+
+
+async def test_no_deadline_awaits_normally():
+    async def _quick():
+        return "done"
+
+    assert await _with_deadline(_quick(), None, label="x") == "done"

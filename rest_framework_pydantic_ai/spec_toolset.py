@@ -39,7 +39,9 @@ Error semantics map drf-services' failure kinds onto Pydantic-AI's model-loop:
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import json
 import logging
 import re
 import time
@@ -247,6 +249,42 @@ class SpecToolset(AbstractToolset[Any]):
     ``instructions`` overrides the auto-derived conventions block that
     :meth:`get_instructions` teaches the model (pagination + error contract);
     pass a string to replace it, or leave it ``None`` to derive from the specs.
+
+    **Safety and bounds.**
+
+    ``require_permissions`` (default ``True``) refuses to construct a toolset
+    containing a spec with no ``permission_classes``. Over HTTP that means
+    *inherit*; here there is nothing to inherit from, so it means *ungated*.
+    Pass ``False`` to downgrade to an :class:`UnguardedSpecWarning` while
+    migrating.
+
+    ``descriptions`` overrides ``spec.description`` per tool — the docstring an
+    API developer reads is rarely the sentence a model needs — and a tool left
+    with no description anywhere gets an :class:`UndescribedToolWarning`.
+
+    ``ordering_fields`` / ``tool_ordering_fields`` declare what a list tool may
+    sort by, advertised as an enum on an ``ordering`` argument and validated
+    against it. Nothing declared means no ``ordering`` argument at all; per-tool
+    *replaces* the toolset-wide set rather than merging with it.
+
+    ``max_result_bytes`` / ``tool_max_result_bytes`` cap a rendered result,
+    measured on the encoded payload because the thing being protected is the
+    model's context window. Over the ceiling the call **fails** with a
+    model-readable ``{"error": …}`` — never truncates, because a partial payload
+    looks complete. A per-tool ``None`` opts that tool out; a per-tool key
+    simply absent inherits the toolset default.
+
+    ``max_page_size`` clamps a list tool's ``limit`` *and* advertises the
+    ceiling as JSON-Schema ``maximum``. With it set, an omitted ``limit``
+    becomes the ceiling rather than "everything" — the unbounded read is the one
+    that hurts, and it is what a model produces by not thinking about
+    pagination.
+
+    ``dispatch_timeout`` (seconds) bounds one call, answering the model instead
+    of hanging. ⚠ It does not *stop* the work: the dispatch runs in a
+    ``sync_to_async`` thread and asyncio cannot interrupt a thread parked in a
+    database driver's socket read, so the query runs to completion regardless.
+    Pair it with a database statement timeout for the other half.
     """
 
     def __init__(
@@ -264,6 +302,10 @@ class SpecToolset(AbstractToolset[Any]):
         tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None = None,
         host: str | None = None,
         max_retries: int = 1,
+        max_result_bytes: int | None = None,
+        tool_max_result_bytes: Mapping[str, int | None] | None = None,
+        max_page_size: int | None = None,
+        dispatch_timeout: float | None = None,
         require_permissions: bool = True,
         descriptions: Mapping[str, str] | None = None,
         ordering_fields: Sequence[str] = (),
@@ -283,6 +325,24 @@ class SpecToolset(AbstractToolset[Any]):
         self._unknown_arguments: UnknownArguments = unknown_arguments
         self._host = host
         self._max_retries = max_retries
+        self._max_page_size = max_page_size
+        self._dispatch_timeout = dispatch_timeout
+        # ``UNSET`` is spelled here as "key absent": a per-tool ``None`` is a
+        # deliberate "no ceiling for this one", which is not the same as saying
+        # nothing and inheriting the toolset default.
+        overrides: Mapping[str, int | None] = tool_max_result_bytes or {}
+        for tool_name in overrides:
+            if tool_name not in self._specs:
+                raise ValueError(
+                    f"tool_max_result_bytes references unknown tool {tool_name!r}; "
+                    f"known tools: {sorted(self._specs)}."
+                )
+        self._tool_max_result_bytes: dict[str, int | None] = {
+            # ``.get`` with the toolset default: a stored ``None`` wins over it,
+            # which is exactly the absent-vs-explicit distinction above.
+            name: overrides.get(name, max_result_bytes)
+            for name in self._specs
+        }
         # The effective (deduped) query params for each tool: toolset-wide first,
         # then per-tool overriding by name. Built once — declarations are static.
         self._tool_query_params: dict[str, tuple[QueryParam, ...]] = {
@@ -325,6 +385,7 @@ class SpecToolset(AbstractToolset[Any]):
                 self._tool_url_kwargs[name],
                 self._descriptions.get(name),
                 self._tool_ordering_fields[name],
+                self._max_page_size,
             )
             for name, spec in self._specs.items()
         }
@@ -384,16 +445,23 @@ class SpecToolset(AbstractToolset[Any]):
             # loop — run it in a thread. ``dict(tool_args)`` is a private copy
             # so popping pagination / query-param args never mutates the
             # caller's dict.
-            result = await sync_to_async(_call_spec)(
-                spec,
-                user,
-                dict(tool_args),
-                unknown_arguments=self._unknown_arguments,
-                query_params=self._tool_query_params[name],
-                url_kwargs=self._tool_url_kwargs[name],
-                ordering_fields=self._tool_ordering_fields[name],
-                progress=self._get_progress(ctx),
-                host=self._host,
+            result = await _with_deadline(
+                sync_to_async(_call_spec)(
+                    spec,
+                    user,
+                    dict(tool_args),
+                    unknown_arguments=self._unknown_arguments,
+                    query_params=self._tool_query_params[name],
+                    url_kwargs=self._tool_url_kwargs[name],
+                    ordering_fields=self._tool_ordering_fields[name],
+                    max_page_size=self._max_page_size,
+                    max_result_bytes=self._tool_max_result_bytes[name],
+                    label=name,
+                    progress=self._get_progress(ctx),
+                    host=self._host,
+                ),
+                self._dispatch_timeout,
+                label=name,
             )
         except PermissionDenied:
             # ⚠ The one failure with no other trace. A ``ModelRetry`` reaches
@@ -642,6 +710,40 @@ def _validate_no_param_channel_overlap(
             )
 
 
+async def _with_deadline(awaitable: Any, seconds: float | None, *, label: str) -> Any:
+    """Await ``awaitable``, answering the model instead of hanging past ``seconds``.
+
+    ``None`` awaits without a deadline, so the resolved bound goes straight in.
+
+    ⚠ **This does not stop the work, and saying so matters.** The dispatch runs
+    in a ``sync_to_async`` thread — which is where every ORM-backed spec spends
+    its time — and asyncio cannot interrupt a thread parked in a database
+    driver's socket read. The query runs to completion (or until the database
+    ends it) regardless. What the deadline buys is a *terminal answer* for the
+    model instead of a run that never returns; pair it with a database statement
+    timeout for the other half.
+
+    The timeout becomes an ``{"error": …}`` rather than an exception, for the
+    same reason the byte ceiling does: it is a condition the model can respond
+    to by asking for less, and killing the run denies it the chance.
+    """
+    if seconds is None:
+        return await awaitable
+    try:
+        return await asyncio.wait_for(awaitable, timeout=seconds)
+    except (TimeoutError, asyncio.TimeoutError):
+        # The operator hears about it too — a tool that intermittently answers
+        # "took too long" and logs nothing is indistinguishable from a bug.
+        logger.warning("Tool %r exceeded its %.1fs dispatch timeout", label, seconds)
+        return {
+            "error": (
+                f"This call took longer than the {seconds:g}s limit and was "
+                "abandoned. Narrow the request — add or tighten a filter, or "
+                "lower `limit` — and call again."
+            )
+        }
+
+
 def _default_get_progress(ctx: RunContext[Any]) -> Any:
     """Read ``ctx.deps.progress``, tolerating a deps type that has no such field.
 
@@ -719,11 +821,14 @@ def _build_tool_def(
     url_kwargs: Sequence[UrlKwarg] = (),
     description: str | None = None,
     ordering_fields: Sequence[str] = (),
+    max_page_size: int | None = None,
 ) -> ToolDefinition:
     return ToolDefinition(
         name=name,
         description=description,
-        parameters_json_schema=_input_schema(spec, query_params, url_kwargs, ordering_fields),
+        parameters_json_schema=_input_schema(
+            spec, query_params, url_kwargs, ordering_fields, max_page_size
+        ),
         metadata={"annotations": {"readOnlyHint": isinstance(spec, SelectorSpec)}},
     )
 
@@ -739,6 +844,7 @@ def _input_schema(
     query_params: Sequence[QueryParam] = (),
     url_kwargs: Sequence[UrlKwarg] = (),
     ordering_fields: Sequence[str] = (),
+    max_page_size: int | None = None,
 ) -> dict[str, Any]:
     """The tool's parameter schema, with list-selector pagination + registered
     query params + URL kwargs merged into ``properties``.
@@ -759,6 +865,12 @@ def _input_schema(
     extra: dict[str, Any] = {}
     if _is_list_selector(spec):
         extra.update(_LIST_PARAM_SCHEMA)
+        if max_page_size is not None:
+            # Advertised *and* clamped, because the two fail differently: a
+            # schema with no ``maximum`` invites a request for 100 000 rows, and
+            # a schema on its own is a hint that nothing obliges a model to
+            # honour. Telling it is cheaper than correcting it.
+            extra["limit"] = {**_LIST_PARAM_SCHEMA["limit"], "maximum": max_page_size}
         if ordering_fields:
             # An enum, not a free string: it is the only shape that tells the
             # model what it may sort by, and the only one this can validate
@@ -796,6 +908,9 @@ def _call_spec(
     query_params: Sequence[QueryParam] = (),
     url_kwargs: Sequence[UrlKwarg] = (),
     ordering_fields: Sequence[str] = (),
+    max_page_size: int | None = None,
+    max_result_bytes: int | None = None,
+    label: str = "",
     progress: Any = None,
     host: str | None = None,
 ) -> Any:
@@ -804,7 +919,7 @@ def _call_spec(
     Synchronous on purpose — ``SpecToolset.call_tool`` runs it in a thread so
     the ORM stays off the event loop.
     """
-    page_args = _pop_pagination(spec, args, ordering_fields)
+    page_args = _pop_pagination(spec, args, ordering_fields, max_page_size)
     # Pop the registered query params out of the spec args and seed them into the
     # off-HTTP request's ``query_params`` (for whatever reads them directly —
     # restql, a custom serializer; not a ``filter_set``, which reads the spec
@@ -879,7 +994,7 @@ def _call_spec(
         except FieldError as exc:
             raise ModelRetry(f"invalid ordering: {exc}") from exc
     many = result.kind == "list"
-    return render_spec_output(
+    rendered = render_spec_output(
         spec,
         value,
         many=many,
@@ -887,6 +1002,52 @@ def _call_spec(
         view=context.view,
         extras=_output_extras(spec, value, many=many),
     )
+    return _enforce_result_bytes(rendered, max_result_bytes, label=label)
+
+
+def _enforce_result_bytes(payload: Any, max_bytes: int | None, *, label: str) -> Any:
+    """Return ``payload``, or a model-readable refusal when it is over budget.
+
+    ⛔ **Fails; never truncates.** A partial payload looks complete — a list cut
+    at the byte ceiling is indistinguishable from a list that had that many rows
+    — so a model would answer confidently from data it does not know is missing.
+    Refusing costs a turn; truncating costs correctness silently, which is the
+    trade this whole wave keeps making the same way.
+
+    ⚠ **The ceiling protects the context window, so it is measured on the
+    encoded payload** rather than on a row count. Ten rows of a wide serializer
+    and ten thousand of a narrow one are the same number of rows and nothing
+    like the same number of tokens.
+
+    Returned as an ``{"error": …}`` result rather than raised as
+    :class:`ModelRetry`: the model should narrow the request and it *can*, but
+    a retry budget is finite and a run should not die because a model spent it
+    on progressively smaller queries. The message names the size, the ceiling
+    and the remedies, because its reader is deciding what to do next.
+
+    ⚠ Also logged at ``WARNING``: the model was told, and until this line the
+    operator was not — a bound that fires invisibly reads to everyone else as
+    "the tool is broken".
+    """
+    if max_bytes is None:
+        return payload
+    size: int = len(json.dumps(payload, default=str).encode("utf-8"))
+    if size <= max_bytes:
+        return payload
+    logger.warning(
+        "Result bound exceeded: tool %r produced %d bytes over a %d byte ceiling",
+        label,
+        size,
+        max_bytes,
+    )
+    return {
+        "error": (
+            f"This result was {size} bytes, over the {max_bytes} byte ceiling. "
+            "Narrow the request — add or tighten a filter, lower `limit`, or "
+            "select fewer fields — and call again. The result was not "
+            "truncated: a partial payload would look complete."
+        )
+    }
 
 
 def _missing_input_prompt(exc: AdditionalInputRequired) -> str:
@@ -906,7 +1067,10 @@ def _missing_input_prompt(exc: AdditionalInputRequired) -> str:
 
 
 def _pop_pagination(
-    spec: Spec, args: dict[str, Any], ordering_fields: Sequence[str] = ()
+    spec: Spec,
+    args: dict[str, Any],
+    ordering_fields: Sequence[str] = (),
+    max_page_size: int | None = None,
 ) -> _PageArgs | None:
     """Strip + validate ``page`` / ``limit`` / ``ordering`` from a list selector's args.
 
@@ -923,9 +1087,16 @@ def _pop_pagination(
     """
     if not _is_list_selector(spec):
         return None
+    limit: int | None = _coerce_positive_int(args.pop("limit", None), "limit")
+    if max_page_size is not None:
+        # Clamped rather than rejected, and an omitted ``limit`` becomes the
+        # ceiling rather than "everything": the unbounded read is the one that
+        # hurts, and a model that did not think to paginate is exactly the
+        # caller that needs the default applied for it.
+        limit = max_page_size if limit is None else min(limit, max_page_size)
     return _PageArgs(
         page=_coerce_positive_int(args.pop("page", None), "page"),
-        limit=_coerce_positive_int(args.pop("limit", None), "limit"),
+        limit=limit,
         ordering=_coerce_ordering(args.pop("ordering", None), ordering_fields),
     )
 

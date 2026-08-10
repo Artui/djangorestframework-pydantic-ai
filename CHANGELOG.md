@@ -6,6 +6,93 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **Unguarded specs are refused at construction (`require_permissions=True`).**
+  `permission_classes=None` means *inherit* over HTTP: the viewset's own classes
+  and `REST_FRAMEWORK`'s `DEFAULT_PERMISSION_CLASSES` supply the answer. A
+  toolset has neither, so off HTTP it means *ungated* — and a spec that is
+  correctly guarded behind a viewset, with passing HTTP tests, becomes callable
+  by whatever the model decides to call, with no signal anywhere.
+
+  `SpecToolset` now raises `ImproperlyConfigured` naming every unguarded spec
+  at once. **Set `spec.permission_classes`**, or pass `require_permissions=False`
+  to downgrade to an `UnguardedSpecWarning` while migrating.
+
+  The predicate itself lives in drf-services, which owns the off-HTTP dispatch
+  semantics that create the asymmetry; the default and the wording stay here,
+  and match what the MCP transport has enforced since its 0.25.0.
+
+- **`order` is now `ordering`, and takes one value from a declared enum.** The
+  MCP transport's spelling, so one `SpecRegistry` exposed over both surfaces
+  advertises one vocabulary instead of two.
+
+  | Before | Now |
+  | --- | --- |
+  | `order` on every list tool | `ordering`, only where `ordering_fields` is declared |
+  | comma-separated free string | one enum value (`"price"` / `"-price"`) |
+  | any column, validated by the database | only declared fields, validated before dispatch |
+
+  Declare with `ordering_fields=[...]` (toolset-wide) or
+  `tool_ordering_fields={...}` (per tool — it *replaces* the toolset-wide set,
+  since sensible sort keys for two collections have nothing to do with each
+  other). A tool that declares none no longer advertises `ordering` at all.
+
+  ⚠ A value outside the enum is a `ModelRetry` naming the options — a
+  **deliberate divergence** from drf-mcp, which ignores an unrecognised ordering
+  silently. Returning unsorted rows to something that asked for newest-first is
+  the worst outcome available: the model cannot tell, and neither can the user
+  reading its answer.
+
+- **Requires `djangorestframework-services>=0.35`** for the `unguarded_specs`
+  predicate.
+
+### Added
+
+- **Outbound bounds**, ported from the MCP transport rather than re-derived.
+  - `max_result_bytes` / `tool_max_result_bytes` cap a rendered result,
+    measured on the **encoded payload** — the thing being protected is the
+    model's context window, and ten rows of a wide serializer are nothing like
+    ten rows of a narrow one. Over the ceiling the call **fails** with a
+    model-readable `{"error": …}`. ⛔ It never truncates: a list cut at the
+    ceiling is indistinguishable from a list that had that many rows, so a
+    model would answer confidently from data it does not know is missing. A
+    per-tool `None` opts that tool out; an absent key inherits the default.
+  - `max_page_size` clamps a list tool's `limit` **and** advertises the ceiling
+    as JSON-Schema `maximum`. Both are needed and they fail differently: a
+    schema with no `maximum` invites a request for 100 000 rows, and a schema
+    alone is a hint nothing obliges a model to honour. With it set, an omitted
+    `limit` becomes the ceiling rather than "everything".
+  - `dispatch_timeout` (seconds) bounds one call. ⚠ It does not *stop* the
+    work — the dispatch runs in a `sync_to_async` thread and asyncio cannot
+    interrupt a thread parked in a database driver's socket read, so the query
+    runs to completion regardless. What it buys is a terminal answer instead of
+    a run that never returns; pair it with a database statement timeout.
+
+- **`descriptions={...}`, and a warning for a tool that has no description.**
+  A model picks tools almost entirely from their descriptions, so an
+  undescribed tool is one it calls at the wrong time or not at all — a
+  registration defect that presents as "the agent is bad at this". The override
+  exists because the docstring an API developer reads is rarely the sentence a
+  model needs. `UndescribedToolWarning` has its own category so it can be
+  silenced separately from `UnguardedSpecWarning`.
+
+- **`AgentDeps.progress` — a caller-supplied `ProgressReporter`, forwarded into
+  the kwarg pool.** The toolset accepts and forwards; it never *constructs* one.
+  This package is a pydantic-ai adapter driven by AG-UI, by A2A, by a management
+  command, by a worker, and each has a different idea of where a progress report
+  belongs — an SSE frame, a task record, a log line. A toolset that picked one
+  would have chosen a transport it does not own. `None` costs nothing:
+  drf-services substitutes its no-op. Override the lookup with `get_progress=`,
+  mirroring `get_user=`.
+
+- **A `rest_framework_pydantic_ai` logger** — per-call timings at `DEBUG`,
+  permission denials at `WARNING`. A dispatch behind a DRF view leaves an
+  access-log line; the same spec called by a model left nothing, so "the agent
+  did something odd" had no record to check against. A denial is the sharpest
+  case: over HTTP it is a `403` in the log, here the run loop absorbs it into a
+  message.
+
 ## [0.12.0] — 2026-08-07
 
 ### Changed
