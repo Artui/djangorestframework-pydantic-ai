@@ -6,6 +6,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-10
+
+### Added
+
+- **`SpecToolset.specs`** — the resolved `name -> spec` mapping, read-only.
+
+  ⚠ **The synchronous answer to "what tools are these?"** `get_tools` is the
+  real enumeration, but it is `async` and takes a `RunContext`, so it cannot
+  answer for a *composing* caller — one wiring a built toolset into a name-dedup
+  pass or a tool catalog at configuration time, with no run in sight. Without
+  this they reach for `_specs`, which is how a private becomes load-bearing
+  across a package boundary. Both wrappers in this ecosystem are about to need
+  exactly this.
+
+  Returned as a `MappingProxyType`: a caller enumerating the toolset must not be
+  able to add a tool that skipped the permission and description checks the
+  constructor ran.
+
 ## [0.14.0] — 2026-08-10
 
 ### Added
@@ -645,7 +663,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.12.0...v0.13.0

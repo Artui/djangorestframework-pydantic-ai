@@ -25,6 +25,7 @@ from rest_framework_services import (
     ServiceError,
     ServiceSpec,
     ServiceValidationError,
+    SpecRegistry,
     UnknownArguments,
     build_offline_context,
 )
@@ -1911,3 +1912,36 @@ def test_translate_exception_is_overridable_without_a_map():
     ctx = SimpleNamespace(deps=AgentDeps(user=object()))
 
     assert toolset._call_spec(spec, object(), {}, ctx=ctx) == {"error": "handled subclassed"}
+
+
+# --- the composing caller's view of a built toolset --------------------------
+
+
+def test_specs_is_readable_without_a_run():
+    """⚠ ``get_tools`` is async and needs a ``RunContext``, so it cannot answer here.
+
+    A caller composing this toolset into a name-dedup pass or a tool catalog does
+    so at configuration time, with no run in sight. Without a public answer they
+    reach for ``_specs``, and a private becomes load-bearing across a package
+    boundary.
+    """
+    a, b = list_spec(), retrieve_spec()
+    toolset = SpecToolset({"list": a, "get": b})
+
+    assert dict(toolset.specs) == {"list": a, "get": b}
+
+
+def test_specs_cannot_be_written_through():
+    """A tool added here would have skipped every check the constructor ran."""
+    toolset = SpecToolset({"list": list_spec()})
+
+    with pytest.raises(TypeError):
+        toolset.specs["sneaky"] = list_spec()  # ty: ignore[unsupported-operation]
+
+
+def test_specs_reflects_a_registry_source_resolved():
+    """A ``SpecRegistry`` in, a plain mapping out — the same normalisation."""
+    registry = SpecRegistry()
+    registry.register("list", list_spec())
+
+    assert set(SpecToolset(registry).specs) == {"list"}
