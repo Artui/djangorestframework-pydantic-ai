@@ -6,6 +6,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`SpecCapability` now forwards every `SpecToolset` keyword.** It re-declares
+  the toolset's constructor rather than taking `**kwargs`, and 0.13.0 added nine
+  keywords to one side only — `require_permissions`, `descriptions`,
+  `ordering_fields`, `tool_ordering_fields`, `get_progress`, `max_result_bytes`,
+  `tool_max_result_bytes`, `max_page_size` and `dispatch_timeout` were
+  unreachable for anyone composing through the capability, which is the path
+  every wrapper in this ecosystem takes.
+
+  The one with teeth was `require_permissions`: it defaults to `True`, so the
+  refusal worked, but `require_permissions=False` — the migration escape hatch
+  0.13.0's own release notes point at — could not be passed. Callers stuck on it
+  had to drop to `SpecCapability.from_toolset(SpecToolset(…, …))`.
+
+  Forwarding is now asserted keyword-by-keyword, including matching defaults and
+  annotations, so the two signatures cannot drift apart again.
+
 ## [0.13.0] — 2026-08-10
 
 ### Changed — BREAKING
