@@ -463,6 +463,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.build_context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_context
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.translate_exception" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        translate_exception
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -686,6 +708,28 @@
     <span class="md-ellipsis">
       
         get_instructions
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.build_context" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build_context
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.translate_exception" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        translate_exception
       
     </span>
   </a>
@@ -1008,8 +1052,23 @@ ceiling as JSON-Schema <code>maximum</code>. With it set, an omitted <code>limit
 becomes the ceiling rather than "everything" — the unbounded read is the one
 that hurts, and it is what a model produces by not thinking about
 pagination.</p>
-<p><code>dispatch_timeout</code> (seconds) bounds one call, answering the model instead
-of hanging. ⚠ It does not <em>stop</em> the work: the dispatch runs in a
+<p><strong>Extending dispatch.</strong></p>
+<p><code>http_request</code> / <code>get_http_request</code> supply the <code>HttpRequest</code> the
+off-HTTP context is built from — static, or resolved per run from
+<code>RunContext</code> the way <code>get_user</code> is. ⛔ <strong>Incidental request data, never
+an auth channel:</strong> it exists so a serializer or scoping provider that reads
+<code>request.META</code> finds something plausible. The acting identity is <code>user</code>,
+and passing an authenticated request authorizes nothing.</p>
+<p><code>exception_map</code> maps an exception type to a handler returning the tool's
+result (or raising :class:<code>pydantic_ai.ModelRetry</code>). Registrations are
+matched along the MRO — most specific wins — and are consulted <strong>before</strong>
+the built-in arms, so a project can override those too.</p>
+<p>For anything these do not cover, :meth:<code>build_context</code> and
+:meth:<code>translate_exception</code> are overridable and both receive the live
+<code>RunContext</code>, which is how per-run typed deps reach dispatch.</p>
+<div class="language-text highlight"><pre><span></span><code>``dispatch_timeout`` (seconds) bounds one call, answering the model instead
+</code></pre></div>
+<p>of hanging. ⚠ It does not <em>stop</em> the work: the dispatch runs in a
 <code>sync_to_async</code> thread and asyncio cannot interrupt a thread parked in a
 database driver's socket read, so the query runs to completion regardless.
 Pair it with a database statement timeout for the other half.</p>
@@ -1066,6 +1125,76 @@ derived from the specs: the pagination line appears only when a list
 selector is present, and the read-shaping line only when some
 <code>QueryParam</code> is declared, keeping the prompt free of advice that can't
 fire.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="rest_framework_pydantic_ai.SpecToolset.build_context" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">build_context</span>
+
+
+<a href="#rest_framework_pydantic_ai.SpecToolset.build_context" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">build_context</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">user</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">params</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">kwargs</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">query_params</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">host</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Build the off-HTTP context one call dispatches under.</p>
+<p>Override to vary the synthetic request per run. The default forwards to
+drf-services' :func:<code>build_offline_context</code>, resolving
+<code>http_request</code> through :attr:<code>get_http_request</code>.</p>
+<p>⚠ <strong>An <code>http_request</code> here is incidental request data — never an auth
+channel.</strong> It is there so a serializer or a scoping provider that reads
+<code>request.META</code> / <code>request.headers</code> finds something plausible. The
+acting identity is <code>user</code>, resolved from <code>ctx.deps</code>, and nothing
+downstream re-derives it from the request; passing an authenticated
+request does <strong>not</strong> authorize anything, and relying on it would put a
+second, invisible identity in the call.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="rest_framework_pydantic_ai.SpecToolset.translate_exception" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">translate_exception</span>
+
+
+<a href="#rest_framework_pydantic_ai.SpecToolset.translate_exception" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">translate_exception</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">exc</span><span class="p">:</span> <span class="ne">BaseException</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">ExceptionHandler</span> <span class="o">|</span> <span class="kc">None</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Return a handler for <code>exc</code>, or <code>None</code> to leave it to the defaults.</p>
+<p>The default consults <code>exception_map</code> by walking the exception's MRO,
+so a handler registered for a base class catches its subclasses and the
+<strong>most specific</strong> registration wins.</p>
+<p>⭐ <strong>The motivating case is one line long.</strong> <code>django.core.exceptions
+.ValidationError</code> — Django's, not DRF's — is raised by <code>full_clean</code>
+and by any custom model validator, is not in the translated set, and so
+kills the whole run where the DRF twin would have become a
+<code>ModelRetry</code>. Broadening the built-in set would have fixed that one
+case; a map fixes the class of them, and lets a project override the
+built-in arms too when it knows better than this package does.</p>
 
 
     </div>
