@@ -605,6 +605,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="AgentDeps">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.AgentDeps.progress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        progress
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -817,6 +834,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="AgentDeps">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.AgentDeps.progress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        progress
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
     </ul>
@@ -876,7 +910,7 @@ agent = Agent(model, deps_type=AgentDeps, toolsets=[toolset])
 </code></pre></div>
 <p>Each key becomes one tool: the description is the spec's selector/service
 docstring, the parameter schema comes from <code>spec_to_json_schema</code> (with a
-list selector's <code>page</code> / <code>limit</code> / <code>order</code> args merged in), and the
+list selector's <code>page</code> / <code>limit</code> / <code>ordering</code> args merged in), and the
 <code>readOnlyHint</code> annotation is derived from the spec kind (selectors read,
 services mutate).</p>
 <p><code>specs</code> also accepts a
@@ -903,7 +937,7 @@ or <code>PASSTHROUGH</code> to forward them to the callable.</p>
 <p><code>query_params</code> / <code>tool_query_params</code> register read-shaping
 :class:<code>~rest_framework_pydantic_ai.QueryParam</code> args that seed
 <code>request.query_params</code> over the off-HTTP path — the extensible generalization
-of <code>page</code> / <code>limit</code> / <code>order</code>. <code>query_params</code> applies to <strong>every</strong> tool;
+of <code>page</code> / <code>limit</code> / <code>ordering</code>. <code>query_params</code> applies to <strong>every</strong> tool;
 <code>tool_query_params</code> maps a tool name to params for that tool only (a per-tool
 param overrides a toolset-wide one of the same name). Each is advertised as a
 tool arg, then popped at call time and handed to
@@ -943,13 +977,42 @@ produce <strong>relative</strong> URLs — usable, and what they fall back to on
 when no request is in the context. Toolset-wide only, with no per-tool
 variant: an origin is a property of the deployment, not of a tool.</p>
 <p><code>max_retries</code> is each tool's retry budget: how many times a
-:class:<code>pydantic_ai.ModelRetry</code> (a validation failure, a bad <code>order</code>
+:class:<code>pydantic_ai.ModelRetry</code> (a validation failure, a bad <code>ordering</code>
 field) is fed back to the model before the run aborts with
 <code>UnexpectedModelBehavior</code>. Defaults to <code>1</code>, matching pydantic-ai's own
 function-tool default.</p>
 <p><code>instructions</code> overrides the auto-derived conventions block that
 :meth:<code>get_instructions</code> teaches the model (pagination + error contract);
 pass a string to replace it, or leave it <code>None</code> to derive from the specs.</p>
+<p><strong>Safety and bounds.</strong></p>
+<p><code>require_permissions</code> (default <code>True</code>) refuses to construct a toolset
+containing a spec with no <code>permission_classes</code>. Over HTTP that means
+<em>inherit</em>; here there is nothing to inherit from, so it means <em>ungated</em>.
+Pass <code>False</code> to downgrade to an :class:<code>UnguardedSpecWarning</code> while
+migrating.</p>
+<p><code>descriptions</code> overrides <code>spec.description</code> per tool — the docstring an
+API developer reads is rarely the sentence a model needs — and a tool left
+with no description anywhere gets an :class:<code>UndescribedToolWarning</code>.</p>
+<p><code>ordering_fields</code> / <code>tool_ordering_fields</code> declare what a list tool may
+sort by, advertised as an enum on an <code>ordering</code> argument and validated
+against it. Nothing declared means no <code>ordering</code> argument at all; per-tool
+<em>replaces</em> the toolset-wide set rather than merging with it.</p>
+<p><code>max_result_bytes</code> / <code>tool_max_result_bytes</code> cap a rendered result,
+measured on the encoded payload because the thing being protected is the
+model's context window. Over the ceiling the call <strong>fails</strong> with a
+model-readable <code>{"error": …}</code> — never truncates, because a partial payload
+looks complete. A per-tool <code>None</code> opts that tool out; a per-tool key
+simply absent inherits the toolset default.</p>
+<p><code>max_page_size</code> clamps a list tool's <code>limit</code> <em>and</em> advertises the
+ceiling as JSON-Schema <code>maximum</code>. With it set, an omitted <code>limit</code>
+becomes the ceiling rather than "everything" — the unbounded read is the one
+that hurts, and it is what a model produces by not thinking about
+pagination.</p>
+<p><code>dispatch_timeout</code> (seconds) bounds one call, answering the model instead
+of hanging. ⚠ It does not <em>stop</em> the work: the dispatch runs in a
+<code>sync_to_async</code> thread and asyncio cannot interrupt a thread parked in a
+database driver's socket read, so the query runs to completion regardless.
+Pair it with a database statement timeout for the other half.</p>
 
 
 
@@ -992,7 +1055,7 @@ pass a string to replace it, or leave it <code>None</code> to derive from the sp
         <p>Teach the model this toolset's conventions.</p>
 <p>The per-tool descriptions and parameter schemas say what each tool <em>is</em>,
 but not how the family behaves: that list tools accept <code>page</code> /
-<code>limit</code> / <code>order</code>, that a business failure comes back as a readable
+<code>limit</code> / <code>ordering</code>, that a business failure comes back as a readable
 <code>{"error": …}</code> result (a final answer, not a reason to retry) while a
 bad argument comes back as a retry request, and that a permission error
 is final. Pydantic-AI appends this block to the system prompt each turn —
@@ -1399,6 +1462,46 @@ instead of using this class.</p>
 
 
 
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="rest_framework_pydantic_ai.AgentDeps.progress" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">progress</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-class-attribute"><code>class-attribute</code></small>
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+<a href="#rest_framework_pydantic_ai.AgentDeps.progress" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">progress</span><span class="p">:</span> <span class="n">ProgressReporter</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Where a spec's <code>progress(...)</code> calls go for this run, or <code>None</code>.</p>
+<p>A plain callable <code>(progress, *, total, message, meta) -&gt; None</code>. The
+toolset forwards it into the kwarg pool and does nothing else with it.</p>
+<p>Typed, unlike :attr:<code>user</code> beside it — the two look alike and are not.
+<code>user</code> is genuinely <code>Any</code>: a Django user, a custom principal, whatever
+<code>get_user</code> returns. A reporter has a Protocol this package already
+depends on, so <code>Any</code> here would only mean a caller passing the wrong
+shape finds out inside their own service body.</p>
+<p>⛔ <strong>It arrives here rather than on the toolset because the toolset must
+never construct one.</strong> This package is a pydantic-ai adapter; it is driven
+by AG-UI, by A2A, by a management command, by a worker. Each of those has a
+different idea of where a progress report should go — an SSE frame, a task
+record, a log line — and a toolset that picked one would have chosen a
+transport it does not own. The caller knows; it passes a callable.</p>
+<p><code>None</code> costs nothing: drf-services substitutes its no-op, so a service
+declaring <code>progress</code> runs unchanged whether or not anyone is listening.</p>
+
+    </div>
+
+</div>
 
 
 

@@ -768,7 +768,8 @@ define for <code>djangorestframework-services</code>. A read selector and a writ
 <p>Each key is the tool name. The description comes from the selector/service
 docstring, the parameter schema from the spec's input serializer, and the
 <code>readOnlyHint</code> annotation from the spec kind (selectors read, services mutate).
-List selectors additionally accept <code>page</code>, <code>limit</code>, and <code>order</code> tool args.</p>
+List selectors additionally accept <code>page</code> and <code>limit</code> tool args, plus
+<code>ordering</code> where you declare <code>ordering_fields=[...]</code>.</p>
 <h2 id="3-run-an-agent">3. Run an agent<a class="headerlink" href="#3-run-an-agent" title="Permanent link">&para;</a></h2>
 <p>The acting user flows through <code>RunContext.deps</code>. The default
 <a href="../reference/#rest_framework_pydantic_ai.AgentDeps"><code>AgentDeps</code></a> carries it:</p>
@@ -783,7 +784,7 @@ List selectors additionally accept <code>page</code>, <code>limit</code>, and <c
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>For that request the model can call <code>list_orders</code> with
-<code>{"limit": 5, "order": "-created_at"}</code> and the toolset enforces permissions,
+<code>{"limit": 5, "ordering": "-created_at"}</code> and the toolset enforces permissions,
 runs the selector as <code>request.user</code>, slices the result, and renders it through
 <code>OrderSerializer</code>.</p>
 <h2 id="custom-identity">Custom identity<a class="headerlink" href="#custom-identity" title="Permanent link">&para;</a></h2>
@@ -802,7 +803,7 @@ selector) are unaffected. Pass <code>unknown_arguments=</code> to change this:</
 </span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">unknown_arguments</span><span class="o">=</span><span class="n">UnknownArguments</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">)</span>
 </span></code></pre></div>
 <h2 id="read-shaping-query-params">Read-shaping query params<a class="headerlink" href="#read-shaping-query-params" title="Permanent link">&para;</a></h2>
-<p><code>page</code> / <code>limit</code> / <code>order</code> are built in for list selectors, but you can register
+<p><code>page</code> / <code>limit</code> / <code>ordering</code> are built in for list selectors, but you can register
 your own request-level params with
 <a href="../reference/#rest_framework_pydantic_ai.QueryParam"><code>QueryParam</code></a>. Each is
 advertised as a tool arg, then — instead of reaching the spec as an input — seeded
@@ -829,7 +830,7 @@ can filter a list selector with no <code>QueryParam</code> declaration at all;
 </span></code></pre></div>
 <p>A registered param is popped before dispatch, so <code>unknown_arguments</code> never flags
 it; a declared <code>default</code> is seeded when the model omits the arg. (Names can't be
-<code>page</code> / <code>limit</code> / <code>order</code> — those are reserved for list-selector pagination.)
+<code>page</code> / <code>limit</code> / <code>ordering</code> — those are reserved for list-selector pagination.)
 Requires <code>djangorestframework-services&gt;=0.23</code>, which added the
 <code>build_offline_context(query_params=…)</code> seam.</p>
 <h2 id="url-derived-values-route-captures">URL-derived values (route captures)<a class="headerlink" href="#url-derived-values-route-captures" title="Permanent link">&para;</a></h2>
@@ -860,7 +861,7 @@ it is advertised:</p>
 </ul>
 <p>Like <code>QueryParam</code>, a registered kwarg is popped before dispatch (so
 <code>unknown_arguments</code> never flags it) and its <code>default</code> is seeded when the model
-omits it. A name can't be <code>page</code> / <code>limit</code> / <code>order</code>, nor one of drf-services'
+omits it. A name can't be <code>page</code> / <code>limit</code> / <code>ordering</code>, nor one of drf-services'
 pool seeds (<code>request</code> / <code>user</code> / <code>data</code> / <code>instance</code> / <code>serializer</code> /
 <code>collection</code> — a caller must not be able to route a value onto those), nor be
 registered as both a <code>QueryParam</code> and a <code>UrlKwarg</code> on the same tool.</p>
@@ -986,12 +987,12 @@ Requires <code>djangorestframework-services&gt;=0.29.1</code>.</p>
 <td><code>ModelRetry</code> naming the unknown key</td>
 </tr>
 <tr>
-<td>Non-integer <code>page</code> / <code>limit</code>, non-string <code>order</code></td>
-<td><code>ModelRetry</code> — the model corrects the argument type</td>
+<td>Non-integer <code>page</code> / <code>limit</code>, or an <code>ordering</code> outside the declared enum</td>
+<td><code>ModelRetry</code> — naming the values that are accepted</td>
 </tr>
 <tr>
-<td>Bad <code>order</code> field</td>
-<td><code>ModelRetry</code> — the model picked a column that doesn't exist</td>
+<td>A declared <code>ordering_fields</code> name that isn't a real column</td>
+<td><code>ModelRetry</code> — an author's error, not the model's; it can't be checked at construction without a queryset</td>
 </tr>
 <tr>
 <td>Denied <code>permission_classes</code> (class-level <code>has_permission</code> <strong>or</strong> object-level <code>has_object_permission</code>)</td>
