@@ -119,8 +119,14 @@ checker. Use `# ty: ignore[<rule>]`, not the mypy-style comment.
 | Python | 3.10 | 3.14 |
 | Django | 4.2 | 6.1 |
 | DRF | 3.14 | latest |
-| drf-services | 0.36 | 0.36.x |
-| Pydantic-AI | 2.0 (`pydantic-ai-slim`) | latest |
+| drf-services | 0.36 | latest |
+| Pydantic-AI | 2.0 (`pydantic-ai-slim`) | latest (`<3`) |
+
+Both ends of every row are measured, not asserted. The `floor` job in
+`tests.yml` resolves each declared dependency at the bottom of its window on
+every PR; `upstream-drift.yml` resolves the newest versions `pyproject.toml`
+admits, weekly. Neither column is a guess, so keep them in step with what those
+jobs actually run.
 
 `from __future__ import annotations` at the top of every `.py` with annotations.
 
