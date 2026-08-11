@@ -40,10 +40,12 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _default_get_http_request,
     _default_get_progress,
     _derive_instructions,
+    _input_schema,
     _is_list_selector,
     _ordering_values,
     _output_extras,
     _paginate,
+    _spec_owns_ordering,
     _with_deadline,
 )
 from tests.testapp.models import Widget
@@ -1416,12 +1418,17 @@ def test_a_whitespace_only_description_counts_as_none():
         SpecToolset({"list_widgets": list_spec()}, descriptions={"list_widgets": "   "})
 
 
-# ----- ordering: the MCP transport's vocabulary -----
+# ----- ordering: the deprecated ordering_fields vocabulary -----
+#
+# Unchanged behaviour, for the one case that still has no other route: a list
+# selector with no ``filter_set``. Every construction that declares fields now
+# also carries a ``DeprecationWarning``.
 
 
 async def test_declared_ordering_fields_become_an_enum():
     """An enum, not a free string — the only shape that says what may be sorted."""
-    toolset = SpecToolset({"list_widgets": list_spec()}, ordering_fields=["name", "price"])
+    with pytest.deprecated_call():
+        toolset = SpecToolset({"list_widgets": list_spec()}, ordering_fields=["name", "price"])
     tools = await toolset.get_tools(None)
     props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
     assert props["ordering"]["enum"] == ["name", "-name", "price", "-price"]
@@ -1430,11 +1437,12 @@ async def test_declared_ordering_fields_become_an_enum():
 async def test_per_tool_ordering_fields_replace_the_toolset_wide_set():
     """Replace, not merge: the sort keys for two collections have nothing to do
     with each other, unlike a query param, which is usually cross-cutting."""
-    toolset = SpecToolset(
-        {"list_widgets": list_spec(), "other": list_spec()},
-        ordering_fields=["name"],
-        tool_ordering_fields={"other": ["price"]},
-    )
+    with pytest.deprecated_call():
+        toolset = SpecToolset(
+            {"list_widgets": list_spec(), "other": list_spec()},
+            ordering_fields=["name"],
+            tool_ordering_fields={"other": ["price"]},
+        )
     tools = await toolset.get_tools(None)
     assert tools["list_widgets"].tool_def.parameters_json_schema["properties"]["ordering"][
         "enum"
@@ -1467,10 +1475,275 @@ async def test_the_ordering_instruction_appears_only_when_some_tool_declares_fie
     without = await SpecToolset({"list_widgets": list_spec()}).get_instructions(None)
     assert "accept `ordering`" not in without
 
-    with_fields = await SpecToolset(
-        {"list_widgets": list_spec()}, ordering_fields=["name"]
-    ).get_instructions(None)
-    assert "accept `ordering`" in with_fields
+    with pytest.deprecated_call():
+        toolset = SpecToolset({"list_widgets": list_spec()}, ordering_fields=["name"])
+    assert "accept `ordering`" in await toolset.get_instructions(None)
+
+
+# ----- ordering: the filter_set owns it -----
+#
+# ⚠ The defect these pin: a FilterSet carrying an ``OrderingFilter`` advertises
+# ``ordering`` to the model all on its own — ``OrderingFilter`` subclasses
+# ``ChoiceFilter``, which drf-services maps to an enum — with nothing declared on
+# the toolset. The toolset used to strip that argument out of every list call and
+# answer "this tool does not accept an `ordering` argument", so the schema and the
+# dispatch contradicted each other and the value never reached the FilterSet.
+
+
+class _OrderedWidgetFilterSet(django_filters.FilterSet):
+    """Public sort names that are *not* the ORM paths they resolve to.
+
+    ``cost`` / ``title`` map to ``price`` / ``name`` through the filter's own
+    ``param_map`` — the reason a second ``ordering_fields`` vocabulary of raw ORM
+    paths cannot be substituted for this one.
+    """
+
+    min_price = django_filters.NumberFilter(field_name="price", lookup_expr="gte")
+    ordering = django_filters.OrderingFilter(fields=(("price", "cost"), ("name", "title")))
+
+    class Meta:
+        model = Widget
+        fields = []
+
+
+def _ordered_list_spec():
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=WidgetSerializer,
+        filter_set=_OrderedWidgetFilterSet,
+        permission_classes=[AllowAny],
+    )
+
+
+def _three_widgets(user):
+    """Insertion order a, b, c; price order b, c, a — so the two are tellable apart."""
+    for name, price in [("a", 3), ("b", 1), ("c", 2)]:
+        Widget.objects.create(name=name, price=price, owner=user)
+
+
+@pytest.mark.django_db
+def test_filter_owned_ordering_actually_orders_the_rows():
+    """⭐ The test that would have caught the original defect.
+
+    No ``ordering_fields`` anywhere: the FilterSet advertises ``ordering``, so the
+    value has to reach it and the rows have to come back sorted. Asserting the
+    order rather than "no error" is the point — the failure being guarded against
+    is a tool that answers cheerfully with rows in the wrong order.
+    """
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    result = _dispatch(_ordered_list_spec(), user, {"ordering": "cost"})
+    assert [w["name"] for w in result] == ["b", "c", "a"]
+
+
+@pytest.mark.django_db
+def test_filter_owned_ordering_descends():
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    result = _dispatch(_ordered_list_spec(), user, {"ordering": "-cost"})
+    assert [w["name"] for w in result] == ["a", "c", "b"]
+
+
+@pytest.mark.django_db
+def test_filter_owned_ordering_composes_with_the_other_filters():
+    """⚠ ``filter_data`` *replaces* ``params`` as the filter source rather than
+    adding to it, so routing ``ordering`` through it has to carry the rest of the
+    filter args along — otherwise ordering a filtered list silently unfilters it.
+    """
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    result = _dispatch(_ordered_list_spec(), user, {"min_price": "2", "ordering": "cost"})
+    assert [w["name"] for w in result] == ["c", "a"]
+
+
+@pytest.mark.django_db
+def test_filter_owned_tool_still_works_with_no_ordering_supplied():
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    result = _dispatch(_ordered_list_spec(), user, {"min_price": "2"})
+    assert sorted(w["name"] for w in result) == ["a", "c"]
+
+
+@pytest.mark.django_db
+def test_an_ordering_outside_the_filters_choices_is_a_retry():
+    """The FilterSet validates it — including against the ORM path a declared
+    ``ordering_fields`` would have used, which is not one of its public choices.
+    drf-services raises that as a DRF ``ValidationError``, which is already the
+    ``ModelRetry`` arm; the toolset adds no second validation of its own.
+    """
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    with pytest.raises(ModelRetry, match="ordering"):
+        _dispatch(_ordered_list_spec(), user, {"ordering": "price"})
+
+
+async def test_the_advertised_ordering_enum_is_the_filters_own_vocabulary():
+    toolset = SpecToolset({"list_widgets": _ordered_list_spec()})
+    tools = await toolset.get_tools(None)
+    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    assert props["ordering"]["enum"] == ["cost", "-cost", "title", "-title"]
+
+
+def test_spec_owns_ordering_reads_the_reflected_schema():
+    assert _spec_owns_ordering(_ordered_list_spec()) is True
+    assert _spec_owns_ordering(_filtered_list_spec()) is False
+    assert _spec_owns_ordering(list_spec()) is False
+    # Only a list selector can contest the argument: nothing else is ever offered
+    # one, so a service with an `ordering` input field is not a clash.
+    assert _spec_owns_ordering(retrieve_spec()) is False
+    assert _spec_owns_ordering(create_spec()) is False
+
+
+def test_declaring_ordering_fields_beside_a_filter_that_owns_ordering_is_refused():
+    """⛔ Not resolved by preferring one — that *is* the defect, one level up."""
+    with pytest.raises(ValueError, match="declare ordering twice"):
+        SpecToolset({"list_widgets": _ordered_list_spec()}, ordering_fields=["price"])
+
+
+def test_the_refusal_names_the_tool_both_channels_and_the_fix():
+    with pytest.raises(ValueError) as excinfo:
+        SpecToolset(
+            {"plain": list_spec(), "list_widgets": _ordered_list_spec()},
+            tool_ordering_fields={"list_widgets": ["price"]},
+        )
+    message = str(excinfo.value)
+    assert "'list_widgets'" in message and "'plain'" not in message
+    assert "ordering_fields / tool_ordering_fields" in message
+    assert "filter_set" in message
+    assert "Drop ordering_fields" in message
+
+
+def test_ordering_fields_are_deprecated_in_favour_of_the_filter():
+    with pytest.warns(DeprecationWarning, match="OrderingFilter") as record:
+        SpecToolset({"list_widgets": list_spec()}, ordering_fields=["price"])
+    assert "'list_widgets'" in str(record[0].message)
+
+
+def test_tool_ordering_fields_are_deprecated_too():
+    with pytest.warns(DeprecationWarning, match="OrderingFilter"):
+        SpecToolset({"list_widgets": list_spec()}, tool_ordering_fields={"list_widgets": ["price"]})
+
+
+def test_declaring_nothing_warns_nothing():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        SpecToolset({"list_widgets": list_spec()}, tool_ordering_fields={"list_widgets": []})
+
+
+def test_the_schema_builder_never_overwrites_the_filters_enum():
+    """Belt to the constructor's braces, at the one line that could overwrite it.
+
+    The merge that builds ``properties`` puts the toolset's ``extra`` over the
+    reflected schema, so a value written here under a name the filter already
+    advertised replaces the filter's vocabulary with ORM paths the FilterSet
+    would then reject.
+    """
+    props = _input_schema(_ordered_list_spec(), ordering_fields=["price"])["properties"]
+    assert props["ordering"]["enum"] == ["cost", "-cost", "title", "-title"]
+
+
+async def test_the_ordering_instruction_is_emitted_for_a_filter_owned_tool():
+    """⚠ Gated on ``tool_ordering_fields`` alone, this tool — the one whose
+    ``ordering`` is enum-valued and needs exactly one value picked from it — got
+    no ordering guidance at all.
+    """
+    instructions = await SpecToolset({"list_widgets": _ordered_list_spec()}).get_instructions(None)
+    assert "accept `ordering`" in instructions
+
+
+# ⚠ The guard on the strip this change narrows. drf-services spreads the *entire*
+# pool into a selector declaring ``**kwargs`` ("if fn declares **kwargs, the
+# entire pool is passed"), so any transport arg left in ``params`` lands in the
+# callable's signature as an argument it never declared. That is why a
+# filter-owned ``ordering`` is popped and routed through ``filter_data`` rather
+# than simply left in place — and why ``page`` / ``limit`` must keep being popped.
+
+_KWARGS_SEEN: list[dict[str, Any]] = []
+_FILTER_DATA_SEEN: list[dict[str, Any]] = []
+
+
+def list_widgets_greedy(user, **extras):
+    """List widgets owned by the acting user, recording every extra argument."""
+    _KWARGS_SEEN.append(dict(extras))
+    return Widget.objects.filter(owner=user)
+
+
+class _RecordingFilterSet(django_filters.FilterSet):
+    """Records the filter data it was handed, so the split can be asserted on."""
+
+    min_price = django_filters.NumberFilter(field_name="price", lookup_expr="gte")
+    ordering = django_filters.OrderingFilter(fields=(("price", "cost"),))
+
+    class Meta:
+        model = Widget
+        fields = []
+
+    def __init__(self, data=None, queryset=None, *, request=None, prefix=None):
+        _FILTER_DATA_SEEN.append(dict(data or {}))
+        super().__init__(data=data, queryset=queryset, request=request, prefix=prefix)
+
+
+@pytest.mark.django_db
+def test_the_transport_args_never_reach_a_kwargs_selector():
+    """``page`` / ``limit`` / ``ordering`` are the transport's, whoever consumes them.
+
+    A selector declaring ``**kwargs`` receives the whole dispatch pool, so this is
+    the test that catches a transport arg being left in ``params`` — including the
+    filter-owned ``ordering``, which reaches the FilterSet through ``filter_data``
+    precisely so that it does *not* reach the callable.
+    """
+    _KWARGS_SEEN.clear()
+    _FILTER_DATA_SEEN.clear()
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets_greedy,
+        output_serializer=WidgetSerializer,
+        filter_set=_RecordingFilterSet,
+        permission_classes=[AllowAny],
+    )
+    result = _dispatch(spec, user, {"page": 1, "limit": 2, "ordering": "cost", "min_price": "1"})
+    assert [w["name"] for w in result] == ["b", "c"]
+
+    seen = _KWARGS_SEEN[-1]
+    assert "page" not in seen
+    assert "limit" not in seen
+    assert "ordering" not in seen
+    # The selector's own filter arg is untouched — only the transport's are taken.
+    assert seen["min_price"] == "1"
+
+    # The FilterSet gets the filter args plus ordering, and *not* the pagination
+    # args: ``filter_data`` is built after ``page`` / ``limit`` have been popped,
+    # so widening the ordering route did not widen what the FilterSet sees.
+    assert _FILTER_DATA_SEEN[-1] == {"min_price": "1", "ordering": "cost"}
+
+
+# A list selector with no ``filter_set`` whose *callable* declares ``ordering``:
+# the schema advertises it for the same reason, so the same invariant applies —
+# but the argument is the selector's own, and has to stay in ``params`` where the
+# callable is given it rather than being routed to a FilterSet that isn't there.
+
+
+def list_widgets_sorted(user, ordering: str = "name"):
+    """List widgets owned by the acting user, in a given order."""
+    return Widget.objects.filter(owner=user).order_by(ordering)
+
+
+@pytest.mark.django_db
+def test_an_ordering_the_selector_itself_declares_reaches_the_selector():
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets_sorted,
+        output_serializer=WidgetSerializer,
+        permission_classes=[AllowAny],
+    )
+    assert _spec_owns_ordering(spec) is True
+    result = _dispatch(spec, user, {"ordering": "price"})
+    assert [w["name"] for w in result] == ["b", "c", "a"]
 
 
 # ----- progress: accepted and forwarded, never constructed -----

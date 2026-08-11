@@ -13,10 +13,13 @@ shape); projects that thread identity differently pass a ``get_user`` extractor.
 
 Each call mirrors what a DRF view does, in order:
 
-1. strip a list selector's ``page`` / ``limit`` / ``ordering`` tool args (ordering
-   and pagination are transport concerns, kept off the spec) plus any registered
+1. strip a list selector's ``page`` / ``limit`` tool args (pagination is a
+   transport concern, kept off the spec) plus any registered
    :class:`~rest_framework_pydantic_ai.QueryParam` args (read-shaping query
-   params that seed ``request.query_params``, not spec inputs);
+   params that seed ``request.query_params``, not spec inputs). ``ordering`` is
+   stripped too — but only for a spec whose own schema does *not* advertise it,
+   because a ``filter_set`` carrying an ``OrderingFilter`` owns that argument and
+   the value has to reach the FilterSet as filter data;
 2. build the off-HTTP context (synthetic request + view + principal, with the
    registered query params seeded into ``request.query_params``);
 3. **enforce ``spec.permission_classes``** — ``dispatch_spec`` deliberately does
@@ -32,7 +35,9 @@ Error semantics map drf-services' failure kinds onto Pydantic-AI's model-loop:
 - business ``ServiceError`` and an unresolved instance (``not_found``) → a
   model-readable ``{"error": ...}`` payload;
 - an ``ordering`` value outside the declared enum → ``ModelRetry`` (naming the
-  values that are accepted);
+  values that are accepted); a filter-owned ``ordering`` outside the
+  ``OrderingFilter``'s choices is rejected by the FilterSet, which arrives here
+  as the DRF ``ValidationError`` above and becomes the same ``ModelRetry``;
 - a denied ``permission_classes`` check raises ``PermissionDenied`` and aborts
   the run, exactly as it would over HTTP.
 """
@@ -127,7 +132,9 @@ def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
 
 
 # List-selector pagination args own these names; a registered ``QueryParam`` or
-# ``UrlKwarg`` may not shadow them.
+# ``UrlKwarg`` may not shadow them. ``ordering`` stays reserved even for a spec
+# whose ``filter_set`` owns it: a channel registered under that name pops the
+# value at call time, so the FilterSet would never see it.
 _RESERVED_PARAM_NAMES = frozenset({"page", "limit", "ordering"})
 
 # Tool names are surfaced verbatim to the model provider, which constrains them
@@ -142,9 +149,10 @@ _TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 # view has (JSON parsing at the transport, field validation in the serializer).
 _TOOL_ARGS_VALIDATOR = SchemaValidator(schema=core_schema.any_schema())
 
-# Tool args a list selector accepts on top of its filter fields. Ordering and
-# pagination stay transport-side, so the adapter — not the spec — exposes them
-# and slices the result.
+# Tool args a list selector accepts on top of its filter fields. Pagination stays
+# transport-side, so the adapter — not the spec — exposes it and slices the
+# result. Ordering is not here: it belongs to the spec whenever the spec's own
+# schema advertises it (see :func:`_spec_owns_ordering`).
 _LIST_PARAM_SCHEMA: dict[str, Any] = {
     "page": {
         "type": "integer",
@@ -161,7 +169,14 @@ _LIST_PARAM_SCHEMA: dict[str, Any] = {
 
 @dataclass(frozen=True)
 class _PageArgs:
-    """A list selector's stripped ordering / pagination tool args."""
+    """A list selector's stripped pagination tool args.
+
+    ``page`` and ``limit`` are always the toolset's — nothing else advertises
+    them. ``ordering`` is only the toolset's when the spec does **not** advertise
+    it (the deprecated ``ordering_fields`` vocabulary), and is ``None`` whenever
+    the spec owns it; :func:`_shape_list` reads it, so a filter-owned value never
+    reaches ``queryset.order_by`` from here.
+    """
 
     page: int | None
     limit: int | None
@@ -181,7 +196,7 @@ class SpecToolset(AbstractToolset[Any]):
 
     Each key becomes one tool: the description is the spec's selector/service
     docstring, the parameter schema comes from ``spec_to_json_schema`` (with a
-    list selector's ``page`` / ``limit`` / ``ordering`` args merged in), and the
+    list selector's ``page`` / ``limit`` args merged in), and the
     ``readOnlyHint`` annotation is derived from the spec kind (selectors read,
     services mutate).
 
@@ -226,7 +241,10 @@ class SpecToolset(AbstractToolset[Any]):
     A ``SelectorSpec.filter_set`` does **not** need this: its fields are already
     generated into the tool's input schema by ``spec_to_json_schema`` and flow
     through as ordinary ``params`` (which ``dispatch_spec`` hands the FilterSet as
-    ``filter_data``), so the model can filter with no extra declaration.
+    ``filter_data``), so the model can filter with no extra declaration. That
+    includes **ordering** — a FilterSet declaring an ``OrderingFilter`` named
+    ``ordering`` advertises the argument itself, and the toolset keeps its hands
+    off it.
 
     ``url_kwargs`` / ``tool_url_kwargs`` register
     :class:`~rest_framework_pydantic_ai.UrlKwarg` args — URL route captures
@@ -278,10 +296,25 @@ class SpecToolset(AbstractToolset[Any]):
     API developer reads is rarely the sentence a model needs — and a tool left
     with no description anywhere gets an :class:`UndescribedToolWarning`.
 
-    ``ordering_fields`` / ``tool_ordering_fields`` declare what a list tool may
-    sort by, advertised as an enum on an ``ordering`` argument and validated
-    against it. Nothing declared means no ``ordering`` argument at all; per-tool
-    *replaces* the toolset-wide set rather than merging with it.
+    ⭐ **Ordering belongs to the ``filter_set``, and that is the canonical way to
+    declare it.** A selector whose FilterSet carries an ``OrderingFilter`` named
+    ``ordering`` already advertises the argument — drf-services reflects the
+    filter's choices into the tool schema as an enum — so the toolset contributes
+    nothing: the value is handed to the FilterSet as filter data, which validates
+    it and applies the sort through its own ``param_map``. Nothing is declared
+    here for such a tool.
+
+    ``ordering_fields`` / ``tool_ordering_fields`` are the **deprecated** second
+    vocabulary, kept for a list selector with no ``filter_set`` and therefore no
+    other route. They declare what such a tool may sort by, advertised as an enum
+    on an ``ordering`` argument and validated against it; their values are raw
+    ORM paths, because the toolset applies them with ``queryset.order_by``.
+    Nothing declared means no ``ordering`` argument at all; per-tool *replaces*
+    the toolset-wide set rather than merging with it. Declaring them for a tool
+    whose spec already advertises ``ordering`` raises at construction: the two
+    are different vocabularies for one argument name — public filter choices
+    versus ORM paths — and quietly preferring either is how a schema and its
+    dispatch come to disagree.
 
     ``max_result_bytes`` / ``tool_max_result_bytes`` cap a rendered result,
     measured on the encoded payload because the thing being protected is the
@@ -410,6 +443,7 @@ class SpecToolset(AbstractToolset[Any]):
             name: tuple((tool_ordering_fields or {}).get(name, ordering_fields))
             for name in self._specs
         }
+        _validate_ordering_fields(self._specs, self._tool_ordering_fields)
         _validate_no_param_channel_overlap(self._tool_query_params, self._tool_url_kwargs)
         # Run drf-services' shared checks on the **merged** tuples, not the raw
         # declarations: toolset-wide and per-tool entries of the same name are an
@@ -818,10 +852,9 @@ def _validate_channel_declarations(tool_name: str, declarations: Sequence[Any], 
     Adds what the local checks above never covered: the dispatcher's pool seeds
     (``request`` / ``user`` / ``data`` / …, which a caller must not be able to
     route a value onto) and the contradiction of ``required=True`` with a
-    ``default``. The pagination names stay ours to contribute — this toolset
-    reserves ``order`` where the MCP transport reserves ``ordering``, which is
-    exactly the kind of divergence that let the two adapters' copies of these
-    types drift apart in the first place.
+    ``default``. The transport-side names stay ours to contribute, because they
+    belong to the adapter rather than to the dispatcher: ``page`` / ``limit`` /
+    ``ordering``, the same three the MCP transport reserves.
     """
     validate_channel_names(
         label=f"SpecToolset tool {tool_name!r}",
@@ -860,6 +893,59 @@ def _validate_no_param_channel_overlap(
                 f"name(s) {clash} are registered as both a QueryParam and a UrlKwarg on "
                 f"tool {tool_name!r}; a value cannot route to two channels."
             )
+
+
+def _validate_ordering_fields(
+    specs: Mapping[str, Spec],
+    tool_ordering_fields: Mapping[str, Sequence[str]],
+) -> None:
+    """Refuse a tool that declares ordering twice, then deprecate the second way.
+
+    ⚠ **Two vocabularies under one argument name is the defect, not the
+    symptom.** A FilterSet's ``OrderingFilter`` speaks *public* names it maps
+    through its own ``param_map`` — several of which resolve to annotation
+    aliases — while ``ordering_fields`` values are raw ORM paths, because the
+    toolset applies them with ``queryset.order_by``. They cannot both own the
+    ``ordering`` property: one enum overwrites the other in the schema, and
+    whichever loses is advertised to the model and then refused at dispatch.
+    Silently preferring either is how the schema and the dispatch came to
+    disagree in the first place, so the combination fails at configuration time,
+    where the author can still act on it.
+
+    The deprecation is the other half of the same decision: the FilterSet is the
+    canonical declaration site, and ``ordering_fields`` survives only for a list
+    selector with no ``filter_set``, which has no other route to an ordering
+    argument. Warned rather than removed for exactly that reason.
+    """
+    clashing: list[str] = sorted(
+        name
+        for name, fields in tool_ordering_fields.items()
+        if fields and _spec_owns_ordering(specs[name])
+    )
+    if clashing:
+        names: str = ", ".join(repr(name) for name in clashing)
+        raise ValueError(
+            f"SpecToolset tool(s) {names} declare ordering twice: through "
+            "ordering_fields / tool_ordering_fields, and through a filter_set that "
+            "already advertises an `ordering` argument in the tool schema. Those are "
+            "two vocabularies for one argument — a FilterSet's OrderingFilter exposes "
+            "public choices it maps itself, ordering_fields values are raw ORM paths — "
+            "and only one can be advertised. Drop ordering_fields for these tool(s); "
+            "the FilterSet's OrderingFilter already advertises ordering."
+        )
+    declared: list[str] = sorted(name for name, fields in tool_ordering_fields.items() if fields)
+    if declared:
+        names = ", ".join(repr(name) for name in declared)
+        warnings.warn(
+            "SpecToolset's ordering_fields / tool_ordering_fields are deprecated and "
+            "will be removed in a future release. Declare a django-filter "
+            "OrderingFilter named `ordering` on the selector's filter_set instead: it "
+            "is the one place ordering is declared, its choices are already reflected "
+            "into the tool schema, and it validates and applies the value itself. "
+            f"Tool(s) still declaring ordering_fields: {names}.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
 
 async def _with_deadline(awaitable: Any, seconds: float | None, *, label: str) -> Any:
@@ -945,7 +1031,7 @@ _LIST_INSTRUCTION = (
 
 _ORDERING_INSTRUCTION = (
     "- Some collection tools also accept `ordering`. It takes exactly one of the values "
-    "listed in that tool's schema (a field name, or the same name prefixed with `-` for "
+    "listed in that tool's schema (a sortable name, or the same name prefixed with `-` for "
     "descending) — not a comma-separated list, and not an arbitrary column."
 )
 
@@ -958,15 +1044,22 @@ def _derive_instructions(
     """Build the conventions block from the specs / query params / ordering.
 
     Every line is conditional on something being able to act on it: pagination
-    only with a list selector present, ordering only where some tool declares
-    fields, read-shaping only with a ``QueryParam``. Advice a model cannot use
-    is not neutral — it is budget spent teaching it about an argument that will
-    be rejected.
+    only with a list selector present, ordering only where some tool actually has
+    an ``ordering`` argument, read-shaping only with a ``QueryParam``. Advice a
+    model cannot use is not neutral — it is budget spent teaching it about an
+    argument that will be rejected.
+
+    ⚠ **Both sources of an ordering argument count.** Gating this on
+    ``tool_ordering_fields`` alone left a tool whose ``filter_set`` advertises
+    ``ordering`` with no guidance at all — the one case where the argument is
+    present, enum-valued, and the model has to pick a single value from it.
     """
     lines = [_BASE_INSTRUCTIONS]
     if any(_is_list_selector(spec) for spec in specs.values()):
         lines.append(_LIST_INSTRUCTION)
-    if any((tool_ordering_fields or {}).values()):
+    if any((tool_ordering_fields or {}).values()) or any(
+        _spec_owns_ordering(spec) for spec in specs.values()
+    ):
         lines.append(_ORDERING_INSTRUCTION)
     query_param_names = sorted({qp.name for params in tool_query_params.values() for qp in params})
     if query_param_names:
@@ -1035,7 +1128,14 @@ def _input_schema(
             # a schema on its own is a hint that nothing obliges a model to
             # honour. Telling it is cheaper than correcting it.
             extra["limit"] = {**_LIST_PARAM_SCHEMA["limit"], "maximum": max_page_size}
-        if ordering_fields:
+        if ordering_fields and not _spec_owns_ordering(spec):
+            # ⚠ **Never over a reflected ``ordering``.** ``extra`` is merged over
+            # ``properties`` below, so writing here for a spec that advertises
+            # its own ordering would replace the filter's public choices with ORM
+            # paths under the same property name — an enum the FilterSet would
+            # then reject. The constructor refuses that combination outright;
+            # this is the same rule at the one place the overwrite could happen.
+            #
             # An enum, not a free string: it is the only shape that tells the
             # model what it may sort by, and the only one this can validate
             # without asking the database.
@@ -1061,6 +1161,37 @@ def _input_schema(
 
 def _is_list_selector(spec: Spec) -> bool:
     return isinstance(spec, SelectorSpec) and spec.kind == SelectorKind.LIST
+
+
+def _spec_owns_ordering(spec: Spec) -> bool:
+    """True when a list spec's own reflected schema already advertises ``ordering``.
+
+    ⭐ **The one signal, read by both the schema builder and the dispatch path,
+    so they cannot disagree.** The invariant being encoded is *whatever the
+    schema advertises, the dispatch must deliver*: a ``filter_set`` carrying a
+    ``django_filters.OrderingFilter`` named ``ordering`` puts an enum of the
+    filter's public choices straight into ``properties`` (``OrderingFilter``
+    subclasses ``ChoiceFilter``, which drf-services maps to an enum), with
+    nothing declared on this toolset at all. Before this check the toolset
+    stripped that argument out of every list call and then told the model the
+    tool did not accept it.
+
+    ⛔ **Deliberately not an ``isinstance`` test against ``django_filters``.**
+    django-filter is an optional extra the package never imports — a spec's
+    ``filter_set`` is duck-typed all the way down — and the property that matters
+    is what the tool *advertised*, not which library produced it. A list selector
+    whose callable happens to declare an ``ordering`` parameter is reflected the
+    same way and is owned for the same reason.
+
+    Restricted to list selectors because that is the only kind the toolset ever
+    contributes an ``ordering`` argument to: for anything else there is no
+    ownership to contest, and a service whose input serializer happens to have a
+    field named ``ordering`` must not be read as a clash.
+    """
+    if not _is_list_selector(spec):
+        return False
+    reflected = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input"))
+    return "ordering" in reflected.get("properties", {})
 
 
 def _call_spec(
@@ -1102,6 +1233,9 @@ def _call_spec(
     # ``project_pk`` a scoping provider reads off ``view.kwargs`` (never a spec
     # input) would otherwise be flagged by ``unknown_arguments``.
     url_kwarg_values = _pop_url_kwargs(url_kwargs, args)
+    # Last of the pops, because the filter data it returns is built from whatever
+    # ``args`` is left holding once every other channel has taken its own.
+    filter_data = _pop_filter_ordering(spec, args)
     context = build_context(
         user,
         args,
@@ -1129,6 +1263,10 @@ def _call_spec(
             # Accepted and forwarded, never constructed — see ``AgentDeps.progress``.
             # ``None`` becomes drf-services' no-op seed.
             progress=progress,
+            # ``None`` for every call but a filter-owned ordering, where it is the
+            # channel that separates the FilterSet's data from the callable's
+            # arguments — the two are one flat mapping off HTTP otherwise.
+            filter_data=filter_data,
         )
     except BaseException as exc:
         # ⚠ **One arm, not a chain, because the consumer's map has to be
@@ -1259,7 +1397,7 @@ def _pop_pagination(
     ordering_fields: Sequence[str] = (),
     max_page_size: int | None = None,
 ) -> _PageArgs | None:
-    """Strip + validate ``page`` / ``limit`` / ``ordering`` from a list selector's args.
+    """Strip + validate the list-selector args this toolset owns.
 
     The tool schema advertises ``page`` / ``limit`` as integers and ``ordering``
     as an enum, but the toolset's argument validator is a no-op (the schema is
@@ -1268,9 +1406,14 @@ def _pop_pagination(
     run, coerce and validate, mapping a bad value to :class:`ModelRetry` so the
     model corrects it.
 
-    ``ordering`` is popped whether or not any fields are declared: with none, it
-    was never advertised, so a model that sent it anyway is corrected rather
-    than having the value fall through to the spec as an unknown argument.
+    ⛔ **``ordering`` is left entirely alone for a spec that advertises it.**
+    Popping it unconditionally is what made the tool refuse the argument its own
+    schema promised: the value never reached the ``filter_set`` that declared it,
+    and ``_coerce_ordering`` answered "this tool does not accept an `ordering`
+    argument" against an empty ``ordering_fields``. For a spec that does *not*
+    advertise it, the pop stays unconditional — the argument was never offered,
+    so a model that sent one is corrected here rather than having the value fall
+    through to the spec as an unknown argument.
     """
     if not _is_list_selector(spec):
         return None
@@ -1281,11 +1424,60 @@ def _pop_pagination(
         # hurts, and a model that did not think to paginate is exactly the
         # caller that needs the default applied for it.
         limit = max_page_size if limit is None else min(limit, max_page_size)
+    ordering: str | None = None
+    if not _spec_owns_ordering(spec):
+        ordering = _coerce_ordering(args.pop("ordering", None), ordering_fields)
     return _PageArgs(
         page=_coerce_positive_int(args.pop("page", None), "page"),
         limit=limit,
-        ordering=_coerce_ordering(args.pop("ordering", None), ordering_fields),
+        ordering=ordering,
     )
+
+
+def _pop_filter_ordering(spec: Spec, args: dict[str, Any]) -> dict[str, Any] | None:
+    """Route a filter-owned ``ordering`` out of the callable's args into filter data.
+
+    Returns the mapping ``dispatch_spec(filter_data=…)`` should hand the
+    ``filter_set``, or ``None`` to leave the default alone (``params`` is the
+    filter source, which is what every other call wants).
+
+    ⚠ **``filter_data`` replaces ``params`` as the filter source rather than
+    adding to it**, so the returned mapping carries the remaining args too;
+    returning ``{"ordering": …}`` on its own would silently drop every other
+    filter the model supplied.
+
+    ⛔ **Popped, not left in ``params``.** ``ordering`` is the FilterSet's
+    argument, not the selector callable's: leaving it in ``params`` would reach
+    the FilterSet by the same route, but it would also land in the callable's
+    kwarg pool, where a selector declaring ``**kwargs`` receives it as a surprise
+    argument it never asked for.
+
+    ⚠ **Two routes, and neither is redundant — they differ in who advertised the
+    argument.** :func:`_spec_owns_ordering` answers *whether* the spec owns
+    ``ordering``; the ``filter_set`` check here answers *what to hand it to*, and
+    those are genuinely different questions:
+
+    - A ``filter_set`` advertised it, so the FilterSet is the consumer. It reads
+      ``filter_data``, never the callable's arguments, and the callable never
+      declared ``ordering`` — hence popped and rerouted.
+    - Nothing but the selector's **own signature** advertised it (a list selector
+      with an ``ordering`` parameter and no filter). Then the value is an ordinary
+      argument to that callable, ``filter_data`` has no FilterSet to reach, and
+      popping it would starve the one thing that asked for it — so it stays in
+      ``params``.
+
+    Collapsing the two would break whichever case it collapsed toward: route
+    everything through ``filter_data`` and a signature-declared ``ordering``
+    silently vanishes; leave everything in ``params`` and a filter-declared one
+    lands in a ``**kwargs`` selector's arguments. Same advertised property, two
+    consumers, so the delivery has to fork.
+    """
+    if not isinstance(spec, SelectorSpec) or spec.filter_set is None:
+        return None
+    if not _spec_owns_ordering(spec) or "ordering" not in args:
+        return None
+    ordering: Any = args.pop("ordering")
+    return {**args, "ordering": ordering}
 
 
 def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) -> dict[str, Any]:
@@ -1369,7 +1561,10 @@ def _coerce_ordering(value: Any, allowed: Sequence[str]) -> str | None:
     values: list[str] = _ordering_values(allowed)
     if not values:
         # Never advertised, so the model invented it. Saying so beats a
-        # "must be one of: " with an empty list after it.
+        # "must be one of: " with an empty list after it. ⚠ Reached only for a
+        # spec that advertises no ``ordering`` of its own — a filter-owned one
+        # never gets here, which is the whole point: this line used to be the
+        # answer to an argument the tool's schema had just promised.
         raise ModelRetry("This tool does not accept an `ordering` argument; omit it.")
     options: str = ", ".join(f"`{v}`" for v in values)
     if value not in values:
@@ -1391,13 +1586,20 @@ def _ordering_values(fields: Sequence[str]) -> list[str]:
 
 
 def _shape_list(value: Any, page_args: _PageArgs) -> list[Any]:
-    """Order + paginate a list selector's queryset.
+    """Paginate a list selector's queryset, ordering it only when ordering is ours.
 
     Forces evaluation (``list(...)``) so a ``FieldError`` surfaces here — where
     ``_call_spec`` turns it into a ``ModelRetry`` — rather than later inside the
-    serializer. ``ordering`` is enum-validated before it reaches this point, so
-    the remaining way to raise one is a declared field that is not a real
-    column, which is an author's error rather than a model's.
+    serializer. That covers both ordering routes: a deprecated ``ordering_fields``
+    entry that is not a real column, and a FilterSet ``param_map`` pointing at
+    one, since the FilterSet's own ``order_by`` is applied to the lazy queryset
+    upstream and only raises once this materializes it. Either way it is the
+    author's error rather than the model's — the value itself was validated
+    against an enum before reaching a queryset.
+
+    ``page_args.ordering`` is ``None`` whenever the spec advertises ``ordering``
+    itself, so the sort a FilterSet already applied is never applied twice, in a
+    second vocabulary, over the top of it.
     """
     queryset = value
     if page_args.ordering:

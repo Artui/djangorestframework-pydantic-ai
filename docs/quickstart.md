@@ -52,8 +52,8 @@ toolset = SpecToolset(
 Each key is the tool name. The description comes from the selector/service
 docstring, the parameter schema from the spec's input serializer, and the
 `readOnlyHint` annotation from the spec kind (selectors read, services mutate).
-List selectors additionally accept `page` and `limit` tool args, plus
-`ordering` where you declare `ordering_fields=[...]`.
+List selectors additionally accept `page` and `limit` tool args, plus `ordering`
+where the selector's [`filter_set` declares one](#ordering).
 
 ## 3. Run an agent
 
@@ -73,8 +73,9 @@ result = await agent.run(
 ```
 
 For that request the model can call `list_orders` with
-`{"limit": 5, "ordering": "-created_at"}` and the toolset enforces permissions,
-runs the selector as `request.user`, slices the result, and renders it through
+`{"limit": 5, "ordering": "-created"}` and the toolset enforces permissions,
+runs the selector as `request.user`, hands `ordering` to the selector's
+[`filter_set`](#ordering), slices the result, and renders it through
 `OrderSerializer`.
 
 ## Custom identity
@@ -100,10 +101,65 @@ from rest_framework_services import UnknownArguments
 toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 ```
 
+## Ordering
+
+**The `filter_set` owns ordering.** Declare a django-filter `OrderingFilter`
+named `ordering` on the selector's FilterSet and you are done:
+
+```python
+import django_filters
+
+
+class OrderFilterSet(django_filters.FilterSet):
+    ordering = django_filters.OrderingFilter(
+        fields=(("created_at", "created"), ("total_cents", "total")),
+    )
+
+    class Meta:
+        model = Order
+        fields = ["status"]
+```
+
+drf-services reflects that filter into the tool's input schema as an enum of its
+public choices (`created`, `-created`, `total`, `-total`) — `OrderingFilter`
+subclasses `ChoiceFilter`, which the schema generator maps to an enum — so the
+model is told exactly what it may sort by. At call time the value is handed to
+the FilterSet as filter data: it validates the choice, applies its own
+`param_map`, and a value outside the enum comes back as a `ModelRetry`. The
+toolset contributes nothing and takes nothing away.
+
+One vocabulary, one declaration site, and the same ordering your HTTP views
+already serve.
+
+### `ordering_fields` (deprecated)
+
+!!! warning "Deprecated"
+    `ordering_fields` / `tool_ordering_fields` emit a `DeprecationWarning`.
+    Declare an `OrderingFilter` on the selector's `filter_set` instead.
+
+They remain for the one case with no other route — a list selector with **no**
+`filter_set`:
+
+```python
+toolset = SpecToolset(specs, ordering_fields=["created_at", "total_cents"])
+```
+
+That advertises an `ordering` enum of each name and its `-` prefixed form, and
+the toolset applies the chosen value with `queryset.order_by`. The values are
+therefore raw **ORM paths**, not public names — which is precisely why the two
+cannot be mixed: a FilterSet's `OrderingFilter` speaks public names it maps
+itself, several of which resolve to annotation aliases. Declaring
+`ordering_fields` for a tool whose `filter_set` already advertises `ordering`
+raises at construction rather than letting one vocabulary quietly overwrite the
+other.
+
+To migrate, move the names onto an `OrderingFilter` as `(orm_path, public_name)`
+pairs and drop the `ordering_fields` argument.
+
 ## Read-shaping query params
 
-`page` / `limit` / `ordering` are built in for list selectors, but you can register
-your own request-level params with
+`page` / `limit` are built in for list selectors and `ordering` comes from the
+`filter_set`, but you can register your own request-level params with
 [`QueryParam`](reference.md#rest_framework_pydantic_ai.QueryParam). Each is
 advertised as a tool arg, then — instead of reaching the spec as an input — seeded
 into `request.query_params` over the off-HTTP path. That is for whatever reads
@@ -114,8 +170,9 @@ serializer that branches on the query string.
     A `SelectorSpec.filter_set`'s fields are already generated into the tool's
     input schema (the `[filter]` extra) and flow through as ordinary `params` —
     which `dispatch_spec` hands the FilterSet as its `filter_data`. So the model
-    can filter a list selector with no `QueryParam` declaration at all;
-    `QueryParam` is only for params a serializer reads off `request.query_params`.
+    can filter a list selector with no `QueryParam` declaration at all, and the
+    same goes for [ordering](#ordering); `QueryParam` is only for params a
+    serializer reads off `request.query_params`.
 
 ```python
 from rest_framework_pydantic_ai import QueryParam
@@ -131,7 +188,9 @@ toolset = SpecToolset(
 
 A registered param is popped before dispatch, so `unknown_arguments` never flags
 it; a declared `default` is seeded when the model omits the arg. (Names can't be
-`page` / `limit` / `ordering` — those are reserved for list-selector pagination.)
+`page` / `limit` / `ordering` — those are reserved transport keys. `ordering` is
+reserved even when a `filter_set` owns it: a registered channel pops the value at
+call time, so the FilterSet would never see it.)
 Requires `djangorestframework-services>=0.23`, which added the
 `build_offline_context(query_params=…)` seam.
 
@@ -269,7 +328,8 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | Unresolved instance | `{"error": "not found"}` |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
 | Non-integer `page` / `limit`, or an `ordering` outside the declared enum | `ModelRetry` — naming the values that are accepted |
-| A declared `ordering_fields` name that isn't a real column | `ModelRetry` — an author's error, not the model's; it can't be checked at construction without a queryset |
+| An `ordering` outside a `filter_set`'s `OrderingFilter` choices | `ModelRetry` — the FilterSet rejects it, which arrives as the `ValidationError` row above |
+| An ordering name that isn't a real column (a declared `ordering_fields` entry, or a FilterSet `param_map` target) | `ModelRetry` — an author's error, not the model's; it can't be checked at construction without a queryset |
 | Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run |
 
 Each `ModelRetry` row consumes one unit of the tool's retry budget: after
