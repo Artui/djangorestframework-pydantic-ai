@@ -1452,10 +1452,25 @@ def _pop_filter_ordering(spec: Spec, args: dict[str, Any]) -> dict[str, Any] | N
     kwarg pool, where a selector declaring ``**kwargs`` receives it as a surprise
     argument it never asked for.
 
-    Only for a spec with a ``filter_set``. A list selector with no filter that
-    advertises ``ordering`` did so from its **own signature** — that value is an
-    ordinary argument to the callable, so it stays in ``params`` where the
-    callable can be given it.
+    ⚠ **Two routes, and neither is redundant — they differ in who advertised the
+    argument.** :func:`_spec_owns_ordering` answers *whether* the spec owns
+    ``ordering``; the ``filter_set`` check here answers *what to hand it to*, and
+    those are genuinely different questions:
+
+    - A ``filter_set`` advertised it, so the FilterSet is the consumer. It reads
+      ``filter_data``, never the callable's arguments, and the callable never
+      declared ``ordering`` — hence popped and rerouted.
+    - Nothing but the selector's **own signature** advertised it (a list selector
+      with an ``ordering`` parameter and no filter). Then the value is an ordinary
+      argument to that callable, ``filter_data`` has no FilterSet to reach, and
+      popping it would starve the one thing that asked for it — so it stays in
+      ``params``.
+
+    Collapsing the two would break whichever case it collapsed toward: route
+    everything through ``filter_data`` and a signature-declared ``ordering``
+    silently vanishes; leave everything in ``params`` and a filter-declared one
+    lands in a ``**kwargs`` selector's arguments. Same advertised property, two
+    consumers, so the delivery has to fork.
     """
     if not isinstance(spec, SelectorSpec) or spec.filter_set is None:
         return None

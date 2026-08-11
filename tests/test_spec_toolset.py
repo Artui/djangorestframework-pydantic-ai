@@ -1652,6 +1652,74 @@ async def test_the_ordering_instruction_is_emitted_for_a_filter_owned_tool():
     assert "accept `ordering`" in instructions
 
 
+# ⚠ The guard on the strip this change narrows. drf-services spreads the *entire*
+# pool into a selector declaring ``**kwargs`` ("if fn declares **kwargs, the
+# entire pool is passed"), so any transport arg left in ``params`` lands in the
+# callable's signature as an argument it never declared. That is why a
+# filter-owned ``ordering`` is popped and routed through ``filter_data`` rather
+# than simply left in place — and why ``page`` / ``limit`` must keep being popped.
+
+_KWARGS_SEEN: list[dict[str, Any]] = []
+_FILTER_DATA_SEEN: list[dict[str, Any]] = []
+
+
+def list_widgets_greedy(user, **extras):
+    """List widgets owned by the acting user, recording every extra argument."""
+    _KWARGS_SEEN.append(dict(extras))
+    return Widget.objects.filter(owner=user)
+
+
+class _RecordingFilterSet(django_filters.FilterSet):
+    """Records the filter data it was handed, so the split can be asserted on."""
+
+    min_price = django_filters.NumberFilter(field_name="price", lookup_expr="gte")
+    ordering = django_filters.OrderingFilter(fields=(("price", "cost"),))
+
+    class Meta:
+        model = Widget
+        fields = []
+
+    def __init__(self, data=None, queryset=None, *, request=None, prefix=None):
+        _FILTER_DATA_SEEN.append(dict(data or {}))
+        super().__init__(data=data, queryset=queryset, request=request, prefix=prefix)
+
+
+@pytest.mark.django_db
+def test_the_transport_args_never_reach_a_kwargs_selector():
+    """``page`` / ``limit`` / ``ordering`` are the transport's, whoever consumes them.
+
+    A selector declaring ``**kwargs`` receives the whole dispatch pool, so this is
+    the test that catches a transport arg being left in ``params`` — including the
+    filter-owned ``ordering``, which reaches the FilterSet through ``filter_data``
+    precisely so that it does *not* reach the callable.
+    """
+    _KWARGS_SEEN.clear()
+    _FILTER_DATA_SEEN.clear()
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets_greedy,
+        output_serializer=WidgetSerializer,
+        filter_set=_RecordingFilterSet,
+        permission_classes=[AllowAny],
+    )
+    result = _dispatch(spec, user, {"page": 1, "limit": 2, "ordering": "cost", "min_price": "1"})
+    assert [w["name"] for w in result] == ["b", "c"]
+
+    seen = _KWARGS_SEEN[-1]
+    assert "page" not in seen
+    assert "limit" not in seen
+    assert "ordering" not in seen
+    # The selector's own filter arg is untouched — only the transport's are taken.
+    assert seen["min_price"] == "1"
+
+    # The FilterSet gets the filter args plus ordering, and *not* the pagination
+    # args: ``filter_data`` is built after ``page`` / ``limit`` have been popped,
+    # so widening the ordering route did not widen what the FilterSet sees.
+    assert _FILTER_DATA_SEEN[-1] == {"min_price": "1", "ordering": "cost"}
+
+
 # A list selector with no ``filter_set`` whose *callable* declares ``ordering``:
 # the schema advertises it for the same reason, so the same invariant applies —
 # but the argument is the selector's own, and has to stay in ``params`` where the
