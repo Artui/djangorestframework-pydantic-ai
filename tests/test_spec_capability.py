@@ -209,13 +209,17 @@ async def test_a_bound_forwards_all_the_way_to_what_the_model_is_told():
 
     ``max_page_size`` and ``ordering_fields`` both change the advertised schema,
     so this asserts the value survived the hop rather than that an attribute was
-    assigned somewhere.
+    assigned somewhere. ``ordering_fields`` is deprecated in favour of a
+    ``filter_set``'s own ``OrderingFilter``, and its warning has to survive the
+    hop too — a deprecation a consumer only hears when they attach the toolset
+    directly is one the consumers composing through a capability never hear.
     """
-    cap = SpecCapability(
-        {"list": list_spec()},
-        max_page_size=50,
-        ordering_fields=["name", "created_at"],
-    )
+    with pytest.deprecated_call():
+        cap = SpecCapability(
+            {"list": list_spec()},
+            max_page_size=50,
+            ordering_fields=["name", "created_at"],
+        )
     tools = await cap.get_toolset().get_tools(None)
     schema = tools["list"].tool_def.parameters_json_schema["properties"]
 
