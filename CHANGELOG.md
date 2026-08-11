@@ -8,6 +8,62 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.16.0] — 2026-08-11
 
+### ⚠ Upgrade notes
+
+**A `FilterSet`'s `OrderingFilter` now owns ordering, and `ordering_fields` /
+`tool_ordering_fields` are deprecated.** Declaring both on one tool is refused
+at construction; declaring the old knob alone still works and warns.
+
+Migrate by moving the field list onto the spec's `FilterSet`:
+
+```python
+class InvoiceFilterSet(django_filters.FilterSet):
+    ordering = django_filters.OrderingFilter(
+        fields=(("created_at", "created"), ("amount_cents", "amount")),
+    )
+```
+
+...and dropping `ordering_fields=[...]` from the toolset. The filter's public
+choices become the enum the model sees, so pick names worth exposing. A spec
+with no `filter_set` has no other route yet and can keep the old knob.
+
+**Requires `djangorestframework-services>=0.36`**, where the `filter_data` seam
+reaches the read path.
+
+### Fixed
+
+- **An advertised `ordering` argument is no longer refused.**
+  `django_filters.OrderingFilter` subclasses `ChoiceFilter`, so a spec carrying
+  one has always been reflected into the tool schema as an enum — while
+  `_pop_pagination` stripped `ordering` from the arguments of *every* list
+  selector and `_coerce_ordering` then raised `ModelRetry("This tool does not
+  accept an ordering argument; omit it.")` because no `ordering_fields` were
+  declared. The schema promised the argument and the dispatch denied it, in the
+  same call. The value now reaches the `FilterSet` as `filter_data`.
+
+- **`ordering_fields` can no longer silently overwrite the filter's enum.** The
+  two carry different vocabularies under one key — raw ORM paths handed to
+  `order_by` versus the FilterSet's public choices mapped through `param_map` —
+  so declaring the toolset knob on a spec whose filter already ordered could
+  *break* an ordering that worked. That combination is refused rather than
+  resolved in favour of one side.
+
+- **A filter-owned tool is no longer denied its ordering guidance.** The
+  conventions block gated the ordering sentence on `tool_ordering_fields` having
+  values, so a tool whose ordering came from its `FilterSet` told the model
+  nothing about how to sort.
+
+- **Corrected a source comment that asserted a divergence which does not
+  exist.** It claimed this toolset "reserves `order` where the MCP transport
+  reserves `ordering`". Both reserve `{page, limit, ordering}`. The comment was
+  the only evidence for the claim, and it was believed.
+
+### Changed
+
+- The compatibility table's `drf-services` row read `0.27` while the pin was
+  `0.35`. A stale floor in the file that tells a contributor what the package
+  supports is the kind of drift that gets taken at face value.
+
 ## [0.15.0] — 2026-08-10
 
 ### Added
