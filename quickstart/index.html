@@ -406,6 +406,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ordering
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Ordering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ordering_fields-deprecated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ordering_fields (deprecated)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#read-shaping-query-params" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -637,6 +665,34 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ordering
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Ordering">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ordering_fields-deprecated" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ordering_fields (deprecated)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#read-shaping-query-params" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -768,8 +824,8 @@ define for <code>djangorestframework-services</code>. A read selector and a writ
 <p>Each key is the tool name. The description comes from the selector/service
 docstring, the parameter schema from the spec's input serializer, and the
 <code>readOnlyHint</code> annotation from the spec kind (selectors read, services mutate).
-List selectors additionally accept <code>page</code> and <code>limit</code> tool args, plus
-<code>ordering</code> where you declare <code>ordering_fields=[...]</code>.</p>
+List selectors additionally accept <code>page</code> and <code>limit</code> tool args, plus <code>ordering</code>
+where the selector's <a href="#ordering"><code>filter_set</code> declares one</a>.</p>
 <h2 id="3-run-an-agent">3. Run an agent<a class="headerlink" href="#3-run-an-agent" title="Permanent link">&para;</a></h2>
 <p>The acting user flows through <code>RunContext.deps</code>. The default
 <a href="../reference/#rest_framework_pydantic_ai.AgentDeps"><code>AgentDeps</code></a> carries it:</p>
@@ -784,8 +840,9 @@ List selectors additionally accept <code>page</code> and <code>limit</code> tool
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>For that request the model can call <code>list_orders</code> with
-<code>{"limit": 5, "ordering": "-created_at"}</code> and the toolset enforces permissions,
-runs the selector as <code>request.user</code>, slices the result, and renders it through
+<code>{"limit": 5, "ordering": "-created"}</code> and the toolset enforces permissions,
+runs the selector as <code>request.user</code>, hands <code>ordering</code> to the selector's
+<a href="#ordering"><code>filter_set</code></a>, slices the result, and renders it through
 <code>OrderSerializer</code>.</p>
 <h2 id="custom-identity">Custom identity<a class="headerlink" href="#custom-identity" title="Permanent link">&para;</a></h2>
 <p>If your project carries identity on a richer deps object, hand the toolset a
@@ -802,9 +859,53 @@ selector) are unaffected. Pass <code>unknown_arguments=</code> to change this:</
 </span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># silently drop unexpected keys instead of rejecting them</span>
 </span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">unknown_arguments</span><span class="o">=</span><span class="n">UnknownArguments</span><span class="o">.</span><span class="n">IGNORE</span><span class="p">)</span>
 </span></code></pre></div>
+<h2 id="ordering">Ordering<a class="headerlink" href="#ordering" title="Permanent link">&para;</a></h2>
+<p><strong>The <code>filter_set</code> owns ordering.</strong> Declare a django-filter <code>OrderingFilter</code>
+named <code>ordering</code> on the selector's FilterSet and you are done:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">django_filters</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">OrderFilterSet</span><span class="p">(</span><span class="n">django_filters</span><span class="o">.</span><span class="n">FilterSet</span><span class="p">):</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">ordering</span> <span class="o">=</span> <span class="n">django_filters</span><span class="o">.</span><span class="n">OrderingFilter</span><span class="p">(</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">fields</span><span class="o">=</span><span class="p">((</span><span class="s2">&quot;created_at&quot;</span><span class="p">,</span> <span class="s2">&quot;created&quot;</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;total_cents&quot;</span><span class="p">,</span> <span class="s2">&quot;total&quot;</span><span class="p">)),</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="p">)</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>        <span class="n">model</span> <span class="o">=</span> <span class="n">Order</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;status&quot;</span><span class="p">]</span>
+</span></code></pre></div>
+<p>drf-services reflects that filter into the tool's input schema as an enum of its
+public choices (<code>created</code>, <code>-created</code>, <code>total</code>, <code>-total</code>) — <code>OrderingFilter</code>
+subclasses <code>ChoiceFilter</code>, which the schema generator maps to an enum — so the
+model is told exactly what it may sort by. At call time the value is handed to
+the FilterSet as filter data: it validates the choice, applies its own
+<code>param_map</code>, and a value outside the enum comes back as a <code>ModelRetry</code>. The
+toolset contributes nothing and takes nothing away.</p>
+<p>One vocabulary, one declaration site, and the same ordering your HTTP views
+already serve.</p>
+<h3 id="ordering_fields-deprecated"><code>ordering_fields</code> (deprecated)<a class="headerlink" href="#ordering_fields-deprecated" title="Permanent link">&para;</a></h3>
+<div class="admonition warning">
+<p class="admonition-title">Deprecated</p>
+<p><code>ordering_fields</code> / <code>tool_ordering_fields</code> emit a <code>DeprecationWarning</code>.
+Declare an <code>OrderingFilter</code> on the selector's <code>filter_set</code> instead.</p>
+</div>
+<p>They remain for the one case with no other route — a list selector with <strong>no</strong>
+<code>filter_set</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">ordering_fields</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;created_at&quot;</span><span class="p">,</span> <span class="s2">&quot;total_cents&quot;</span><span class="p">])</span>
+</span></code></pre></div>
+<p>That advertises an <code>ordering</code> enum of each name and its <code>-</code> prefixed form, and
+the toolset applies the chosen value with <code>queryset.order_by</code>. The values are
+therefore raw <strong>ORM paths</strong>, not public names — which is precisely why the two
+cannot be mixed: a FilterSet's <code>OrderingFilter</code> speaks public names it maps
+itself, several of which resolve to annotation aliases. Declaring
+<code>ordering_fields</code> for a tool whose <code>filter_set</code> already advertises <code>ordering</code>
+raises at construction rather than letting one vocabulary quietly overwrite the
+other.</p>
+<p>To migrate, move the names onto an <code>OrderingFilter</code> as <code>(orm_path, public_name)</code>
+pairs and drop the <code>ordering_fields</code> argument.</p>
 <h2 id="read-shaping-query-params">Read-shaping query params<a class="headerlink" href="#read-shaping-query-params" title="Permanent link">&para;</a></h2>
-<p><code>page</code> / <code>limit</code> / <code>ordering</code> are built in for list selectors, but you can register
-your own request-level params with
+<p><code>page</code> / <code>limit</code> are built in for list selectors and <code>ordering</code> comes from the
+<code>filter_set</code>, but you can register your own request-level params with
 <a href="../reference/#rest_framework_pydantic_ai.QueryParam"><code>QueryParam</code></a>. Each is
 advertised as a tool arg, then — instead of reaching the spec as an input — seeded
 into <code>request.query_params</code> over the off-HTTP path. That is for whatever reads
@@ -815,22 +916,25 @@ serializer that branches on the query string.</p>
 <p>A <code>SelectorSpec.filter_set</code>'s fields are already generated into the tool's
 input schema (the <code>[filter]</code> extra) and flow through as ordinary <code>params</code> —
 which <code>dispatch_spec</code> hands the FilterSet as its <code>filter_data</code>. So the model
-can filter a list selector with no <code>QueryParam</code> declaration at all;
-<code>QueryParam</code> is only for params a serializer reads off <code>request.query_params</code>.</p>
+can filter a list selector with no <code>QueryParam</code> declaration at all, and the
+same goes for <a href="#ordering">ordering</a>; <code>QueryParam</code> is only for params a
+serializer reads off <code>request.query_params</code>.</p>
 </div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">QueryParam</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">specs</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="c1"># applies to every tool</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">query_params</span><span class="o">=</span><span class="p">[</span><span class="n">QueryParam</span><span class="p">(</span><span class="s2">&quot;query&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;django-restql field selection&quot;</span><span class="p">)],</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="c1"># or scope params to one tool</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="n">tool_query_params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;list_orders&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">QueryParam</span><span class="p">(</span><span class="s2">&quot;status&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;open&quot;</span><span class="p">)]},</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">QueryParam</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">specs</span><span class="p">,</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>    <span class="c1"># applies to every tool</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    <span class="n">query_params</span><span class="o">=</span><span class="p">[</span><span class="n">QueryParam</span><span class="p">(</span><span class="s2">&quot;query&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;django-restql field selection&quot;</span><span class="p">)],</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>    <span class="c1"># or scope params to one tool</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    <span class="n">tool_query_params</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;list_orders&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">QueryParam</span><span class="p">(</span><span class="s2">&quot;status&quot;</span><span class="p">,</span> <span class="n">default</span><span class="o">=</span><span class="s2">&quot;open&quot;</span><span class="p">)]},</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>A registered param is popped before dispatch, so <code>unknown_arguments</code> never flags
 it; a declared <code>default</code> is seeded when the model omits the arg. (Names can't be
-<code>page</code> / <code>limit</code> / <code>ordering</code> — those are reserved for list-selector pagination.)
+<code>page</code> / <code>limit</code> / <code>ordering</code> — those are reserved transport keys. <code>ordering</code> is
+reserved even when a <code>filter_set</code> owns it: a registered channel pops the value at
+call time, so the FilterSet would never see it.)
 Requires <code>djangorestframework-services&gt;=0.23</code>, which added the
 <code>build_offline_context(query_params=…)</code> seam.</p>
 <h2 id="url-derived-values-route-captures">URL-derived values (route captures)<a class="headerlink" href="#url-derived-values-route-captures" title="Permanent link">&para;</a></h2>
@@ -843,13 +947,13 @@ as a tool arg, then popped and seeded into <code>build_offline_context(kwargs=�
 from where drf-services spreads it into the selector / target pools —
 authoritative over the spec <code>params</code>, below a <code>spec.kwargs</code> provider (mirroring
 HTTP precedence exactly).</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">UrlKwarg</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">specs</span><span class="p">,</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">url_kwargs</span><span class="o">=</span><span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;owning project&quot;</span><span class="p">)],</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="c1"># or scope to one tool: tool_url_kwargs={&quot;list_widgets&quot;: [UrlKwarg(&quot;project_pk&quot;)]}</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">UrlKwarg</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">specs</span><span class="p">,</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">url_kwargs</span><span class="o">=</span><span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">description</span><span class="o">=</span><span class="s2">&quot;owning project&quot;</span><span class="p">)],</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="c1"># or scope to one tool: tool_url_kwargs={&quot;list_widgets&quot;: [UrlKwarg(&quot;project_pk&quot;)]}</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>Reach for <code>UrlKwarg</code> when the value is <strong>request state</strong> rather than an ordinary
 argument to the callable — the axis is where the value has to land, not whether
@@ -866,7 +970,7 @@ pool seeds (<code>request</code> / <code>user</code> / <code>data</code> / <code
 <code>collection</code> — a caller must not be able to route a value onto those), nor be
 registered as both a <code>QueryParam</code> and a <code>UrlKwarg</code> on the same tool.</p>
 <p>A capture the spec genuinely cannot run without takes <code>required=True</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </span></code></pre></div>
 <p>The name joins the tool's <code>required</code> list, so the model is told up front. Because
 a schema hint is only a hint — models omit required arguments routinely — a call
@@ -928,12 +1032,12 @@ naming: it is silent.</p>
 — the selector still receives it in <code>**extras</code>, the schema keeps one property and
 one <code>required</code> entry (an explicit <code>UrlKwarg</code> wins the merge over a reflected key
 of the same name), and the provider gets its value:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># project_pk reflected from WidgetExtras *and* registered here:</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="c1">#   selector&#39;s extras -&gt; 7      view.kwargs -&gt; {&quot;project_pk&quot;: 7}</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">specs</span><span class="p">,</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">tool_url_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;list_widgets&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)]},</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="c1"># project_pk reflected from WidgetExtras *and* registered here:</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="c1">#   selector&#39;s extras -&gt; 7      view.kwargs -&gt; {&quot;project_pk&quot;: 7}</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">specs</span><span class="p">,</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">tool_url_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;list_widgets&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="nb">type</span><span class="o">=</span><span class="s2">&quot;integer&quot;</span><span class="p">,</span> <span class="n">required</span><span class="o">=</span><span class="kc">True</span><span class="p">)]},</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>That split mirrors HTTP, where a route capture arrives in the URL and never in
 the body — which is what makes it unspoofable. Off the HTTP path, <code>params</code> are
@@ -950,7 +1054,7 @@ working. Requires <code>djangorestframework-services&gt;=0.28.1</code>.</p>
 absolute URLs from — and DRF's <code>FileField</code>, <code>HyperlinkedIdentityField</code>, and
 <code>HyperlinkedRelatedField</code> call <code>request.build_absolute_uri()</code> for every value.
 Name your origin and they resolve:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">host</span><span class="o">=</span><span class="s2">&quot;https://app.example.com&quot;</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">host</span><span class="o">=</span><span class="s2">&quot;https://app.example.com&quot;</span><span class="p">)</span>
 </span></code></pre></div>
 <p><code>host</code> accepts <code>"example.com"</code>, <code>"example.com:8000"</code>, or a full origin whose
 scheme decides whether links are https. It is toolset-wide, with no per-tool
@@ -991,7 +1095,11 @@ Requires <code>djangorestframework-services&gt;=0.29.1</code>.</p>
 <td><code>ModelRetry</code> — naming the values that are accepted</td>
 </tr>
 <tr>
-<td>A declared <code>ordering_fields</code> name that isn't a real column</td>
+<td>An <code>ordering</code> outside a <code>filter_set</code>'s <code>OrderingFilter</code> choices</td>
+<td><code>ModelRetry</code> — the FilterSet rejects it, which arrives as the <code>ValidationError</code> row above</td>
+</tr>
+<tr>
+<td>An ordering name that isn't a real column (a declared <code>ordering_fields</code> entry, or a FilterSet <code>param_map</code> target)</td>
 <td><code>ModelRetry</code> — an author's error, not the model's; it can't be checked at construction without a queryset</td>
 </tr>
 <tr>
@@ -1004,7 +1112,7 @@ Requires <code>djangorestframework-services&gt;=0.29.1</code>.</p>
 <code>max_retries</code> failed attempts (default <code>1</code>, pydantic-ai's function-tool
 default) the run aborts with <code>UnexpectedModelBehavior</code>. Raise it for models
 that need more attempts to converge:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-12-1"><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 </span></code></pre></div>
 
 

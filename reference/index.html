@@ -976,7 +976,7 @@ agent = Agent(model, deps_type=AgentDeps, toolsets=[toolset])
 </code></pre></div>
 <p>Each key becomes one tool: the description is the spec's selector/service
 docstring, the parameter schema comes from <code>spec_to_json_schema</code> (with a
-list selector's <code>page</code> / <code>limit</code> / <code>ordering</code> args merged in), and the
+list selector's <code>page</code> / <code>limit</code> args merged in), and the
 <code>readOnlyHint</code> annotation is derived from the spec kind (selectors read,
 services mutate).</p>
 <p><code>specs</code> also accepts a
@@ -1015,7 +1015,10 @@ specific library.</p>
 <p>A <code>SelectorSpec.filter_set</code> does <strong>not</strong> need this: its fields are already
 generated into the tool's input schema by <code>spec_to_json_schema</code> and flow
 through as ordinary <code>params</code> (which <code>dispatch_spec</code> hands the FilterSet as
-<code>filter_data</code>), so the model can filter with no extra declaration.</p>
+<code>filter_data</code>), so the model can filter with no extra declaration. That
+includes <strong>ordering</strong> — a FilterSet declaring an <code>OrderingFilter</code> named
+<code>ordering</code> advertises the argument itself, and the toolset keeps its hands
+off it.</p>
 <p><code>url_kwargs</code> / <code>tool_url_kwargs</code> register
 :class:<code>~rest_framework_pydantic_ai.UrlKwarg</code> args — URL route captures
 (<code>parent_pk</code>) seeded into <code>build_offline_context(kwargs=…)</code> and spread by
@@ -1059,10 +1062,24 @@ migrating.</p>
 <p><code>descriptions</code> overrides <code>spec.description</code> per tool — the docstring an
 API developer reads is rarely the sentence a model needs — and a tool left
 with no description anywhere gets an :class:<code>UndescribedToolWarning</code>.</p>
-<p><code>ordering_fields</code> / <code>tool_ordering_fields</code> declare what a list tool may
-sort by, advertised as an enum on an <code>ordering</code> argument and validated
-against it. Nothing declared means no <code>ordering</code> argument at all; per-tool
-<em>replaces</em> the toolset-wide set rather than merging with it.</p>
+<p>⭐ <strong>Ordering belongs to the <code>filter_set</code>, and that is the canonical way to
+declare it.</strong> A selector whose FilterSet carries an <code>OrderingFilter</code> named
+<code>ordering</code> already advertises the argument — drf-services reflects the
+filter's choices into the tool schema as an enum — so the toolset contributes
+nothing: the value is handed to the FilterSet as filter data, which validates
+it and applies the sort through its own <code>param_map</code>. Nothing is declared
+here for such a tool.</p>
+<p><code>ordering_fields</code> / <code>tool_ordering_fields</code> are the <strong>deprecated</strong> second
+vocabulary, kept for a list selector with no <code>filter_set</code> and therefore no
+other route. They declare what such a tool may sort by, advertised as an enum
+on an <code>ordering</code> argument and validated against it; their values are raw
+ORM paths, because the toolset applies them with <code>queryset.order_by</code>.
+Nothing declared means no <code>ordering</code> argument at all; per-tool <em>replaces</em>
+the toolset-wide set rather than merging with it. Declaring them for a tool
+whose spec already advertises <code>ordering</code> raises at construction: the two
+are different vocabularies for one argument name — public filter choices
+versus ORM paths — and quietly preferring either is how a schema and its
+dispatch come to disagree.</p>
 <p><code>max_result_bytes</code> / <code>tool_max_result_bytes</code> cap a rendered result,
 measured on the encoded payload because the thing being protected is the
 model's context window. Over the ceiling the call <strong>fails</strong> with a
