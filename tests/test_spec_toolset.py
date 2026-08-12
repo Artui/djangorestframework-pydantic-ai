@@ -422,7 +422,7 @@ def needs_something_unnamed(**_):
 
 
 def test_a_request_for_input_is_a_retry_not_a_dead_end():
-    """⭐ A model *is* the thing that can answer, and ``ModelRetry`` is already
+    """A model *is* the thing that can answer, and ``ModelRetry`` is already
     the "here is what to fix, call me again" channel — so no elicitation surface
     or second result type is needed on this transport."""
     with pytest.raises(ModelRetry) as caught:
@@ -447,7 +447,7 @@ def test_a_bare_message_still_retries() -> None:
 
 
 def test_it_is_not_swallowed_by_the_generic_service_error_arm() -> None:
-    """⚠ The ordering trap drf-services documents: ``AdditionalInputRequired``
+    """The ordering trap drf-services documents: ``AdditionalInputRequired``
     subclasses ``ServiceError``, so a handler for the parent catches it first
     unless the specific arm precedes it — which would report a request for input
     as a terminal failure."""
@@ -640,7 +640,7 @@ def test_object_permission_denies_cross_user_mutation():
     assert widget.name == "a"
 
 
-# --- QueryParam registration (QP-2) ------------------------------------------
+# --- QueryParam registration -------------------------------------------------
 
 
 class _FieldsEchoSerializer(serializers.Serializer):
@@ -1455,7 +1455,7 @@ async def test_per_tool_ordering_fields_replace_the_toolset_wide_set():
 
 @pytest.mark.django_db
 def test_a_value_outside_the_enum_is_a_retry_naming_the_options():
-    """⚠ Deliberately unlike the MCP transport, which silently ignores it.
+    """Deliberately unlike the MCP transport, which silently ignores it.
 
     Silently returning unsorted rows to something that asked for newest-first is
     the worst outcome available: the model cannot tell, and neither can the user
@@ -1482,7 +1482,7 @@ async def test_the_ordering_instruction_appears_only_when_some_tool_declares_fie
 
 # ----- ordering: the filter_set owns it -----
 #
-# ⚠ The defect these pin: a FilterSet carrying an ``OrderingFilter`` advertises
+# The defect these pin: a FilterSet carrying an ``OrderingFilter`` advertises
 # ``ordering`` to the model all on its own — ``OrderingFilter`` subclasses
 # ``ChoiceFilter``, which drf-services maps to an enum — with nothing declared on
 # the toolset. The toolset used to strip that argument out of every list call and
@@ -1524,7 +1524,7 @@ def _three_widgets(user):
 
 @pytest.mark.django_db
 def test_filter_owned_ordering_actually_orders_the_rows():
-    """⭐ The test that would have caught the original defect.
+    """The test that would have caught the original defect.
 
     No ``ordering_fields`` anywhere: the FilterSet advertises ``ordering``, so the
     value has to reach it and the rows have to come back sorted. Asserting the
@@ -1547,7 +1547,7 @@ def test_filter_owned_ordering_descends():
 
 @pytest.mark.django_db
 def test_filter_owned_ordering_composes_with_the_other_filters():
-    """⚠ ``filter_data`` *replaces* ``params`` as the filter source rather than
+    """``filter_data`` *replaces* ``params`` as the filter source rather than
     adding to it, so routing ``ordering`` through it has to carry the rest of the
     filter args along — otherwise ordering a filtered list silently unfilters it.
     """
@@ -1596,7 +1596,7 @@ def test_spec_owns_ordering_reads_the_reflected_schema():
 
 
 def test_declaring_ordering_fields_beside_a_filter_that_owns_ordering_is_refused():
-    """⛔ Not resolved by preferring one — that *is* the defect, one level up."""
+    """Not resolved by preferring one — that *is* the defect, one level up."""
     with pytest.raises(ValueError, match="declare ordering twice"):
         SpecToolset({"list_widgets": _ordered_list_spec()}, ordering_fields=["price"])
 
@@ -1644,7 +1644,7 @@ def test_the_schema_builder_never_overwrites_the_filters_enum():
 
 
 async def test_the_ordering_instruction_is_emitted_for_a_filter_owned_tool():
-    """⚠ Gated on ``tool_ordering_fields`` alone, this tool — the one whose
+    """Gated on ``tool_ordering_fields`` alone, this tool — the one whose
     ``ordering`` is enum-valued and needs exactly one value picked from it — got
     no ordering guidance at all.
     """
@@ -1652,7 +1652,7 @@ async def test_the_ordering_instruction_is_emitted_for_a_filter_owned_tool():
     assert "accept `ordering`" in instructions
 
 
-# ⚠ The guard on the strip this change narrows. drf-services spreads the *entire*
+# The guard on the strip this change narrows. drf-services spreads the *entire*
 # pool into a selector declaring ``**kwargs`` ("if fn declares **kwargs, the
 # entire pool is passed"), so any transport arg left in ``params`` lands in the
 # callable's signature as an argument it never declared. That is why a
@@ -1840,7 +1840,7 @@ async def test_a_call_is_timed_at_debug(caplog):
 
 @pytest.mark.django_db(transaction=True)
 async def test_a_denial_is_logged_at_warning_and_still_raises(caplog):
-    """⚠ The one failure with no other trace.
+    """The one failure with no other trace.
 
     A retry reaches the model and an ``{"error": …}`` reaches the answer, but a
     denial aborts the run and is absorbed by whatever is driving it — so over
@@ -1866,7 +1866,7 @@ async def test_a_denial_is_logged_at_warning_and_still_raises(caplog):
 
 @pytest.mark.django_db(transaction=True)
 async def test_an_over_budget_result_fails_rather_than_truncating():
-    """⛔ A partial payload looks complete.
+    """A partial payload looks complete.
 
     A list cut at the byte ceiling is indistinguishable from a list that had
     that many rows, so a model would answer confidently from data it does not
@@ -1993,7 +1993,7 @@ def test_an_unmapped_exception_still_aborts_the_run():
 
 
 def test_exception_map_turns_an_unknown_exception_into_a_result():
-    """⭐ The motivating case: Django's ``ValidationError``, not DRF's.
+    """The motivating case: Django's ``ValidationError``, not DRF's.
 
     Raised by ``full_clean`` and any custom model validator, absent from the
     translated set, and so fatal to the run where the DRF twin would have been a
@@ -2129,7 +2129,7 @@ def test_get_http_request_can_vary_the_request_per_run():
 
 
 def test_no_request_arrives_unless_one_was_configured():
-    """⛔ The honest default — a request nothing declared is one nobody can audit."""
+    """The honest default — a request nothing declared is one nobody can audit."""
     assert _default_get_http_request(SimpleNamespace(deps=AgentDeps(user=object()))) is None
 
 
@@ -2148,7 +2148,7 @@ def test_build_context_is_overridable_and_sees_the_run():
             # The whole ask: per-run typed deps informing dispatch, with no
             # generic "set attributes on the request" knob in sight.
             # ``ctx.deps`` is the whole point: the tenant is per-run, so it
-            # cannot be baked into the toolset at construction. ⚠ Overriding
+            # cannot be baked into the toolset at construction. Overriding
             # ``build_context`` rather than the extractor — ``_get_http_request``
             # is an instance attribute assigned in ``__init__``, so a method of
             # that name would be shadowed by it. This is the documented seam.
@@ -2191,7 +2191,7 @@ def test_translate_exception_is_overridable_without_a_map():
 
 
 def test_specs_is_readable_without_a_run():
-    """⚠ ``get_tools`` is async and needs a ``RunContext``, so it cannot answer here.
+    """``get_tools`` is async and needs a ``RunContext``, so it cannot answer here.
 
     A caller composing this toolset into a name-dedup pass or a tool catalog does
     so at configuration time, with no run in sight. Without a public answer they

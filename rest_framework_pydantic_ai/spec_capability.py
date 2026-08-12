@@ -25,14 +25,11 @@ class SpecCapability(AbstractCapability[Any]):
     """A Pydantic-AI capability exposing drf-services specs as tools.
 
     :class:`~rest_framework_pydantic_ai.SpecToolset` is a first-class toolset you
-    can attach directly (``Agent(toolsets=[SpecToolset(...)])``); it already
-    exposes the tools *and* teaches the model its conventions through
-    ``get_instructions`` (that list tools accept ``page`` / ``limit`` /
-    ``ordering``, and how errors come back). ``SpecCapability`` wraps that
-    toolset to add the capability-only feature: ``defer_loading``. It does
-    **not** re-emit the conventions — Pydantic-AI collects them from the owned
-    toolset's ``get_instructions`` automatically, so wrapping vs. attaching
-    directly yields the same model-facing instructions, exactly once.
+    can attach directly (``Agent(toolsets=[SpecToolset(...)])``), and it already
+    exposes the tools *and* teaches the model its conventions. This wraps one to
+    add the capability-only feature, ``defer_loading``. It does **not** re-emit
+    those conventions — Pydantic-AI collects them from the owned toolset — so
+    wrapping and attaching directly yield the same instructions, exactly once.
 
     Construct it the same way as ``SpecToolset`` (it forwards the toolset knobs)::
 
@@ -48,33 +45,24 @@ class SpecCapability(AbstractCapability[Any]):
     or wrap an already-built toolset with :meth:`from_toolset` (the compose path).
     Either way the exposed tool set and instructions are the toolset's.
 
-    ``specs`` accepts a
-    :class:`~rest_framework_services.registry.spec_registry.SpecRegistry`
-    wherever it accepts a mapping (drf-services 0.27+), so a project declaring
-    its specs once can project several capabilities from filtered views::
+    **Everything else ``SpecToolset`` accepts, this accepts, and means there.**
+    That is a guarantee rather than a list, enforced name-by-name by the
+    forwarding tests: a knob added to the toolset and forgotten here is not a
+    missing feature but an *unreachable* one for every consumer composing through
+    a capability. See :class:`~rest_framework_pydantic_ai.SpecToolset` for what
+    each does; the safety-relevant ones are ``require_permissions``,
+    ``max_result_bytes``, ``max_page_size`` and ``dispatch_timeout``.
 
-        AgentConfig(capabilities=[
-            SpecCapability(registry.by_tag("read"), id="reads"),
-            SpecCapability(registry.by_tag("admin"), id="admin", defer_loading=True),
-        ])
-
-    Give each its own ``id`` — the id keys ``defer_loading``'s catalog entry, so
-    two capabilities sharing one would collide.
-
-    ``defer_loading`` is the one keyword that is the capability's own (it needs
-    the stable ``id``): it hides the whole spec toolset and its instructions
-    behind Pydantic-AI's native ``load_capability`` tool until the model loads
-    it — progressive disclosure for a large spec map.
-
-    ⚠ **Everything else ``SpecToolset`` accepts, this accepts, and means there.**
-    That is a guarantee rather than a list, and the forwarding tests in
-    ``tests/test_spec_capability.py`` enforce it name-by-name — a knob added to
-    the toolset and forgotten here is not a missing feature but an *unreachable*
-    one, for every consumer that composes through a capability instead of
-    attaching the toolset directly. See
-    :class:`~rest_framework_pydantic_ai.SpecToolset` for what each one does; the
-    safety-relevant ones are ``require_permissions``, ``max_result_bytes``,
-    ``max_page_size`` and ``dispatch_timeout``.
+    Args:
+        specs: As ``SpecToolset``, including a
+            :class:`~rest_framework_services.registry.spec_registry.SpecRegistry`
+            or a filtered view of one, so a project declaring its specs once can
+            project several capabilities from them.
+        defer_loading: Hide the whole spec toolset and its instructions behind
+            Pydantic-AI's native ``load_capability`` tool until the model loads
+            it — progressive disclosure for a large spec map.
+        id: As ``SpecToolset``. It keys ``defer_loading``'s catalog entry, so
+            give each capability projected from one registry its own.
     """
 
     def __init__(
@@ -151,12 +139,11 @@ class SpecCapability(AbstractCapability[Any]):
         return self
 
     def _configure(self, toolset: SpecToolset, *, defer_loading: bool) -> None:
-        # ``AbstractCapability`` is a ``@dataclass(init=False)``; set its fields as
-        # plain instance attributes — the blessed pattern (see django-ag-ui's
-        # ``AuditCapability``). ``id`` mirrors the toolset's so ``defer_loading``'s
-        # catalog entry and the toolset resolve under one identity. No
-        # ``get_instructions`` override: Pydantic-AI collects the owned toolset's
-        # instructions, so re-emitting here would duplicate them in the prompt.
+        # ``AbstractCapability`` is a ``@dataclass(init=False)``, so its fields are
+        # set as plain instance attributes. ``id`` mirrors the toolset's, so
+        # ``defer_loading``'s catalog entry and the toolset resolve under one
+        # identity. No ``get_instructions`` override: Pydantic-AI collects the
+        # owned toolset's, and re-emitting here would duplicate them.
         self.id = toolset.id
         self.description = None
         self.defer_loading = defer_loading

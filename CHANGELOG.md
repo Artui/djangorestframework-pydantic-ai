@@ -52,7 +52,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.16.0] — 2026-08-11
 
-### ⚠ Upgrade notes
+### Upgrade notes
 
 **A `FilterSet`'s `OrderingFilter` now owns ordering, and `ordering_fields` /
 `tool_ordering_fields` are deprecated.** Declaring both on one tool is refused
@@ -114,7 +114,7 @@ reaches the read path.
 
 - **`SpecToolset.specs`** — the resolved `name -> spec` mapping, read-only.
 
-  ⚠ **The synchronous answer to "what tools are these?"** `get_tools` is the
+  **The synchronous answer to "what tools are these?"** `get_tools` is the
   real enumeration, but it is `async` and takes a `RunContext`, so it cannot
   answer for a *composing* caller — one wiring a built toolset into a name-dedup
   pass or a tool catalog at configuration time, with no run in sight. Without
@@ -141,17 +141,17 @@ reaches the read path.
   - `translate_exception(exc, *, ctx)` — returns a handler, or `None` to fall
     through to the built-in arms.
 
-  ⛔ **Deliberately not added: a generic "set arbitrary attributes on the
+  **Deliberately not added: a generic "set arbitrary attributes on the
   synthetic request" parameter.** It was the obvious shortcut, and it makes
   ambient-state-on-the-request the default posture for everyone. An override
   keeps the honest path the easy one.
 
 - **`http_request=` / `get_http_request=`** — supply the `HttpRequest` the
   off-HTTP context is built from, statically or resolved per run from
-  `RunContext`, mirroring `get_user`. ⭐ `build_offline_context` has accepted
+  `RunContext`, mirroring `get_user`. `build_offline_context` has accepted
   `http_request` all along; this package simply never forwarded it.
 
-  ⛔ **Incidental request data, never an auth channel.** It exists so a
+  **Incidental request data, never an auth channel.** It exists so a
   serializer or scoping provider reading `request.META` finds something
   plausible. The acting identity is `user`, resolved from `ctx.deps`, and
   nothing downstream re-derives it — passing an authenticated request authorizes
@@ -163,13 +163,13 @@ reaches the read path.
   result, or onto a `ModelRetry`. Matched along the MRO, so a base-class
   registration catches subclasses and the most specific wins.
 
-  ⭐ **The motivating case is one type.** `django.core.exceptions.ValidationError`
+  **The motivating case is one type.** `django.core.exceptions.ValidationError`
   — Django's, not DRF's — is raised by `full_clean` and by any custom model
   validator, was not in the translated set, and so killed the run where the DRF
   twin became a `ModelRetry`. Broadening the built-in set would have fixed that
   one case; a map fixes the class of them.
 
-  ⚠ **The map is consulted before the built-in arms, deliberately** — those
+  **The map is consulted before the built-in arms, deliberately** — those
   encode this package's guess at what a model should see, and a project that
   knows better should win.
 
@@ -227,7 +227,7 @@ reaches the read path.
   since sensible sort keys for two collections have nothing to do with each
   other). A tool that declares none no longer advertises `ordering` at all.
 
-  ⚠ A value outside the enum is a `ModelRetry` naming the options — a
+  A value outside the enum is a `ModelRetry` naming the options — a
   **deliberate divergence** from drf-mcp, which ignores an unrecognised ordering
   silently. Returning unsorted rows to something that asked for newest-first is
   the worst outcome available: the model cannot tell, and neither can the user
@@ -243,7 +243,7 @@ reaches the read path.
     measured on the **encoded payload** — the thing being protected is the
     model's context window, and ten rows of a wide serializer are nothing like
     ten rows of a narrow one. Over the ceiling the call **fails** with a
-    model-readable `{"error": …}`. ⛔ It never truncates: a list cut at the
+    model-readable `{"error": …}`. It never truncates: a list cut at the
     ceiling is indistinguishable from a list that had that many rows, so a
     model would answer confidently from data it does not know is missing. A
     per-tool `None` opts that tool out; an absent key inherits the default.
@@ -252,7 +252,7 @@ reaches the read path.
     schema with no `maximum` invites a request for 100 000 rows, and a schema
     alone is a hint nothing obliges a model to honour. With it set, an omitted
     `limit` becomes the ceiling rather than "everything".
-  - `dispatch_timeout` (seconds) bounds one call. ⚠ It does not *stop* the
+  - `dispatch_timeout` (seconds) bounds one call. It does not *stop* the
     work — the dispatch runs in a `sync_to_async` thread and asyncio cannot
     interrupt a thread parked in a database driver's socket read, so the query
     runs to completion regardless. What it buys is a terminal answer instead of
@@ -293,7 +293,7 @@ reaches the read path.
   from a spec carrying them gets them for free; no adapter code was needed.
 
 - **Tested against Django 6.1**, and the lock moved to
-  `djangorestframework>=3.18`. ⚠ Not cosmetic: Django 6.1 removed
+  `djangorestframework>=3.18`. Not cosmetic: Django 6.1 removed
   `django.utils.cache.cc_delim_re`, which DRF 3.17.x imports at module level, so
   that pairing fails at `import rest_framework`. The declared floor stays
   `>=3.14` — the constraint that actually bit was the **lockfile**, which CI
@@ -311,7 +311,7 @@ reaches the read path.
 
 - **Requires `djangorestframework-services>=0.33`** (was `>=0.32`).
 
-  ⚠ **Take this one promptly.** 0.33.0 closes an authorization bypass: in 0.32
+  **Take this one promptly.** 0.33.0 closes an authorization bypass: in 0.32
   and earlier a spec's nested target resolution (`instance_selector_spec` /
   `collection_selector_spec`) built its kwarg pool without stripping the reserved
   dispatcher seeds, so a caller-supplied `user` key outranked the authenticated
@@ -332,14 +332,14 @@ reaches the read path.
 
 ### Changed
 
-- ⚠ **The `djangorestframework-services` floor moves to `>=0.32,<0.33`,** from
-  `>=0.29.1,<0.30`. ⛔ **This unblocks a live install conflict, not just a stale
+- **The `djangorestframework-services` floor moves to `>=0.32,<0.33`,** from
+  `>=0.29.1,<0.30`. **This unblocks a live install conflict, not just a stale
   pin:** drf-mcp-server 0.24.0 requires `>=0.32`, so the two packages were
   **mutually uninstallable** — any project depending on both had no solution.
   Confirmed with a resolver, not inferred from reading pins.
 
   Nothing in the band required adaptation. 0.30 adds the `progress` pool seed
-  (⚠ so a `UrlKwarg` or `QueryParam` named `progress` is now refused at
+  (so a `UrlKwarg` or `QueryParam` named `progress` is now refused at
   registration, upstream), 0.31 adds a consumer-owned spec `metadata` mapping
   this package never reads, and 0.32 adds `AdditionalInputRequired` — which this
   release does adopt, below.
@@ -361,7 +361,7 @@ reaches the read path.
           )
   ```
 
-  ⭐ **On this transport the mechanism already existed.** A model *is* the party
+  **On this transport the mechanism already existed.** A model *is* the party
   that can answer, and `ModelRetry` is already the "here is what to fix, call me
   again" channel — so nothing new was needed: no elicitation surface, no second
   result type, no dialog. The answer arrives as an ordinary argument on the next
@@ -375,7 +375,7 @@ reaches the read path.
   second differently-shaped description is how a model ends up inventing a
   nested object.
 
-  ⚠ **Ordering matters and is pinned by a test.** `AdditionalInputRequired`
+  **Ordering matters and is pinned by a test.** `AdditionalInputRequired`
   subclasses `ServiceError`, so the generic business-error arm would swallow it
   and report a request for input as a failure — the arm has to come first.
 
@@ -453,7 +453,7 @@ reaches the read path.
   `UrlKwarg("user")` was legal here and rejected there, and `UrlKwarg("order")`
   the reverse. `QueryParam` had no second copy yet — lifting it now prevents the
   fork rather than repairing one. Both import paths are preserved permanently.
-- **⚠ Bad channel declarations now raise `ImproperlyConfigured`, not
+- **Bad channel declarations now raise `ImproperlyConfigured`, not
   `ValueError`.** Reserved-name checking moved to drf-services'
   `validate_channel_names`, so one exception type covers every bad declaration
   instead of `ValueError` for pagination names and something else for pool seeds.
@@ -676,7 +676,7 @@ reaches the read path.
   flow through as ordinary `params`.) A registered param is popped before dispatch (so
   `unknown_arguments` never flags it); a declared `default` is seeded when the
   model omits the arg; reserved names (`page`/`limit`/`order`) and unknown
-  per-tool keys are rejected at construction. (QP-2.)
+  per-tool keys are rejected at construction.
 
 ### Changed
 
