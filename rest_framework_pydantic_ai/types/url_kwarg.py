@@ -1,15 +1,13 @@
-"""``UrlKwarg`` — re-exported from drf-services, which now owns the type.
+"""``UrlKwarg`` — re-exported from drf-services, which owns the type.
 
-The declaration is identical whichever transport carries it, and this package's
-copy had drifted from ``djangorestframework-mcp-server``'s: the two validated the
-same declaration against different reserved-name sets, so ``UrlKwarg("user")``
-was legal here and rejected there, and ``UrlKwarg("order")`` the reverse.
-``djangorestframework-services`` 0.28 owns the single definition, which also
-carries the new ``required`` flag.
+The declaration is identical whichever transport carries it, and a per-package
+copy drifts: two copies once validated the same declaration against different
+reserved-name sets, so ``UrlKwarg("user")`` was legal for one and rejected by
+the other.
 
 The import path here is preserved permanently — ``from rest_framework_pydantic_ai
-import UrlKwarg`` keeps working, so consumers need only a version bump. New code
-may import from either location; they are the same class.
+import UrlKwarg`` keeps working. New code may import from either location; they
+are the same class.
 """
 
 from __future__ import annotations
