@@ -14,7 +14,7 @@ class AgentDeps:
     """Dependencies a Pydantic-AI agent passes to a
     [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset].
 
-    Pass an instance as ``deps`` when running the agent::
+    Pass an instance as ``deps`` when running the agent:
 
         agent = Agent(model, deps_type=AgentDeps, toolsets=[toolset])
         await agent.run("create an order for …", deps=AgentDeps(user=request.user))

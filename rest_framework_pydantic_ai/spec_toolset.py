@@ -144,7 +144,7 @@ class _PageArgs:
 class SpecToolset(AbstractToolset[Any]):
     """Exposes drf-services specs as a Pydantic-AI toolset.
 
-    Build it from a ``name -> spec`` mapping and hand it to an ``Agent``::
+    Build it from a ``name -> spec`` mapping and hand it to an ``Agent``:
 
         toolset = SpecToolset({
             "list_orders": orders_selector_spec,   # SelectorSpec -> read-only tool

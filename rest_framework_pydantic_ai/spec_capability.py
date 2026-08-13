@@ -31,7 +31,7 @@ class SpecCapability(AbstractCapability[Any]):
     those conventions — Pydantic-AI collects them from the owned toolset — so
     wrapping and attaching directly yield the same instructions, exactly once.
 
-    Construct it the same way as ``SpecToolset`` (it forwards the toolset knobs)::
+    Construct it the same way as ``SpecToolset`` (it forwards the toolset knobs):
 
         agent = Agent(
             model,
