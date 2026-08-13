@@ -6,7 +6,7 @@ plus its off-HTTP helpers (``build_offline_context`` / ``enforce_permissions`` /
 ``spec_to_json_schema`` / ``render_spec_output``). No MCP server and no AG-UI
 bridge is in the path: a plain ``pydantic_ai.Agent`` calls the specs in-process.
 
-One call is :func:`_call_spec`, which mirrors a DRF view in order: pop the args
+One call is ``_call_spec``, which mirrors a DRF view in order: pop the args
 the transport owns (pagination, registered query params and URL kwargs), build
 the off-HTTP context, enforce ``spec.permission_classes`` — ``dispatch_spec``
 deliberately does not, so a naive adapter would skip authorization — then
@@ -74,7 +74,7 @@ ExceptionHandler = Callable[[BaseException], Any]
 """Turns one exception into a tool result.
 
 Return the value the tool should return — ``{"error": …}`` for something the
-model should report and stop on — or raise :class:`pydantic_ai.ModelRetry` to
+model should report and stop on — or raise ``ModelRetry`` to
 hand it back for another attempt. Raising anything else aborts the run, which is
 the right answer for a genuine bug.
 """
@@ -112,7 +112,7 @@ _TOOL_ARGS_VALIDATOR = SchemaValidator(schema=core_schema.any_schema())
 
 # Tool args a list selector accepts on top of its filter fields. Ordering is not
 # here: it belongs to the spec whenever the spec's own schema advertises it (see
-# :func:`_spec_owns_ordering`).
+# ``_spec_owns_ordering``).
 _LIST_PARAM_SCHEMA: dict[str, Any] = {
     "page": {
         "type": "integer",
@@ -132,7 +132,7 @@ class _PageArgs:
     """A list selector's stripped pagination tool args.
 
     ``ordering`` is ``None`` whenever the spec advertises ordering itself;
-    :func:`_shape_list` reads it, so a filter-owned value never reaches
+    ``_shape_list`` reads it, so a filter-owned value never reaches
     ``queryset.order_by`` from here.
     """
 
@@ -168,14 +168,16 @@ class SpecToolset(AbstractToolset[Any]):
     its hands off the value, which the FilterSet validates and applies through
     its own ``param_map``.
 
-    For anything the keywords below do not cover, :meth:`build_context` and
-    :meth:`translate_exception` are overridable and both receive the live
-    ``RunContext``, which is how per-run typed deps reach dispatch.
+    For anything the keywords below do not cover,
+    [`build_context`][rest_framework_pydantic_ai.SpecToolset.build_context] and
+    [`translate_exception`][rest_framework_pydantic_ai.SpecToolset.translate_exception]
+    are overridable and both receive the live ``RunContext``, which is how
+    per-run typed deps reach dispatch.
 
     Args:
         specs: The ``name -> spec`` mapping to expose, one tool per key. A
-            :class:`~rest_framework_services.registry.spec_registry.SpecRegistry`
-            is accepted anywhere the mapping is (drf-services 0.27+) — the shared
+            ``SpecRegistry`` is accepted anywhere the mapping is (drf-services
+            0.27+) — the shared
             declaration site for a project exposing the same specs over more than
             one transport, so the agent reads the source MCP and the HTTP views
             read. A filtered view is itself a registry, so several toolsets can
@@ -184,24 +186,27 @@ class SpecToolset(AbstractToolset[Any]):
             names come from it; everything else here is transport-specific, which
             the registry deliberately carries none of.
         id: Identifies this toolset, and keys a wrapping
-            :class:`SpecCapability`'s ``defer_loading`` catalog entry — so give
-            each projection of one registry its own.
-        instructions: Replaces the conventions block :meth:`get_instructions`
+            [`SpecCapability`][rest_framework_pydantic_ai.SpecCapability]'s
+            ``defer_loading`` catalog entry — so give each projection of one
+            registry its own.
+        instructions: Replaces the conventions block
+            [`get_instructions`][rest_framework_pydantic_ai.SpecToolset.get_instructions]
             derives from the specs. ``None`` derives it.
         get_user: Reads the acting identity off the run context. Defaults to
-            ``ctx.deps.user`` (the :class:`AgentDeps` shape).
-        get_progress: Reads the run's :class:`ProgressReporter` sink off the run
+            ``ctx.deps.user`` (the
+            [`AgentDeps`][rest_framework_pydantic_ai.AgentDeps] shape).
+        get_progress: Reads the run's ``ProgressReporter`` sink off the run
             context, for a spec that reports progress. Defaults to
             ``ctx.deps.progress``, tolerating a deps type without the field.
         unknown_arguments: What to do with a tool arg outside the spec's declared
-            input set — a key the model invented.
-            :attr:`~rest_framework_services.UnknownArguments.REJECT` surfaces it
-            as a :class:`pydantic_ai.ModelRetry` so the model self-corrects,
+            input set — a key the model invented. ``UnknownArguments.REJECT``
+            surfaces it as a ``ModelRetry`` so the model self-corrects,
             ``IGNORE`` drops it, ``PASSTHROUGH`` forwards it to the callable.
             Specs whose declared set is open (a ``filter_set``, a ``**kwargs``
             selector) are unaffected.
         query_params: Read-shaping
-            :class:`~rest_framework_pydantic_ai.QueryParam` args that seed
+            [`QueryParam`][rest_framework_services.types.query_param.QueryParam]
+            args that seed
             ``request.query_params`` over the off-HTTP path — the extensible
             generalization of ``page`` / ``limit`` / ``ordering``. Each is
             advertised as a tool arg, then popped at call time and handed to
@@ -212,8 +217,9 @@ class SpecToolset(AbstractToolset[Any]):
             toolset awareness of the library.
         tool_query_params: ``query_params`` for one tool only, keyed by tool
             name. A per-tool param overrides a toolset-wide one of the same name.
-        url_kwargs: :class:`~rest_framework_pydantic_ai.UrlKwarg` args — URL
-            route captures (``parent_pk``) seeded into
+        url_kwargs:
+            [`UrlKwarg`][rest_framework_services.types.url_kwarg.UrlKwarg] args
+            — URL route captures (``parent_pk``) seeded into
             ``build_offline_context(kwargs=…)`` and spread by drf-services into
             the selector / target pools, authoritative over ``params``.
             Advertised then popped like ``query_params``. Use them for a
@@ -239,7 +245,7 @@ class SpecToolset(AbstractToolset[Any]):
             they fall back to on their own. Toolset-wide only — an origin is a
             property of the deployment, not of a tool.
         max_retries: Each tool's retry budget: how many times a
-            :class:`pydantic_ai.ModelRetry` is fed back to the model before the
+            ``ModelRetry`` is fed back to the model before the
             run aborts with ``UnexpectedModelBehavior``. The default matches
             pydantic-ai's own function-tool default.
         max_result_bytes: Ceiling on a rendered result, measured on the encoded
@@ -262,11 +268,11 @@ class SpecToolset(AbstractToolset[Any]):
         require_permissions: Refuse to construct a toolset containing a spec with
             no ``permission_classes``. Over HTTP that means *inherit*; here there
             is nothing to inherit from, so it means *ungated*. ``False``
-            downgrades the refusal to an :class:`UnguardedSpecWarning` while
+            downgrades the refusal to an ``UnguardedSpecWarning`` while
             migrating.
         descriptions: Overrides ``spec.description`` per tool — the docstring an
             API developer reads is rarely the sentence a model needs. A tool left
-            with no description anywhere gets an :class:`UndescribedToolWarning`.
+            with no description anywhere gets an ``UndescribedToolWarning``.
         ordering_fields: **Deprecated** second ordering vocabulary, kept for a
             list selector with no ``filter_set`` and therefore no other route. It
             declares what such a tool may sort by, advertised as an enum on an
@@ -287,7 +293,7 @@ class SpecToolset(AbstractToolset[Any]):
         get_http_request: ``http_request`` resolved per run from ``RunContext``,
             the way ``get_user`` is. Wins over a static ``http_request``.
         exception_map: Maps an exception type to a handler returning the tool's
-            result (or raising :class:`pydantic_ai.ModelRetry`). Matched along
+            result (or raising ``ModelRetry``). Matched along
             the MRO, most specific first, and consulted **before** the built-in
             arms, so a project can override those too.
 
@@ -410,7 +416,7 @@ class SpecToolset(AbstractToolset[Any]):
 
         The synchronous answer to "what tools are these?", for a caller composing
         this toolset at configuration time — a name-dedup pass, a tool catalog —
-        with no run in sight, since :meth:`get_tools` is ``async`` and needs a
+        with no run in sight, since ``get_tools`` is ``async`` and needs a
         ``RunContext``. Read-only (a ``MappingProxyType``), so enumerating it
         cannot add a tool that skipped the constructor's permission and
         description checks.
@@ -518,7 +524,7 @@ class SpecToolset(AbstractToolset[Any]):
         """Build the off-HTTP context one call dispatches under.
 
         Override to vary the synthetic request per run. The default forwards to
-        drf-services' :func:`build_offline_context`, resolving ``http_request``
+        drf-services' ``build_offline_context``, resolving ``http_request``
         through the configured extractor.
 
         **An ``http_request`` here is incidental request data — never an auth
@@ -581,7 +587,7 @@ def _validate_permissions(specs: Mapping[str, Spec], *, require: bool) -> None:
     with passing HTTP tests, becomes callable by whatever the agent decides to
     call the moment it is handed to a model, with no signal anywhere.
 
-    :exc:`~django.core.exceptions.ImproperlyConfigured` rather than the
+    ``ImproperlyConfigured`` rather than the
     ``ValueError`` the checks below raise: this is a deployment misconfiguration
     rather than a coding error, and it is what the MCP transport raises for the
     same check, so a consumer running both catches one thing.
@@ -621,7 +627,7 @@ class UnguardedSpecWarning(UserWarning):
 class UndescribedToolWarning(UserWarning):
     """A spec was exposed as a tool with nothing to tell the model it exists for.
 
-    Its own category, separate from :class:`UnguardedSpecWarning`, because the
+    Its own category, separate from ``UnguardedSpecWarning``, because the
     two are silenced by different people: one is a security posture, the other
     is prompt quality.
     """
@@ -684,7 +690,7 @@ def _validate_query_params(
     """Fail fast on a per-tool key naming a tool this toolset does not expose.
 
     Runs before the merge, unlike the name-level checks in
-    :func:`_validate_channel_declarations`: the merge indexes by tool name, so a
+    ``_validate_channel_declarations``: the merge indexes by tool name, so a
     typo'd key would otherwise be dropped silently.
     """
     for tool_name in tool_query_params or {}:
@@ -712,7 +718,7 @@ def _validate_url_kwargs(
 ) -> None:
     """Fail fast on a per-tool key naming a tool this toolset does not expose.
 
-    See :func:`_validate_query_params` — name-level checks run post-merge.
+    See ``_validate_query_params`` — name-level checks run post-merge.
     """
     for tool_name in tool_url_kwargs or {}:
         if tool_name not in specs:
@@ -873,7 +879,7 @@ def _default_get_user(ctx: RunContext[Any]) -> Any:
     return ctx.deps.user
 
 
-# The conventions block :meth:`SpecToolset.get_instructions` teaches the model.
+# The conventions block ``SpecToolset.get_instructions`` teaches the model.
 _BASE_INSTRUCTIONS = (
     "The following tools call Django REST Framework services and selectors.\n"
     "- A successful call returns the tool's data. A business-rule failure returns a JSON "
@@ -1066,7 +1072,8 @@ def _call_spec(
     the ORM stays off the event loop.
 
     ``build_context`` and ``translate_exception`` are the two seams
-    :class:`SpecToolset` threads its overridable methods through; the defaults
+    [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] threads its
+    overridable methods through; the defaults
     keep this function usable on its own.
     """
     page_args = _pop_pagination(spec, args, ordering_fields, max_page_size)
@@ -1168,7 +1175,7 @@ def _enforce_result_bytes(payload: Any, max_bytes: int | None, *, label: str) ->
     answer confidently from data it does not know is missing.
 
     Returned as an ``{"error": …}`` result rather than raised as
-    :class:`ModelRetry`: the model should narrow the request and it *can*, but a
+    ``ModelRetry``: the model should narrow the request and it *can*, but a
     retry budget is finite and a run should not die because a model spent it on
     progressively smaller queries. Also logged at ``WARNING``, since a bound that
     fires invisibly reads to an operator as "the tool is broken".
@@ -1222,7 +1229,7 @@ def _pop_pagination(
     as an enum, but the toolset's argument validator is a no-op (the schema is
     advisory), so a model that sends ``limit="2"`` or ``ordering=["a"]`` reaches
     here untyped. Coerce and validate rather than letting a ``TypeError`` abort
-    the run, mapping a bad value to :class:`ModelRetry`.
+    the run, mapping a bad value to ``ModelRetry``.
 
     **``ordering`` is left entirely alone for a spec that advertises it**, so the
     value reaches the ``filter_set`` that declared it. For a spec that does not,
@@ -1266,7 +1273,7 @@ def _pop_filter_ordering(spec: Spec, args: dict[str, Any]) -> dict[str, Any] | N
     argument it never asked for.
 
     **The two checks here are not redundant with each other.**
-    :func:`_spec_owns_ordering` answers *whether* the spec owns ``ordering``; the
+    ``_spec_owns_ordering`` answers *whether* the spec owns ``ordering``; the
     ``filter_set`` check answers *what to hand it to*. A ``filter_set``
     advertised it, so the FilterSet is the consumer, and it reads ``filter_data``
     rather than the callable's arguments. When only the selector's own signature

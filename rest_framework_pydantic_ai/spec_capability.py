@@ -24,7 +24,7 @@ from rest_framework_pydantic_ai.types.url_kwarg import UrlKwarg
 class SpecCapability(AbstractCapability[Any]):
     """A Pydantic-AI capability exposing drf-services specs as tools.
 
-    :class:`~rest_framework_pydantic_ai.SpecToolset` is a first-class toolset you
+    [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] is a first-class toolset you
     can attach directly (``Agent(toolsets=[SpecToolset(...)])``), and it already
     exposes the tools *and* teaches the model its conventions. This wraps one to
     add the capability-only feature, ``defer_loading``. It does **not** re-emit
@@ -42,20 +42,22 @@ class SpecCapability(AbstractCapability[Any]):
             })],
         )
 
-    or wrap an already-built toolset with :meth:`from_toolset` (the compose path).
-    Either way the exposed tool set and instructions are the toolset's.
+    or wrap an already-built toolset with
+    [`from_toolset`][rest_framework_pydantic_ai.SpecCapability.from_toolset]
+    (the compose path). Either way the exposed tool set and instructions are the
+    toolset's.
 
     **Everything else ``SpecToolset`` accepts, this accepts, and means there.**
     That is a guarantee rather than a list, enforced name-by-name by the
     forwarding tests: a knob added to the toolset and forgotten here is not a
     missing feature but an *unreachable* one for every consumer composing through
-    a capability. See :class:`~rest_framework_pydantic_ai.SpecToolset` for what
+    a capability. See [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] for what
     each does; the safety-relevant ones are ``require_permissions``,
     ``max_result_bytes``, ``max_page_size`` and ``dispatch_timeout``.
 
     Args:
         specs: As ``SpecToolset``, including a
-            :class:`~rest_framework_services.registry.spec_registry.SpecRegistry`
+            ``SpecRegistry``
             or a filtered view of one, so a project declaring its specs once can
             project several capabilities from them.
         defer_loading: Hide the whole spec toolset and its instructions behind
@@ -127,7 +129,9 @@ class SpecCapability(AbstractCapability[Any]):
         *,
         defer_loading: bool = False,
     ) -> SpecCapability:
-        """Wrap an already-built :class:`SpecToolset` (the compose path).
+        """Wrap an already-built
+        [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] (the compose
+        path).
 
         The capability adopts the toolset's ``id``, and its tools and
         instructions are the toolset's own — set an ``instructions`` override on
