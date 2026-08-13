@@ -1,4 +1,5 @@
-"""``AgentDeps`` — the default dependency carrier a :class:`SpecToolset` reads."""
+"""``AgentDeps`` — the default dependency carrier a
+[`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] reads."""
 
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ from rest_framework_services.types.progress_reporter import ProgressReporter
 
 @dataclass
 class AgentDeps:
-    """Dependencies a Pydantic-AI agent passes to a :class:`SpecToolset`.
+    """Dependencies a Pydantic-AI agent passes to a
+    [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset].
 
     Pass an instance as ``deps`` when running the agent::
 

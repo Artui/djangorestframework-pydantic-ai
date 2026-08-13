@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Docstring cross-references now render as links instead of raw markup.** The
+  docstrings carried Sphinx roles — ``:class:`~rest_framework_pydantic_ai.SpecToolset` ``
+  — but the docs build is mkdocstrings, which renders docstring bodies as
+  Markdown and has no such syntax, so all 37 reached the published page verbatim,
+  `:class:` prefix and Sphinx's abbreviating `~` included. They are now
+  mkdocstrings autorefs links.
+
+  References to symbols the reference does not render became plain code spans:
+  private helpers, `UnguardedSpecWarning` / `UndescribedToolWarning`, the
+  undocumented `get_tools`, and third-party symbols (`ModelRetry`,
+  `SpecRegistry`, `ImproperlyConfigured`), for which no inventory is configured.
+
 ## [0.17.0] — 2026-08-11
 
 ### Changed
