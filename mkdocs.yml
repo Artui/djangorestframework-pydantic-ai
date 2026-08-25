@@ -81,4 +81,5 @@ nav:
   - Quickstart: quickstart.md
   - Shared spec registry: spec-registry.md
   - Polymorphic actions: polymorphic-actions.md
+  - Hide plumbing from the model: agent-audience.md
   - Reference: reference.md

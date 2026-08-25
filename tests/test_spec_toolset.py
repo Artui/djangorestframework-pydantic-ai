@@ -34,6 +34,7 @@ from typing_extensions import TypedDict, Unpack
 from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset, UrlKwarg
 from rest_framework_pydantic_ai.spec_toolset import (
     _BASE_INSTRUCTIONS,
+    _HANDLE_INSTRUCTION,
     _LIST_INSTRUCTION,
     UndescribedToolWarning,
     UnguardedSpecWarning,
@@ -49,7 +50,11 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _with_deadline,
 )
 from tests.testapp.models import Widget
-from tests.testapp.serializers import WidgetInputSerializer, WidgetSerializer
+from tests.testapp.serializers import (
+    AgentWidgetSerializer,
+    WidgetInputSerializer,
+    WidgetSerializer,
+)
 
 # --- specs under test --------------------------------------------------------
 
@@ -2218,3 +2223,47 @@ def test_specs_reflects_a_registry_source_resolved():
     registry.register("list", list_spec())
 
     assert set(SpecToolset(registry).specs) == {"list"}
+
+
+# --- agent audience -----------------------------------------------------------
+
+
+def agent_list_spec(**kwargs):
+    kwargs.setdefault("permission_classes", [AllowAny])
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=AgentWidgetSerializer,
+        **kwargs,
+    )
+
+
+@pytest.mark.django_db
+def test_hidden_fields_leave_the_payload_and_choices_are_spoken():
+    """A toolset advertises no output schema, so the payload is all the model sees."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="Sprocket", price=100, owner=user)
+
+    rows = _dispatch(agent_list_spec(), user)
+
+    assert rows == [{"id": 1, "name": "Sprocket", "status": "In stock"}]
+
+
+@pytest.mark.django_db
+async def test_call_tool_uses_the_projection_built_at_construction():
+    user = await User.objects.acreate(username="u2")
+    await Widget.objects.acreate(name="Sprocket", price=100, owner=user)
+    toolset = SpecToolset({"widgets": agent_list_spec()})
+
+    rows = await toolset.call_tool("widgets", {}, ctx_for(user), None)
+
+    assert rows == [{"id": 1, "name": "Sprocket", "status": "In stock"}]
+
+
+async def test_handle_instruction_present_only_when_a_tool_has_a_handle():
+    with_handle = await SpecToolset({"widgets": agent_list_spec()}).get_instructions(None)
+    assert _HANDLE_INSTRUCTION in with_handle
+
+    # An unmarked serializer teaches the model nothing about handles.
+    without = await SpecToolset({"list": list_spec()}).get_instructions(None)
+    assert _HANDLE_INSTRUCTION not in without

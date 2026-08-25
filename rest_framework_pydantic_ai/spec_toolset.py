@@ -39,6 +39,8 @@ from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework_services import (
     AdditionalInputRequired,
+    AgentProjection,
+    FieldAudience,
     SelectorKind,
     SelectorSpec,
     ServiceError,
@@ -46,10 +48,11 @@ from rest_framework_services import (
     ServiceValidationError,
     SpecRegistry,
     UnknownArguments,
+    agent_projection_for_spec,
     build_offline_context,
     dispatch_spec,
     enforce_permissions,
-    render_spec_output,
+    render_for_agent,
     spec_to_json_schema,
 )
 from rest_framework_services.dispatch.unguarded_specs import unguarded_specs
@@ -405,6 +408,12 @@ class SpecToolset(AbstractToolset[Any]):
             )
             for name, spec in self._specs.items()
         }
+        # Agent markings are pure in the serializer, like the schemas above, so
+        # they are resolved once rather than paying a serializer instantiation
+        # on every tool call.
+        self._projections: dict[str, AgentProjection] = {
+            name: agent_projection_for_spec(spec) for name, spec in self._specs.items()
+        }
 
     @property
     def id(self) -> str | None:
@@ -454,7 +463,10 @@ class SpecToolset(AbstractToolset[Any]):
         if self._instructions_override is not None:
             return self._instructions_override
         return _derive_instructions(
-            self._specs, self._tool_query_params, self._tool_ordering_fields
+            self._specs,
+            self._tool_query_params,
+            self._tool_ordering_fields,
+            self._projections,
         )
 
     async def call_tool(
@@ -484,6 +496,7 @@ class SpecToolset(AbstractToolset[Any]):
                     ordering_fields=self._tool_ordering_fields[name],
                     max_page_size=self._max_page_size,
                     max_result_bytes=self._tool_max_result_bytes[name],
+                    projection=self._projections[name],
                     label=name,
                     progress=self._get_progress(ctx),
                     host=self._host,
@@ -897,6 +910,12 @@ _LIST_INSTRUCTION = (
     "caps the number of items and `page` (1-based, requires `limit`) selects the page."
 )
 
+_HANDLE_INSTRUCTION = (
+    "- Some tools return opaque identifier fields, described as such in the tool's "
+    "output. Pass them to other tools that ask for one; refer to records by their "
+    "name in anything you say, never by the identifier."
+)
+
 _ORDERING_INSTRUCTION = (
     "- Some collection tools also accept `ordering`. It takes exactly one of the values "
     "listed in that tool's schema (a sortable name, or the same name prefixed with `-` for "
@@ -904,10 +923,16 @@ _ORDERING_INSTRUCTION = (
 )
 
 
+def _has_handle(projection: AgentProjection) -> bool:
+    """Whether any field on this tool's output is an opaque identifier."""
+    return any(marking.audience is FieldAudience.HANDLE for marking in projection.fields.values())
+
+
 def _derive_instructions(
     specs: Mapping[str, Spec],
     tool_query_params: Mapping[str, Sequence[QueryParam]],
     tool_ordering_fields: Mapping[str, Sequence[str]] | None = None,
+    projections: Mapping[str, AgentProjection] | None = None,
 ) -> str:
     """Build the conventions block from the specs / query params / ordering.
 
@@ -928,6 +953,10 @@ def _derive_instructions(
         _spec_owns_ordering(spec) for spec in specs.values()
     ):
         lines.append(_ORDERING_INSTRUCTION)
+    # A toolset with no handle anywhere gains nothing from being told how to
+    # treat one, and this block is prepended to every run.
+    if any(_has_handle(projection) for projection in (projections or {}).values()):
+        lines.append(_HANDLE_INSTRUCTION)
     query_param_names = sorted({qp.name for params in tool_query_params.values() for qp in params})
     if query_param_names:
         joined = ", ".join(f"`{name}`" for name in query_param_names)
@@ -1060,6 +1089,7 @@ def _call_spec(
     ordering_fields: Sequence[str] = (),
     max_page_size: int | None = None,
     max_result_bytes: int | None = None,
+    projection: AgentProjection | None = None,
     label: str = "",
     progress: ProgressReporter | None = None,
     host: str | None = None,
@@ -1156,9 +1186,10 @@ def _call_spec(
         except FieldError as exc:
             raise ModelRetry(f"invalid ordering: {exc}") from exc
     many = result.kind == "list"
-    rendered = render_spec_output(
+    rendered = render_for_agent(
         spec,
         value,
+        projection=projection,
         many=many,
         request=context.request,
         view=context.view,

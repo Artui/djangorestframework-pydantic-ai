@@ -6,6 +6,47 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-08-25
+
+### Added
+
+- **Tool results are projected for the audience that reads them.** A serializer
+  written for a REST API is handed to the model verbatim when the same spec is
+  exposed as a tool, so records get named by primary key, a status reads as
+  `IN_STOCK` rather than "In stock", and internal fields get narrated as
+  content. Mark the fields once, on the serializer, with `AgentField` from
+  djangorestframework-services:
+
+  ```python
+  extra_kwargs = {
+      "id": {"style": {AGENT: AgentField.handle("Widget handle.")}},
+      "price": {"style": {AGENT: AgentField.hidden()}},
+      "name": {"style": {AGENT: AgentField.label()}},
+  }
+  ```
+
+  Dispatch renders through `render_for_agent`, so hidden fields leave the
+  payload and a choice field's display value replaces its constant — except on a
+  handle, which is another tool's input and is never re-spelled.
+
+  **This matters more here than over MCP.** A `ToolDefinition` carries a
+  parameter schema and no output schema, so the payload is the model's *only*
+  view of a result: a label that lives only in a schema would never reach it.
+
+  The projection is resolved once per spec at construction, beside the tool
+  definitions, rather than paid on every call.
+
+- **One more conditional line in the derived instructions**, naming the handle
+  convention — emitted only when some tool in the toolset actually returns a
+  handle, on the same rule the rest of the block follows: advice a model cannot
+  act on is budget spent teaching it about something it will never see.
+
+### Changed
+
+- **Floor raised to `djangorestframework-services>=0.43`** for the audience API.
+  That release also fixes output-schema generation, which this package does not
+  consume — `ToolDefinition` has no output schema — so nothing here changes shape.
+
 ### Fixed
 
 - **The floor-resolution CI gate could resolve against a stale package index.**
@@ -801,7 +842,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.14.0...v0.15.0
