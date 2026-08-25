@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://artui.github.io/djangorestframework-pydantic-ai/reference/">
       
       
-        <link rel="prev" href="../polymorphic-actions/">
+        <link rel="prev" href="../agent-audience/">
       
       
       
@@ -351,6 +351,33 @@
     
   
     Polymorphic actions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent-audience/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hide plumbing from the model
   
 
     
@@ -967,7 +994,7 @@
 
 
         <p>Exposes drf-services specs as a Pydantic-AI toolset.</p>
-<p>Build it from a <code>name -&gt; spec</code> mapping and hand it to an <code>Agent</code>::</p>
+<p>Build it from a <code>name -&gt; spec</code> mapping and hand it to an <code>Agent</code>:</p>
 <div class="language-text highlight"><pre><span></span><code>toolset = SpecToolset({
     &quot;list_orders&quot;: orders_selector_spec,   # SelectorSpec -&gt; read-only tool
     &quot;create_order&quot;: create_order_spec,     # ServiceSpec  -&gt; mutation tool
@@ -979,138 +1006,577 @@ docstring, the parameter schema comes from <code>spec_to_json_schema</code> (wit
 list selector's <code>page</code> / <code>limit</code> args merged in), and the
 <code>readOnlyHint</code> annotation is derived from the spec kind (selectors read,
 services mutate).</p>
-<p><code>specs</code> also accepts a
-:class:<code>~rest_framework_services.registry.spec_registry.SpecRegistry</code>
-(drf-services 0.27+) — the shared declaration site for a project that
-exposes the same specs over more than one transport, so the agent reads
-the same source MCP and the HTTP views do instead of repeating the list::</p>
-<div class="language-text highlight"><pre><span></span><code>toolset = SpecToolset(registry)                     # every entry
-read_only = SpecToolset(registry.by_tag(&quot;read&quot;), id=&quot;reads&quot;)
-</code></pre></div>
-<p>A filtered view is itself a registry, so several toolsets can be projected
-from one declaration with no shared state. Names come from the registry;
-everything else on this signature stays per-toolset, because it is
-transport-specific and the registry deliberately carries none of it.</p>
-<p><code>get_user</code> overrides how the acting identity is read off the run context;
-it defaults to <code>ctx.deps.user</code>.</p>
-<p><code>unknown_arguments</code> controls what happens to tool args outside a spec's
-declared input set — a hallucinated key the model invented. It defaults to
-:attr:<code>~rest_framework_services.UnknownArguments.REJECT</code>, which surfaces the
-unexpected key as a :class:<code>pydantic_ai.ModelRetry</code> so the model
-self-corrects; specs whose declared set is open (a <code>filter_set</code> or
-<code>**kwargs</code> selector) are unaffected. Pass <code>IGNORE</code> to silently drop them
-or <code>PASSTHROUGH</code> to forward them to the callable.</p>
-<p><code>query_params</code> / <code>tool_query_params</code> register read-shaping
-:class:<code>~rest_framework_pydantic_ai.QueryParam</code> args that seed
-<code>request.query_params</code> over the off-HTTP path — the extensible generalization
-of <code>page</code> / <code>limit</code> / <code>ordering</code>. <code>query_params</code> applies to <strong>every</strong> tool;
-<code>tool_query_params</code> maps a tool name to params for that tool only (a per-tool
-param overrides a toolset-wide one of the same name). Each is advertised as a
-tool arg, then popped at call time and handed to
-<code>build_offline_context(query_params=…)</code> — never to the spec as an input, so
-<code>unknown_arguments</code> never sees it. This is for whatever reads
-<code>request.query_params</code> <strong>directly</strong> — django-restql field selection, a custom
-serializer branching on the query string — with zero toolset awareness of the
-specific library.</p>
-<p>A <code>SelectorSpec.filter_set</code> does <strong>not</strong> need this: its fields are already
-generated into the tool's input schema by <code>spec_to_json_schema</code> and flow
-through as ordinary <code>params</code> (which <code>dispatch_spec</code> hands the FilterSet as
-<code>filter_data</code>), so the model can filter with no extra declaration. That
-includes <strong>ordering</strong> — a FilterSet declaring an <code>OrderingFilter</code> named
-<code>ordering</code> advertises the argument itself, and the toolset keeps its hands
-off it.</p>
-<p><code>url_kwargs</code> / <code>tool_url_kwargs</code> register
-:class:<code>~rest_framework_pydantic_ai.UrlKwarg</code> args — URL route captures
-(<code>parent_pk</code>) seeded into <code>build_offline_context(kwargs=…)</code> and spread by
-drf-services into the selector / target pools, authoritative over <code>params</code>.
-Same shape as <code>query_params</code> / <code>tool_query_params</code> (toolset-wide + per-tool,
-per-tool overriding by name), advertised as a tool arg then popped at call
-time. Use them for a URL-derived value <strong>not</strong> already in the tool schema — a
-scoping <code>spec.kwargs</code> provider that reads <code>view.kwargs</code> (the case
-<code>params</code> alone cannot cover), or a closed-surface route capture. A selector
-that reads the value from its <code>**extras: Unpack[TypedDict]</code> needs none —
-drf-services reflects the key and delivers it through <code>params</code> — though a
-key may be <em>both</em> reflected and <code>UrlKwarg</code>-registered (the <code>UrlKwarg</code>
-schema wins, and the authoritative <code>kwargs=</code> spread still reaches the
-selector). A name cannot be both a <code>QueryParam</code> and a <code>UrlKwarg</code> on the
-same tool (a value cannot route to two channels).</p>
-<p><code>host</code> gives the synthesized request an origin, so <code>build_absolute_uri</code>
-builds real absolute URLs — DRF's <code>FileField</code> and the <code>Hyperlinked*</code>
-fields call it for every value once a <code>request</code> is in the serializer
-context, which off the HTTP path it always is. Accepts <code>"example.com"</code>,
-<code>"example.com:8000"</code>, or a full origin like <code>"https://example.com"</code>
-whose scheme decides whether links are https. There is no default and none is
-inferred: only the project knows its public origin, and guessing one would
-emit confidently-wrong links that look valid. Left unset, those fields
-produce <strong>relative</strong> URLs — usable, and what they fall back to on their own
-when no request is in the context. Toolset-wide only, with no per-tool
-variant: an origin is a property of the deployment, not of a tool.</p>
-<p><code>max_retries</code> is each tool's retry budget: how many times a
-:class:<code>pydantic_ai.ModelRetry</code> (a validation failure, a bad <code>ordering</code>
-field) is fed back to the model before the run aborts with
-<code>UnexpectedModelBehavior</code>. Defaults to <code>1</code>, matching pydantic-ai's own
-function-tool default.</p>
-<p><code>instructions</code> overrides the auto-derived conventions block that
-:meth:<code>get_instructions</code> teaches the model (pagination + error contract);
-pass a string to replace it, or leave it <code>None</code> to derive from the specs.</p>
-<p><strong>Safety and bounds.</strong></p>
-<p><code>require_permissions</code> (default <code>True</code>) refuses to construct a toolset
-containing a spec with no <code>permission_classes</code>. Over HTTP that means
-<em>inherit</em>; here there is nothing to inherit from, so it means <em>ungated</em>.
-Pass <code>False</code> to downgrade to an :class:<code>UnguardedSpecWarning</code> while
-migrating.</p>
-<p><code>descriptions</code> overrides <code>spec.description</code> per tool — the docstring an
-API developer reads is rarely the sentence a model needs — and a tool left
-with no description anywhere gets an :class:<code>UndescribedToolWarning</code>.</p>
-<p>⭐ <strong>Ordering belongs to the <code>filter_set</code>, and that is the canonical way to
-declare it.</strong> A selector whose FilterSet carries an <code>OrderingFilter</code> named
-<code>ordering</code> already advertises the argument — drf-services reflects the
-filter's choices into the tool schema as an enum — so the toolset contributes
-nothing: the value is handed to the FilterSet as filter data, which validates
-it and applies the sort through its own <code>param_map</code>. Nothing is declared
-here for such a tool.</p>
-<p><code>ordering_fields</code> / <code>tool_ordering_fields</code> are the <strong>deprecated</strong> second
-vocabulary, kept for a list selector with no <code>filter_set</code> and therefore no
-other route. They declare what such a tool may sort by, advertised as an enum
-on an <code>ordering</code> argument and validated against it; their values are raw
-ORM paths, because the toolset applies them with <code>queryset.order_by</code>.
-Nothing declared means no <code>ordering</code> argument at all; per-tool <em>replaces</em>
-the toolset-wide set rather than merging with it. Declaring them for a tool
-whose spec already advertises <code>ordering</code> raises at construction: the two
-are different vocabularies for one argument name — public filter choices
-versus ORM paths — and quietly preferring either is how a schema and its
-dispatch come to disagree.</p>
-<p><code>max_result_bytes</code> / <code>tool_max_result_bytes</code> cap a rendered result,
-measured on the encoded payload because the thing being protected is the
-model's context window. Over the ceiling the call <strong>fails</strong> with a
-model-readable <code>{"error": …}</code> — never truncates, because a partial payload
-looks complete. A per-tool <code>None</code> opts that tool out; a per-tool key
-simply absent inherits the toolset default.</p>
-<p><code>max_page_size</code> clamps a list tool's <code>limit</code> <em>and</em> advertises the
+<p><strong>Filtering needs no declaration here, and ordering belongs to the
+<code>filter_set</code>.</strong> A <code>SelectorSpec.filter_set</code>'s fields are already
+generated into the tool's input schema and flow through as ordinary
+<code>params</code>, which <code>dispatch_spec</code> hands the FilterSet as <code>filter_data</code>.
+That includes ordering: a FilterSet carrying an <code>OrderingFilter</code> named
+<code>ordering</code> advertises the argument itself — drf-services reflects the
+filter's public choices into the schema as an enum — and the toolset keeps
+its hands off the value, which the FilterSet validates and applies through
+its own <code>param_map</code>.</p>
+<p>For anything the keywords below do not cover,
+<a class="autorefs autorefs-internal" title="build_context" href="#rest_framework_pydantic_ai.SpecToolset.build_context"><code>build_context</code></a> and
+<a class="autorefs autorefs-internal" title="translate_exception" href="#rest_framework_pydantic_ai.SpecToolset.translate_exception"><code>translate_exception</code></a>
+are overridable and both receive the live <code>RunContext</code>, which is how
+per-run typed deps reach dispatch.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>specs</code>
+            </td>
+            <td>
+                  <code><span title="rest_framework_pydantic_ai.spec_toolset.SpecSource">SpecSource</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>name -&gt; spec</code> mapping to expose, one tool per key. A
+<code>SpecRegistry</code> is accepted anywhere the mapping is (drf-services
+0.27+) — the shared
+declaration site for a project exposing the same specs over more than
+one transport, so the agent reads the source MCP and the HTTP views
+read. A filtered view is itself a registry, so several toolsets can
+be projected from one declaration with no shared state
+(<code>SpecToolset(registry.by_tag("read"), id="reads")</code>). Only the
+names come from it; everything else here is transport-specific, which
+the registry deliberately carries none of.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Identifies this toolset, and keys a wrapping
+<a class="autorefs autorefs-internal" title="SpecCapability" href="#rest_framework_pydantic_ai.SpecCapability"><code>SpecCapability</code></a>'s
+<code>defer_loading</code> catalog entry — so give each projection of one
+registry its own.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;drf-specs&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>instructions</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Replaces the conventions block
+<a class="autorefs autorefs-internal" title="get_instructions
+
+
+  
+      async
+  " href="#rest_framework_pydantic_ai.SpecToolset.get_instructions"><code>get_instructions</code></a>
+derives from the specs. <code>None</code> derives it.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>get_user</code>
+            </td>
+            <td>
+                  <code><span title="rest_framework_pydantic_ai.spec_toolset.UserExtractor">UserExtractor</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Reads the acting identity off the run context. Defaults to
+<code>ctx.deps.user</code> (the
+<a class="autorefs autorefs-internal" title="AgentDeps
+
+
+  
+      dataclass
+  " href="#rest_framework_pydantic_ai.AgentDeps"><code>AgentDeps</code></a> shape).</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>get_progress</code>
+            </td>
+            <td>
+                  <code><span title="rest_framework_pydantic_ai.spec_toolset.ProgressExtractor">ProgressExtractor</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Reads the run's <code>ProgressReporter</code> sink off the run
+context, for a spec that reports progress. Defaults to
+<code>ctx.deps.progress</code>, tolerating a deps type without the field.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>unknown_arguments</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="rest_framework_services.UnknownArguments" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.types.unknown_arguments.UnknownArguments">UnknownArguments</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>What to do with a tool arg outside the spec's declared
+input set — a key the model invented. <code>UnknownArguments.REJECT</code>
+surfaces it as a <code>ModelRetry</code> so the model self-corrects,
+<code>IGNORE</code> drops it, <code>PASSTHROUGH</code> forwards it to the callable.
+Specs whose declared set is open (a <code>filter_set</code>, a <code>**kwargs</code>
+selector) are unaffected.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="rest_framework_services.UnknownArguments.REJECT">REJECT</span></code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>query_params</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="QueryParam
+
+
+  
+      dataclass
+   (rest_framework_pydantic_ai.types.query_param.QueryParam)" href="#rest_framework_services.types.query_param.QueryParam">QueryParam</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Read-shaping
+<a class="autorefs autorefs-internal" title="QueryParam
+
+
+  
+      dataclass
+  " href="#rest_framework_services.types.query_param.QueryParam"><code>QueryParam</code></a>
+args that seed
+<code>request.query_params</code> over the off-HTTP path — the extensible
+generalization of <code>page</code> / <code>limit</code> / <code>ordering</code>. Each is
+advertised as a tool arg, then popped at call time and handed to
+<code>build_offline_context(query_params=…)</code>, never to the spec as an
+input, so <code>unknown_arguments</code> never sees it. For whatever reads
+<code>request.query_params</code> <strong>directly</strong> — django-restql field
+selection, a serializer branching on the query string — with no
+toolset awareness of the library.</p>
+              </div>
+            </td>
+            <td>
+                  <code>()</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tool_query_params</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="QueryParam
+
+
+  
+      dataclass
+   (rest_framework_pydantic_ai.types.query_param.QueryParam)" href="#rest_framework_services.types.query_param.QueryParam">QueryParam</a>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>query_params</code> for one tool only, keyed by tool
+name. A per-tool param overrides a toolset-wide one of the same name.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>url_kwargs</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="UrlKwarg
+
+
+  
+      dataclass
+   (rest_framework_pydantic_ai.types.url_kwarg.UrlKwarg)" href="#rest_framework_services.types.url_kwarg.UrlKwarg">UrlKwarg</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><a class="autorefs autorefs-internal" title="UrlKwarg
+
+
+  
+      dataclass
+  " href="#rest_framework_services.types.url_kwarg.UrlKwarg"><code>UrlKwarg</code></a> args
+— URL route captures (<code>parent_pk</code>) seeded into
+<code>build_offline_context(kwargs=…)</code> and spread by drf-services into
+the selector / target pools, authoritative over <code>params</code>.
+Advertised then popped like <code>query_params</code>. Use them for a
+URL-derived value <strong>not</strong> already in the tool schema: a scoping
+<code>spec.kwargs</code> provider reading <code>view.kwargs</code> (which <code>params</code>
+alone cannot cover), or a closed-surface route capture. A selector
+reading the value from its <code>**extras: Unpack[TypedDict]</code> needs none
+— drf-services reflects the key and delivers it through <code>params</code> —
+though a key may be both reflected and registered, in which case the
+<code>UrlKwarg</code> schema wins and the authoritative <code>kwargs=</code> spread
+still reaches the selector. A name cannot be both a <code>QueryParam</code>
+and a <code>UrlKwarg</code> on one tool: a value cannot route to two channels.</p>
+              </div>
+            </td>
+            <td>
+                  <code>()</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tool_url_kwargs</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="UrlKwarg
+
+
+  
+      dataclass
+   (rest_framework_pydantic_ai.types.url_kwarg.UrlKwarg)" href="#rest_framework_services.types.url_kwarg.UrlKwarg">UrlKwarg</a>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>url_kwargs</code> for one tool only, same override rule.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>host</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The origin the synthesized request reports, so
+<code>build_absolute_uri</code> builds real absolute URLs — DRF's
+<code>FileField</code> and the <code>Hyperlinked*</code> fields call it for every value
+once a <code>request</code> is in the serializer context, which off the HTTP
+path it always is. Accepts <code>"example.com"</code>, <code>"example.com:8000"</code>
+or a full origin like <code>"https://example.com"</code>, whose scheme decides
+whether links are https. Nothing is inferred: only the project knows
+its public origin, and a guess emits confidently wrong links that
+look valid. Unset, those fields produce relative URLs, which is what
+they fall back to on their own. Toolset-wide only — an origin is a
+property of the deployment, not of a tool.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_retries</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Each tool's retry budget: how many times a
+<code>ModelRetry</code> is fed back to the model before the
+run aborts with <code>UnexpectedModelBehavior</code>. The default matches
+pydantic-ai's own function-tool default.</p>
+              </div>
+            </td>
+            <td>
+                  <code>1</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_result_bytes</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Ceiling on a rendered result, measured on the encoded
+payload because what is being protected is the model's context
+window. Over it the call <strong>fails</strong> with a model-readable
+<code>{"error": …}</code> — never truncates, because a partial payload looks
+complete.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tool_max_result_bytes</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <span title="int">int</span> | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>max_result_bytes</code> per tool. An explicit
+<code>None</code> opts that tool out; an absent key inherits the default.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_page_size</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Clamps a list tool's <code>limit</code> <em>and</em> advertises the
 ceiling as JSON-Schema <code>maximum</code>. With it set, an omitted <code>limit</code>
-becomes the ceiling rather than "everything" — the unbounded read is the one
-that hurts, and it is what a model produces by not thinking about
-pagination.</p>
-<p><strong>Extending dispatch.</strong></p>
-<p><code>http_request</code> / <code>get_http_request</code> supply the <code>HttpRequest</code> the
-off-HTTP context is built from — static, or resolved per run from
-<code>RunContext</code> the way <code>get_user</code> is. ⛔ <strong>Incidental request data, never
-an auth channel:</strong> it exists so a serializer or scoping provider that reads
-<code>request.META</code> finds something plausible. The acting identity is <code>user</code>,
-and passing an authenticated request authorizes nothing.</p>
-<p><code>exception_map</code> maps an exception type to a handler returning the tool's
-result (or raising :class:<code>pydantic_ai.ModelRetry</code>). Registrations are
-matched along the MRO — most specific wins — and are consulted <strong>before</strong>
-the built-in arms, so a project can override those too.</p>
-<p>For anything these do not cover, :meth:<code>build_context</code> and
-:meth:<code>translate_exception</code> are overridable and both receive the live
-<code>RunContext</code>, which is how per-run typed deps reach dispatch.</p>
-<div class="language-text highlight"><pre><span></span><code>``dispatch_timeout`` (seconds) bounds one call, answering the model instead
-</code></pre></div>
-<p>of hanging. ⚠ It does not <em>stop</em> the work: the dispatch runs in a
-<code>sync_to_async</code> thread and asyncio cannot interrupt a thread parked in a
-database driver's socket read, so the query runs to completion regardless.
-Pair it with a database statement timeout for the other half.</p>
+becomes the ceiling rather than "everything" — the unbounded read is
+the one that hurts, and it is what a model produces by not thinking
+about pagination.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>dispatch_timeout</code>
+            </td>
+            <td>
+                  <code><span title="float">float</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Seconds bounding one call, so the model gets an answer
+instead of a hang. It does not <em>stop</em> the work: the dispatch runs in
+a <code>sync_to_async</code> thread and asyncio cannot interrupt a thread
+parked in a database driver's socket read, so the query runs to
+completion regardless. Pair it with a database statement timeout.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>require_permissions</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Refuse to construct a toolset containing a spec with
+no <code>permission_classes</code>. Over HTTP that means <em>inherit</em>; here there
+is nothing to inherit from, so it means <em>ungated</em>. <code>False</code>
+downgrades the refusal to an <code>UnguardedSpecWarning</code> while
+migrating.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>descriptions</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <span title="str">str</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Overrides <code>spec.description</code> per tool — the docstring an
+API developer reads is rarely the sentence a model needs. A tool left
+with no description anywhere gets an <code>UndescribedToolWarning</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>ordering_fields</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="str">str</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><strong>Deprecated</strong> second ordering vocabulary, kept for a
+list selector with no <code>filter_set</code> and therefore no other route. It
+declares what such a tool may sort by, advertised as an enum on an
+<code>ordering</code> argument and validated against it; the values are raw
+ORM paths, because the toolset applies them with
+<code>queryset.order_by</code>. Nothing declared means no <code>ordering</code>
+argument at all. Declaring it for a tool whose spec already
+advertises <code>ordering</code> raises: public filter choices and ORM paths
+are two vocabularies for one argument name, and quietly preferring
+either is how a schema and its dispatch come to disagree.</p>
+              </div>
+            </td>
+            <td>
+                  <code>()</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tool_ordering_fields</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <span title="collections.abc.Sequence">Sequence</span>[<span title="str">str</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>ordering_fields</code> per tool. Per-tool <em>replaces</em>
+the toolset-wide set rather than merging with it.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>http_request</code>
+            </td>
+            <td>
+                  <code><span title="django.http.HttpRequest">HttpRequest</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>HttpRequest</code> the off-HTTP context is built from.
+<strong>Incidental request data, never an auth channel:</strong> it exists so a
+serializer or scoping provider reading <code>request.META</code> finds
+something plausible. The acting identity is the user, and passing an
+authenticated request authorizes nothing.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>get_http_request</code>
+            </td>
+            <td>
+                  <code><span title="rest_framework_pydantic_ai.spec_toolset.HttpRequestExtractor">HttpRequestExtractor</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>http_request</code> resolved per run from <code>RunContext</code>,
+the way <code>get_user</code> is. Wins over a static <code>http_request</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>exception_map</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Mapping">Mapping</span>[<span title="type">type</span>[<span title="BaseException">BaseException</span>], <span title="rest_framework_pydantic_ai.spec_toolset.ExceptionHandler">ExceptionHandler</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Maps an exception type to a handler returning the tool's
+result (or raising <code>ModelRetry</code>). Matched along
+the MRO, most specific first, and consulted <strong>before</strong> the built-in
+arms, so a project can override those too.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="django.core.exceptions.ImproperlyConfigured">ImproperlyConfigured</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A spec has no <code>permission_classes</code> and
+<code>require_permissions</code> is set.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A tool name is outside <code>^[a-zA-Z0-9_-]{1,64}$</code>, a per-tool
+mapping names a tool this toolset does not expose, one name is
+registered on both parameter channels, or a tool declares ordering
+through both <code>ordering_fields</code> and its <code>filter_set</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
 
@@ -1149,15 +1615,12 @@ Pair it with a database statement timeout for the other half.</p>
     <div class="doc doc-contents ">
 
         <p>The resolved <code>name -&gt; spec</code> mapping this toolset exposes.</p>
-<p>⚠ <strong>The synchronous answer to "what tools are these?"</strong> <code>get_tools</code> is
-the real enumeration, but it is <code>async</code> and needs a <code>RunContext</code>, so
-it cannot answer for a <em>composing</em> caller — one wiring this toolset into
-a name-dedup pass or a tool catalog at configuration time, with no run in
-sight. Without this they reach for <code>_specs</code>, which is how a private
-becomes load-bearing across a package boundary.</p>
-<p>Read-only: a <code>MappingProxyType</code> over the toolset's own dict, so a
-caller enumerating it cannot quietly add a tool that skipped the
-permission and description checks the constructor ran.</p>
+<p>The synchronous answer to "what tools are these?", for a caller composing
+this toolset at configuration time — a name-dedup pass, a tool catalog —
+with no run in sight, since <code>get_tools</code> is <code>async</code> and needs a
+<code>RunContext</code>. Read-only (a <code>MappingProxyType</code>), so enumerating it
+cannot add a tool that skipped the constructor's permission and
+description checks.</p>
 
     </div>
 
@@ -1189,14 +1652,61 @@ but not how the family behaves: that list tools accept <code>page</code> /
 <code>limit</code> / <code>ordering</code>, that a business failure comes back as a readable
 <code>{"error": …}</code> result (a final answer, not a reason to retry) while a
 bad argument comes back as a retry request, and that a permission error
-is final. Pydantic-AI appends this block to the system prompt each turn —
-for a toolset attached directly <em>or</em> wrapped by a capability — so the
-model doesn't rediscover the conventions by failing a call.</p>
-<p>Returns the <code>instructions</code> override when one was given, else a block
-derived from the specs: the pagination line appears only when a list
-selector is present, and the read-shaping line only when some
-<code>QueryParam</code> is declared, keeping the prompt free of advice that can't
-fire.</p>
+is final. Pydantic-AI appends the block to the system prompt each turn,
+for a toolset attached directly <em>or</em> wrapped by a capability.</p>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The <code>instructions</code> override when one was given, else a block</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>derived from the specs — each line conditional on something in this</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>toolset being able to act on it, so the prompt carries no advice that</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>cannot fire.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -1226,15 +1736,13 @@ fire.</p>
 
         <p>Build the off-HTTP context one call dispatches under.</p>
 <p>Override to vary the synthetic request per run. The default forwards to
-drf-services' :func:<code>build_offline_context</code>, resolving
-<code>http_request</code> through :attr:<code>get_http_request</code>.</p>
-<p>⚠ <strong>An <code>http_request</code> here is incidental request data — never an auth
-channel.</strong> It is there so a serializer or a scoping provider that reads
-<code>request.META</code> / <code>request.headers</code> finds something plausible. The
-acting identity is <code>user</code>, resolved from <code>ctx.deps</code>, and nothing
-downstream re-derives it from the request; passing an authenticated
-request does <strong>not</strong> authorize anything, and relying on it would put a
-second, invisible identity in the call.</p>
+drf-services' <code>build_offline_context</code>, resolving <code>http_request</code>
+through the configured extractor.</p>
+<p><strong>An <code>http_request</code> here is incidental request data — never an auth
+channel.</strong> The acting identity is <code>user</code>, resolved from <code>ctx.deps</code>,
+and nothing downstream re-derives it from the request; supplying an
+authenticated one authorizes nothing and would put a second, invisible
+identity in the call.</p>
 
 
     </div>
@@ -1259,14 +1767,8 @@ second, invisible identity in the call.</p>
         <p>Return a handler for <code>exc</code>, or <code>None</code> to leave it to the defaults.</p>
 <p>The default consults <code>exception_map</code> by walking the exception's MRO,
 so a handler registered for a base class catches its subclasses and the
-<strong>most specific</strong> registration wins.</p>
-<p>⭐ <strong>The motivating case is one line long.</strong> <code>django.core.exceptions
-.ValidationError</code> — Django's, not DRF's — is raised by <code>full_clean</code>
-and by any custom model validator, is not in the translated set, and so
-kills the whole run where the DRF twin would have become a
-<code>ModelRetry</code>. Broadening the built-in set would have fixed that one
-case; a map fixes the class of them, and lets a project override the
-built-in arms too when it knows better than this package does.</p>
+<strong>most specific</strong> registration wins. Override for a decision the map
+cannot express — one that has to read the run's deps.</p>
 
 
     </div>
@@ -1300,16 +1802,13 @@ built-in arms too when it knows better than this package does.</p>
 
 
         <p>A Pydantic-AI capability exposing drf-services specs as tools.</p>
-<p>:class:<code>~rest_framework_pydantic_ai.SpecToolset</code> is a first-class toolset you
-can attach directly (<code>Agent(toolsets=[SpecToolset(...)])</code>); it already
-exposes the tools <em>and</em> teaches the model its conventions through
-<code>get_instructions</code> (that list tools accept <code>page</code> / <code>limit</code> /
-<code>ordering</code>, and how errors come back). <code>SpecCapability</code> wraps that
-toolset to add the capability-only feature: <code>defer_loading</code>. It does
-<strong>not</strong> re-emit the conventions — Pydantic-AI collects them from the owned
-toolset's <code>get_instructions</code> automatically, so wrapping vs. attaching
-directly yields the same model-facing instructions, exactly once.</p>
-<p>Construct it the same way as <code>SpecToolset</code> (it forwards the toolset knobs)::</p>
+<p><a class="autorefs autorefs-internal" title="SpecToolset" href="#rest_framework_pydantic_ai.SpecToolset"><code>SpecToolset</code></a> is a first-class toolset you
+can attach directly (<code>Agent(toolsets=[SpecToolset(...)])</code>), and it already
+exposes the tools <em>and</em> teaches the model its conventions. This wraps one to
+add the capability-only feature, <code>defer_loading</code>. It does <strong>not</strong> re-emit
+those conventions — Pydantic-AI collects them from the owned toolset — so
+wrapping and attaching directly yield the same instructions, exactly once.</p>
+<p>Construct it the same way as <code>SpecToolset</code> (it forwards the toolset knobs):</p>
 <div class="language-text highlight"><pre><span></span><code>agent = Agent(
     model,
     deps_type=AgentDeps,
@@ -1319,32 +1818,91 @@ directly yields the same model-facing instructions, exactly once.</p>
     })],
 )
 </code></pre></div>
-<p>or wrap an already-built toolset with :meth:<code>from_toolset</code> (the compose path).
-Either way the exposed tool set and instructions are the toolset's.</p>
-<p><code>specs</code> accepts a
-:class:<code>~rest_framework_services.registry.spec_registry.SpecRegistry</code>
-wherever it accepts a mapping (drf-services 0.27+), so a project declaring
-its specs once can project several capabilities from filtered views::</p>
-<div class="language-text highlight"><pre><span></span><code>AgentConfig(capabilities=[
-    SpecCapability(registry.by_tag(&quot;read&quot;), id=&quot;reads&quot;),
-    SpecCapability(registry.by_tag(&quot;admin&quot;), id=&quot;admin&quot;, defer_loading=True),
-])
-</code></pre></div>
-<p>Give each its own <code>id</code> — the id keys <code>defer_loading</code>'s catalog entry, so
-two capabilities sharing one would collide.</p>
-<p><code>defer_loading</code> is the one keyword that is the capability's own (it needs
-the stable <code>id</code>): it hides the whole spec toolset and its instructions
-behind Pydantic-AI's native <code>load_capability</code> tool until the model loads
+<p>or wrap an already-built toolset with
+<a class="autorefs autorefs-internal" title="from_toolset
+
+
+  
+      classmethod
+  " href="#rest_framework_pydantic_ai.SpecCapability.from_toolset"><code>from_toolset</code></a>
+(the compose path). Either way the exposed tool set and instructions are the
+toolset's.</p>
+<p><strong>Everything else <code>SpecToolset</code> accepts, this accepts, and means there.</strong>
+That is a guarantee rather than a list, enforced name-by-name by the
+forwarding tests: a knob added to the toolset and forgotten here is not a
+missing feature but an <em>unreachable</em> one for every consumer composing through
+a capability. See <a class="autorefs autorefs-internal" title="SpecToolset" href="#rest_framework_pydantic_ai.SpecToolset"><code>SpecToolset</code></a> for what
+each does; the safety-relevant ones are <code>require_permissions</code>,
+<code>max_result_bytes</code>, <code>max_page_size</code> and <code>dispatch_timeout</code>.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>specs</code>
+            </td>
+            <td>
+                  <code><span title="rest_framework_pydantic_ai.spec_toolset.SpecSource">SpecSource</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>As <code>SpecToolset</code>, including a
+<code>SpecRegistry</code>
+or a filtered view of one, so a project declaring its specs once can
+project several capabilities from them.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>defer_loading</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Hide the whole spec toolset and its instructions behind
+Pydantic-AI's native <code>load_capability</code> tool until the model loads
 it — progressive disclosure for a large spec map.</p>
-<p>⚠ <strong>Everything else <code>SpecToolset</code> accepts, this accepts, and means there.</strong>
-That is a guarantee rather than a list, and the forwarding tests in
-<code>tests/test_spec_capability.py</code> enforce it name-by-name — a knob added to
-the toolset and forgotten here is not a missing feature but an <em>unreachable</em>
-one, for every consumer that composes through a capability instead of
-attaching the toolset directly. See
-:class:<code>~rest_framework_pydantic_ai.SpecToolset</code> for what each one does; the
-safety-relevant ones are <code>require_permissions</code>, <code>max_result_bytes</code>,
-<code>max_page_size</code> and <code>dispatch_timeout</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>id</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>As <code>SpecToolset</code>. It keys <code>defer_loading</code>'s catalog entry, so
+give each capability projected from one registry its own.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;drf-specs&#39;</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
 
@@ -1384,7 +1942,9 @@ safety-relevant ones are <code>require_permissions</code>, <code>max_result_byte
 
     <div class="doc doc-contents ">
 
-        <p>Wrap an already-built :class:<code>SpecToolset</code> (the compose path).</p>
+        <p>Wrap an already-built
+<a class="autorefs autorefs-internal" title="SpecToolset" href="#rest_framework_pydantic_ai.SpecToolset"><code>SpecToolset</code></a> (the compose
+path).</p>
 <p>The capability adopts the toolset's <code>id</code>, and its tools and
 instructions are the toolset's own — set an <code>instructions</code> override on
 the <code>SpecToolset</code> itself if you need one, so <code>from_toolset(ts)</code> and
@@ -1431,28 +1991,38 @@ arguments to any read-shaping param a serializer reads off
 transport advertises it, pops it from the arguments, and hands it to
 <code>build_offline_context(query_params=…)</code>; it never reaches the spec as an
 input, so the unknown-argument policy never flags it.</p>
-<p>A :class:<code>~rest_framework_services.SelectorSpec</code> <code>filter_set</code> does <strong>not</strong>
-need this — its fields are already generated into the schema and flow through
-as ordinary <code>params</code>.</p>
+<p>A <a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.selector_spec.SelectorSpec"><code>SelectorSpec</code></a>
+<code>filter_set</code> does <strong>not</strong> need this — its fields are already generated into the
+schema and flow through as ordinary <code>params</code>.</p>
 <p>Declared here rather than in each adapter for the same reason as
-:class:<code>~rest_framework_services.UrlKwarg</code>: it is the same declaration
-whichever transport carries it. Pair it with
-:func:<code>~rest_framework_services.validate_channel_names</code>.</p>
+<a class="autorefs autorefs-internal" title="UrlKwarg
+
+
+  
+      dataclass
+  " href="#rest_framework_services.types.url_kwarg.UrlKwarg"><code>UrlKwarg</code></a>: it is the same
+declaration whichever transport carries it. Pair it with
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.validate_channel_names.validate_channel_names"><code>validate_channel_names</code></a>.</p>
 <ul>
-<li><code>name</code> — the argument / query-string key. Must not collide with a
-  reserved transport key; see
-  :func:<code>~rest_framework_services.validate_channel_names</code>.</li>
-<li><code>type</code> — the JSON-Schema type advertised to the caller (<code>"string"</code> by
-  default; <code>"integer"</code> / <code>"number"</code> / <code>"boolean"</code> / <code>"array"</code> …).</li>
+<li><code>name</code> — the argument / query-string key. Must not collide with a reserved
+  transport key; see
+  <a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.validate_channel_names.validate_channel_names"><code>validate_channel_names</code></a>.</li>
+<li><code>type</code> — the JSON-Schema type advertised to the caller (<code>"string"</code> by default;
+  <code>"integer"</code> / <code>"number"</code> / <code>"boolean"</code> / <code>"array"</code> …).</li>
 <li><code>description</code> — optional help text shown to the caller.</li>
-<li><code>default</code> — optional value seeded when the caller omits the argument;
-  also surfaced as the schema <code>default</code>.</li>
+<li><code>default</code> — optional value seeded when the caller omits the argument; also
+  surfaced as the schema <code>default</code>.</li>
 </ul>
 <p><strong>No <code>required</code> flag, deliberately.</strong> A query param is <em>read-shaping</em> —
 omitting one is legitimate by construction, and the spec runs correctly
 without it. Requiredness belongs to inputs the spec cannot run without, which
-is :class:<code>~rest_framework_services.UrlKwarg</code> and the
-:data:<code>~rest_framework_services.InputRequired</code> marker.</p>
+is <a class="autorefs autorefs-internal" title="UrlKwarg
+
+
+  
+      dataclass
+  " href="#rest_framework_services.types.url_kwarg.UrlKwarg"><code>UrlKwarg</code></a> and the
+<code>InputRequired</code> marker.</p>
 
 
 
@@ -1526,48 +2096,107 @@ is :class:<code>~rest_framework_services.UrlKwarg</code> and the
         <p>A URL route capture exposed as a caller-supplied argument off-HTTP.</p>
 <p>Over HTTP a nested route's captures (the <code>project_pk</code> of
 <code>/projects/{project_pk}/widgets/</code>) reach a spec through <code>view.kwargs</code> —
-directly, or through a <code>spec.kwargs</code> provider that scopes by them.
-Off-HTTP there is no route, so the caller supplies the value as an ordinary
-argument: the transport advertises it in the tool / operation schema, pops it
-out of the arguments, and hands it to <code>build_offline_context(kwargs=…)</code>,
-from where :func:<code>~rest_framework_services.dispatch_spec</code> spreads it into the
-selector / target pools — authoritative over the spec params, below a
-<code>spec.kwargs</code> provider. It never reaches the spec as an ordinary input, so
-the unknown-argument policy never flags it.</p>
-<p><strong>This type is declared here, not in each adapter, on purpose.</strong> It is the
-same declaration whichever transport carries it, and two independent copies
-had already drifted into validating the same declaration against different
-reserved-name sets. Adapters import it and pair it with
-:func:<code>~rest_framework_services.validate_channel_names</code>.</p>
-<p>Reach for a <code>UrlKwarg</code> when the value is a URL-derived input a spec depends
-on that is <strong>not</strong> already an ordinary argument — most commonly a scoping
-<code>spec.kwargs</code> provider reading <code>view.kwargs</code> (off-HTTP that mapping is
-otherwise empty, so the provider mis-scopes for every caller), or a
-closed-surface spec whose route capture must be caller-suppliable.</p>
-<p>A selector that reads the value from its own <code>**extras: Unpack[TypedDict]</code>
-needs <strong>no</strong> <code>UrlKwarg</code>: drf-services reflects the key into the schema and
-<code>params</code> delivers it. A key can be <em>both</em> reflected and registered — the
-explicit <code>UrlKwarg</code> wins the adapter's schema merge, registration pops the
-argument into <code>kwargs=</code>, and the authoritative spread still delivers it to
-the selector pool, so both readers see it.</p>
-<ul>
-<li><code>name</code> — the argument / view-kwarg key. Must not collide with a reserved
-  transport key; see :func:<code>~rest_framework_services.validate_channel_names</code>.</li>
-<li><code>type</code> — the JSON-Schema type advertised to the caller (<code>"string"</code> by
-  default; <code>"integer"</code> / <code>"number"</code> / <code>"boolean"</code> …).</li>
-<li><code>description</code> — optional help text shown to the caller.</li>
-<li><code>default</code> — optional value seeded when the caller omits the argument;
-  also surfaced as the schema <code>default</code>.</li>
-<li><code>required</code> — advertise the key in the schema's <code>required</code> list. Use it
-  for a route capture the spec genuinely cannot run without, so a caller is
-  told up front instead of failing mid-dispatch. Setting both <code>required</code>
-  and a <code>default</code> is contradictory and raises in
-  :func:<code>~rest_framework_services.validate_channel_names</code>.</li>
-</ul>
-<p><code>required</code> here is the registered-declaration counterpart of the
-:data:<code>~rest_framework_services.InputRequired</code> marker, which does the same
-job for a key the callable's own <code>TypedDict</code> declares. Both end up in the
-schema's <code>required</code>; they differ only in where the key is declared.</p>
+directly, or through a <code>spec.kwargs</code> provider that scopes by them. Off-HTTP there
+is no route, so the caller supplies the value as an ordinary argument: the transport
+advertises it in the tool / operation schema, pops it out of the arguments, and
+hands it to <code>build_offline_context(kwargs=…)</code>, from where
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.dispatch.dispatch_spec.dispatch_spec"><code>dispatch_spec</code></a>
+spreads it into the selector / target pools — authoritative over the spec params,
+below a <code>spec.kwargs</code> provider. It never reaches the spec as an ordinary input, so
+the unknown-argument policy never flags it. Adapters import this declaration and
+pair it with
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.validate_channel_names.validate_channel_names"><code>validate_channel_names</code></a>.</p>
+<p>Reach for one when the value is a URL-derived input a spec depends on that is
+<strong>not</strong> already an ordinary argument — most commonly a scoping <code>spec.kwargs</code>
+provider reading <code>view.kwargs</code> (off-HTTP that mapping is otherwise empty, so
+the provider mis-scopes for every caller), or a closed-surface spec whose route
+capture must be caller-suppliable. A selector reading the value from its own
+<code>**extras: Unpack[TypedDict]</code> needs <strong>no</strong> <code>UrlKwarg</code>: drf-services reflects
+the key into the schema and <code>params</code> delivers it. A key can be <em>both</em>
+reflected and registered — the explicit <code>UrlKwarg</code> wins the adapter's schema
+merge, registration pops the argument into <code>kwargs=</code>, and the authoritative
+spread still delivers it to the selector pool, so both readers see it.</p>
+
+
+<p><span class="doc-section-title">Attributes:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td><code><span title="rest_framework_services.types.url_kwarg.UrlKwarg.name">name</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The argument / view-kwarg key. Must not collide with a reserved
+transport key; see
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.validate_channel_names.validate_channel_names"><code>validate_channel_names</code></a>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="rest_framework_services.types.url_kwarg.UrlKwarg.type">type</span></code></td>
+            <td>
+                  <code><span title="str">str</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The JSON-Schema type advertised to the caller — <code>"string"</code> by
+default, or <code>"integer"</code> / <code>"number"</code> / <code>"boolean"</code> …</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="rest_framework_services.types.url_kwarg.UrlKwarg.description">description</span></code></td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional help text shown to the caller.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="rest_framework_services.types.url_kwarg.UrlKwarg.default">default</span></code></td>
+            <td>
+                  <code><span title="typing.Any">Any</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Optional value seeded when the caller omits the argument; also
+surfaced as the schema <code>default</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td><code><span title="rest_framework_services.types.url_kwarg.UrlKwarg.required">required</span></code></td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Advertise the key in the schema's <code>required</code> list. Use it for
+a route capture the spec genuinely cannot run without, so a caller is
+told up front instead of failing mid-dispatch. Setting both
+<code>required</code> and a <code>default</code> is contradictory and raises in
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.validate_channel_names.validate_channel_names"><code>validate_channel_names</code></a>. It is the
+registered-declaration counterpart of
+<code>InputRequired</code>, which does the same job
+for a key the callable's own <code>TypedDict</code> declares; both end up in the
+schema's <code>required</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
 
@@ -1638,17 +2267,19 @@ schema's <code>required</code>; they differ only in where the key is declared.</
 
 
 
-        <p>Dependencies a Pydantic-AI agent passes to a :class:<code>SpecToolset</code>.</p>
-<p>Carries the acting <code>user</code> so the toolset can run each spec under the same
-off-HTTP context and permission checks a DRF view would apply. Pass an
-instance as <code>deps</code> when running the agent::</p>
+        <p>Dependencies a Pydantic-AI agent passes to a
+<a class="autorefs autorefs-internal" title="SpecToolset" href="#rest_framework_pydantic_ai.SpecToolset"><code>SpecToolset</code></a>.</p>
+<p>Pass an instance as <code>deps</code> when running the agent:</p>
 <div class="language-text highlight"><pre><span></span><code>agent = Agent(model, deps_type=AgentDeps, toolsets=[toolset])
 await agent.run(&quot;create an order for …&quot;, deps=AgentDeps(user=request.user))
 </code></pre></div>
-<p><code>SpecToolset</code> reads <code>ctx.deps.user</code> by default. A project that threads
-identity differently — a richer principal, a lookup keyed off a token — can
-keep its own deps type and hand <code>SpecToolset</code> a <code>get_user</code> extractor
-instead of using this class.</p>
+<p><code>user</code> carries the acting identity — a Django user, a custom principal,
+whatever <code>get_user</code> returns, hence <code>Any</code> — so the toolset can run each
+spec under the same off-HTTP context and permission checks a DRF view would
+apply. <code>SpecToolset</code> reads <code>ctx.deps.user</code> by default; a project that
+threads identity differently — a richer principal, a lookup keyed off a token
+— can keep its own deps type and hand <code>SpecToolset</code> a <code>get_user</code>
+extractor instead of using this class.</p>
 
 
 
@@ -1688,19 +2319,13 @@ instead of using this class.</p>
     <div class="doc doc-contents ">
 
         <p>Where a spec's <code>progress(...)</code> calls go for this run, or <code>None</code>.</p>
-<p>A plain callable <code>(progress, *, total, message, meta) -&gt; None</code>. The
-toolset forwards it into the kwarg pool and does nothing else with it.</p>
-<p>Typed, unlike :attr:<code>user</code> beside it — the two look alike and are not.
-<code>user</code> is genuinely <code>Any</code>: a Django user, a custom principal, whatever
-<code>get_user</code> returns. A reporter has a Protocol this package already
-depends on, so <code>Any</code> here would only mean a caller passing the wrong
-shape finds out inside their own service body.</p>
-<p>⛔ <strong>It arrives here rather than on the toolset because the toolset must
-never construct one.</strong> This package is a pydantic-ai adapter; it is driven
-by AG-UI, by A2A, by a management command, by a worker. Each of those has a
-different idea of where a progress report should go — an SSE frame, a task
-record, a log line — and a toolset that picked one would have chosen a
-transport it does not own. The caller knows; it passes a callable.</p>
+<p>A plain callable <code>(progress, *, total, message, meta) -&gt; None</code>. The toolset
+forwards it into the kwarg pool and does nothing else with it.</p>
+<p><strong>It arrives here rather than on the toolset because the toolset must never
+construct one.</strong> This package is driven by AG-UI, by A2A, by a management
+command, by a worker, each with a different idea of where a progress report
+should go — an SSE frame, a task record, a log line — and a toolset that
+picked one would have chosen a transport it does not own.</p>
 <p><code>None</code> costs nothing: drf-services substitutes its no-op, so a service
 declaring <code>progress</code> runs unchanged whether or not anyone is listening.</p>
 

@@ -10,29 +10,31 @@
       
       
       
-        <link rel="canonical" href="https://artui.github.io/djangorestframework-pydantic-ai/">
+        <link rel="canonical" href="https://artui.github.io/djangorestframework-pydantic-ai/agent-audience/">
       
       
+        <link rel="prev" href="../polymorphic-actions/">
       
-        <link rel="next" href="quickstart/">
+      
+        <link rel="next" href="../reference/">
       
       
         
       
       
-      <link rel="icon" href="assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
-        <title>djangorestframework-pydantic-ai</title>
+        <title>Hide plumbing from the model - djangorestframework-pydantic-ai</title>
       
     
     
-      <link rel="stylesheet" href="assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -51,9 +53,9 @@
       
     
     
-      <link rel="stylesheet" href="assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -78,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#djangorestframework-pydantic-ai" class="md-skip">
+        <a href="#hide-plumbing-from-the-model" class="md-skip">
           Skip to content
         </a>
       
@@ -94,7 +96,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="djangorestframework-pydantic-ai" class="md-header__button md-logo" aria-label="djangorestframework-pydantic-ai" data-md-component="logo">
+    <a href=".." title="djangorestframework-pydantic-ai" class="md-header__button md-logo" aria-label="djangorestframework-pydantic-ai" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -114,7 +116,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Home
+              Hide plumbing from the model
             
           </span>
         </div>
@@ -232,7 +234,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="djangorestframework-pydantic-ai" class="md-nav__button md-logo" aria-label="djangorestframework-pydantic-ai" data-md-component="logo">
+    <a href=".." title="djangorestframework-pydantic-ai" class="md-nav__button md-logo" aria-label="djangorestframework-pydantic-ai" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -259,37 +261,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Home
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="." class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
         
   
   
@@ -305,59 +280,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#what-this-is" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        What this is
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#how-it-compares" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        How it compares
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next steps
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -369,7 +291,7 @@
   
   
     <li class="md-nav__item">
-      <a href="quickstart/" class="md-nav__link">
+      <a href="../quickstart/" class="md-nav__link">
         
   
   
@@ -396,7 +318,7 @@
   
   
     <li class="md-nav__item">
-      <a href="spec-registry/" class="md-nav__link">
+      <a href="../spec-registry/" class="md-nav__link">
         
   
   
@@ -423,7 +345,7 @@
   
   
     <li class="md-nav__item">
-      <a href="polymorphic-actions/" class="md-nav__link">
+      <a href="../polymorphic-actions/" class="md-nav__link">
         
   
   
@@ -447,10 +369,37 @@
       
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="agent-audience/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hide plumbing from the model
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -466,6 +415,59 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#mark-the-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Mark the fields
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-costs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it costs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#your-rest-api-is-unaffected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Your REST API is unaffected
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -477,7 +479,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/" class="md-nav__link">
+      <a href="../reference/" class="md-nav__link">
         
   
   
@@ -524,10 +526,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#what-this-is" class="md-nav__link">
+  <a href="#mark-the-fields" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What this is
+        Mark the fields
       
     </span>
   </a>
@@ -535,10 +537,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#how-it-compares" class="md-nav__link">
+  <a href="#what-it-costs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        How it compares
+        What it costs
       
     </span>
   </a>
@@ -546,10 +548,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#next-steps" class="md-nav__link">
+  <a href="#your-rest-api-is-unaffected" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Next steps
+        Your REST API is unaffected
       
     </span>
   </a>
@@ -573,7 +575,7 @@
 
 
   
-    <a href="https://github.com/Artui/djangorestframework-pydantic-ai/edit/main/docs/index.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/Artui/djangorestframework-pydantic-ai/edit/main/docs/agent-audience.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -581,43 +583,53 @@
   
 
 
-<h1 id="djangorestframework-pydantic-ai">djangorestframework-pydantic-ai<a class="headerlink" href="#djangorestframework-pydantic-ai" title="Permanent link">&para;</a></h1>
-<p>Expose <a href="https://github.com/Artui/djangorestframework-services"><code>djangorestframework-services</code></a>
-services and selectors as a <a href="https://ai.pydantic.dev">Pydantic-AI</a> toolset, so a
-plain <code>pydantic_ai.Agent</code> can call them as tools — <strong>no MCP server and no AG-UI
-bridge</strong> in the path.</p>
-<h2 id="what-this-is">What this is<a class="headerlink" href="#what-this-is" title="Permanent link">&para;</a></h2>
-<p>A single thin adapter, <a href="reference/#rest_framework_pydantic_ai.SpecToolset"><code>SpecToolset</code></a>,
-that turns a <code>name -&gt; spec</code> mapping into agent tools. Every call routes through
-drf-services' transport-neutral surface:</p>
-<ul>
-<li><strong><code>dispatch_spec</code></strong> executes the service or selector (validation, instance
-  resolution, output-selector re-fetch);</li>
-<li><strong><code>build_offline_context</code></strong> supplies a synthetic request / view / principal so
-  <code>permission_classes</code>, <code>extend_queryset</code>, and context providers keep working;</li>
-<li><strong><code>enforce_permissions</code></strong> runs <code>spec.permission_classes</code> — <code>dispatch_spec</code>
-  deliberately does not, so building a toolset naively on it would skip
-  authorization;</li>
-<li><strong><code>spec_to_json_schema</code></strong> derives each tool's parameter schema;</li>
-<li><strong><code>render_spec_output</code></strong> renders the result through the spec's serializer.</li>
-</ul>
-<p>The result is that an agent driving these tools sees exactly what an HTTP client
-would: the same validation errors, the same <code>permission_classes</code> checks (both
-class-level <code>has_permission</code> and object-level <code>has_object_permission</code> on the
-resolved row), the same rendered payloads — without the network hop, and without
-standing up an MCP server.</p>
-<h2 id="how-it-compares">How it compares<a class="headerlink" href="#how-it-compares" title="Permanent link">&para;</a></h2>
-<p>If you already run an MCP server, <code>django-ag-ui</code>'s <code>DRFMCPToolset</code> exposes its
-tools to Pydantic-AI through the in-process MCP surface. <code>SpecToolset</code> is for the
-case where you want the specs as tools <strong>without</strong> any MCP layer: it depends only
-on <code>djangorestframework-services</code> and <code>pydantic-ai-slim</code>.</p>
-<h2 id="next-steps">Next steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="quickstart/">Quickstart</a> — wire a toolset to an agent.</li>
-<li><a href="spec-registry/">Shared spec registry</a> — declare your specs once when
-  more than one transport exposes them.</li>
-<li><a href="reference/">Reference</a> — the public API.</li>
-</ul>
+<h1 id="hide-plumbing-from-the-model">Hide plumbing from the model<a class="headerlink" href="#hide-plumbing-from-the-model" title="Permanent link">&para;</a></h1>
+<p>A serializer written for your REST API is handed to the model verbatim when the
+same spec becomes a tool. Everything in it is equally visible, so records get
+referred to by primary key, a status reads as <code>IN_STOCK</code> rather than "In stock",
+and internal fields get narrated as if they were content.</p>
+<p><strong>This bites harder in-process than it does over MCP.</strong> A <code>ToolDefinition</code>
+carries a parameter schema and no output schema, so the payload is the model's
+only view of a result — a nicer label that lived only in a schema would never
+reach it.</p>
+<h2 id="mark-the-fields">Mark the fields<a class="headerlink" href="#mark-the-fields" title="Permanent link">&para;</a></h2>
+<p>The marking is <code>AgentField</code>, from
+<a href="https://artui.github.io/djangorestframework-services/">djangorestframework-services</a>,
+in DRF's per-field <code>style</code> bag. It reaches a <code>ModelSerializer</code> through
+<code>Meta.extra_kwargs</code>, so nothing has to be redeclared:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework</span><span class="w"> </span><span class="kn">import</span> <span class="n">serializers</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_services</span><span class="w"> </span><span class="kn">import</span> <span class="n">AGENT</span><span class="p">,</span> <span class="n">AgentField</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">WidgetSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">model</span> <span class="o">=</span> <span class="n">Widget</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;id&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="s2">&quot;price&quot;</span><span class="p">,</span> <span class="s2">&quot;status&quot;</span><span class="p">]</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">extra_kwargs</span> <span class="o">=</span> <span class="p">{</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>            <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">AGENT</span><span class="p">:</span> <span class="n">AgentField</span><span class="o">.</span><span class="n">handle</span><span class="p">(</span><span class="s2">&quot;Widget handle.&quot;</span><span class="p">)}},</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            <span class="s2">&quot;price&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">AGENT</span><span class="p">:</span> <span class="n">AgentField</span><span class="o">.</span><span class="n">hidden</span><span class="p">()}},</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">AGENT</span><span class="p">:</span> <span class="n">AgentField</span><span class="o">.</span><span class="n">label</span><span class="p">()}},</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        <span class="p">}</span>
+</span></code></pre></div>
+<p>Nothing changes at the toolset. A tool rendering through that serializer returns:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">[{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Sprocket&quot;</span><span class="p">,</span> <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;In stock&quot;</span><span class="p">}]</span>
+</span></code></pre></div>
+<p><code>price</code> is gone. <code>status</code> reads as a person would say it. <code>id</code> is untouched — a
+handle is another tool's input, so its value is never re-spelled.</p>
+<p>The derived instructions gain one line, and only when some tool in the toolset
+actually returns a handle:</p>
+<blockquote>
+<p>Some tools return opaque identifier fields, described as such in the tool's
+output. Pass them to other tools that ask for one; refer to records by their
+name in anything you say, never by the identifier.</p>
+</blockquote>
+<h2 id="what-it-costs">What it costs<a class="headerlink" href="#what-it-costs" title="Permanent link">&para;</a></h2>
+<p>Nothing per call. The markings are pure in the serializer class, like the tool
+schemas, so <code>SpecToolset</code> resolves them once at construction and reuses them.</p>
+<h2 id="your-rest-api-is-unaffected">Your REST API is unaffected<a class="headerlink" href="#your-rest-api-is-unaffected" title="Permanent link">&para;</a></h2>
+<p>DRF consults <code>style</code> only in <code>HTMLFormRenderer</code>, and only for its own keys. A
+marked-up serializer renders byte-identically behind a viewset — which is the
+point: one serializer, whichever consumer is reading.</p>
 
 
 
@@ -673,10 +685,10 @@ on <code>djangorestframework-services</code> and <code>pydantic-ai-slim</code>.<
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.instant", "navigation.tracking", "navigation.sections", "navigation.top", "search.highlight", "search.suggest", "content.code.copy", "content.code.annotate", "content.action.edit", "toc.follow"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.instant", "navigation.tracking", "navigation.sections", "navigation.top", "search.highlight", "search.suggest", "content.code.copy", "content.code.annotate", "content.action.edit", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>
