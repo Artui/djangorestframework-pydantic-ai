@@ -43,7 +43,7 @@ dependencies = [
     # landing in the selector callable's kwarg pool. The band also carries
     # ``preconditions`` (0.34), ``AdditionalInputRequired`` (0.32), the
     # ``progress`` pool seed (0.30) and consumer-owned spec ``metadata`` (0.31).
-    "djangorestframework-services>=0.36",
+    "djangorestframework-services>=0.43",
     "pydantic-ai-slim>=2,<3",
 ]
 
