@@ -491,6 +491,28 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.is_tool_listed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        is_tool_listed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#rest_framework_pydantic_ai.SpecToolset.get_instructions" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -746,6 +768,28 @@
     <span class="md-ellipsis">
       
         specs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.SpecToolset.is_tool_listed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        is_tool_listed
       
     </span>
   </a>
@@ -1495,7 +1539,12 @@ the toolset-wide set rather than merging with it.</p>
 <strong>Incidental request data, never an auth channel:</strong> it exists so a
 serializer or scoping provider reading <code>request.META</code> finds
 something plausible. The acting identity is the user, and passing an
-authenticated request authorizes nothing.</p>
+authenticated request authorizes nothing. Its <strong>query string never
+reaches the spec</strong>: every call replaces it with the declared
+<code>query_params</code> for that tool, empty declaration included, so the
+ambient endpoint's own query string cannot shape a result. Its
+headers and <code>META</code> are what it contributes; drf-services wraps a
+copy, so nothing a dispatch does is visible on it afterwards.</p>
               </div>
             </td>
             <td>
@@ -1632,6 +1681,81 @@ description checks.</p>
 <div class="doc doc-object doc-function">
 
 
+<h3 id="rest_framework_pydantic_ai.SpecToolset.get_tools" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">get_tools</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#rest_framework_pydantic_ai.SpecToolset.get_tools" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">get_tools</span><span class="p">(</span><span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">ToolsetTool</span><span class="p">[</span><span class="n">Any</span><span class="p">]]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The tool catalog this run is offered, one entry per listed spec.</p>
+<p><strong>The catalog is not permission-filtered, by design.</strong> Every tool is
+advertised to every run and <code>permission_classes</code> gate the <em>call</em>: a
+denied tool is one the model can see and cannot use. Filtering by
+default would be worse in three ways — a permission whose answer depends
+on the arguments has none to read at listing time and would deny a tool
+the caller can in fact invoke; <code>get_tools</code> runs once per model step, so
+a DB-backed check becomes a query per spec per step; and a tool the model
+never sees is one it cannot ask about, which is how a run ends in a
+guess instead of a denial. Nothing row-level is exposed either way — a
+listing carries a name, a description and an input schema.</p>
+<p>Override <a class="autorefs autorefs-internal" title="is_tool_listed
+
+
+  
+      async
+  " href="#rest_framework_pydantic_ai.SpecToolset.is_tool_listed"><code>is_tool_listed</code></a>
+when a deployment does want a narrower catalog.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="rest_framework_pydantic_ai.SpecToolset.is_tool_listed" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">is_tool_listed</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-async"><code>async</code></small>
+  </span>
+
+<a href="#rest_framework_pydantic_ai.SpecToolset.is_tool_listed" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">is_tool_listed</span><span class="p">(</span><span class="n">name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Whether <code>name</code> belongs in this run's catalog. <code>True</code> by default.</p>
+<p>The seam for a deployment that wants a per-run catalog — hiding a
+staff-only tool from a non-staff run, or scoping the catalog to a
+tenant read off <code>ctx.deps</code>. Hiding a tool is a <em>disclosure</em> decision,
+never an authorization one: the call is gated by
+<code>spec.permission_classes</code> whatever this returns, so an override that
+wrongly returns <code>True</code> grants nothing.</p>
+<p><code>async</code> because <code>get_tools</code> is, and it is called once per tool per
+model step. An override that queries the database must wrap that work in
+<code>asgiref.sync.sync_to_async</code> — Django refuses ORM access on the event
+loop, exactly as <code>call_tool</code> has to for dispatch.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
 <h3 id="rest_framework_pydantic_ai.SpecToolset.get_instructions" class="doc doc-heading">
             <span class="doc doc-object-name doc-function-name">get_instructions</span>
 
@@ -1726,10 +1850,11 @@ for a toolset attached directly <em>or</em> wrapped by a capability.</p>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">params</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">],</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">kwargs</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">query_params</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">host</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">action</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">kwargs</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">query_params</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">host</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Any</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -1743,6 +1868,13 @@ channel.</strong> The acting identity is <code>user</code>, resolved from <code>
 and nothing downstream re-derives it from the request; supplying an
 authenticated one authorizes nothing and would put a second, invisible
 identity in the call.</p>
+<p><code>action</code> is the tool name, landing on the synthetic view as
+<code>view.action</code> — one of the three attributes (<code>request</code> /
+<code>action</code> / <code>kwargs</code>) drf-services documents a permission class as
+being able to read off HTTP, and left unset it reads as <code>None</code> for
+every spec alike. Rewrite it in an override (it arrives in <code>**kwargs</code>
+in the forwarding form) when a permission class branches on the viewset
+action names it knows.</p>
 
 
     </div>
@@ -1805,7 +1937,8 @@ cannot express — one that has to read the run's deps.</p>
 <p><a class="autorefs autorefs-internal" title="SpecToolset" href="#rest_framework_pydantic_ai.SpecToolset"><code>SpecToolset</code></a> is a first-class toolset you
 can attach directly (<code>Agent(toolsets=[SpecToolset(...)])</code>), and it already
 exposes the tools <em>and</em> teaches the model its conventions. This wraps one to
-add the capability-only feature, <code>defer_loading</code>. It does <strong>not</strong> re-emit
+add the two capability-only knobs, <code>defer_loading</code> and the
+<code>description</code> its catalog entry is chosen by. It does <strong>not</strong> re-emit
 those conventions — Pydantic-AI collects them from the owned toolset — so
 wrapping and attaching directly yield the same instructions, exactly once.</p>
 <p>Construct it the same way as <code>SpecToolset</code> (it forwards the toolset knobs):</p>
@@ -1901,6 +2034,29 @@ give each capability projected from one registry its own.</p>
                   <code>&#39;drf-specs&#39;</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>description</code>
+            </td>
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One line saying what this capability is for, rendered
+beside <code>id</code> in <code>defer_loading</code>'s catalog. <strong>Give one to every
+deferred capability:</strong> Pydantic-AI's loader renders <code>- {id}:
+{description}</code> when there is one and a bare <code>- {id}</code> when there
+is not, so several undescribed capabilities leave the model
+choosing between names alone — the guess-or-load-everything outcome
+deferring exists to avoid. Not the same knob as <code>descriptions</code>,
+which relabels individual <em>tools</em>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -1937,7 +2093,9 @@ give each capability projected from one registry its own.</p>
   </span>
 
 <a href="#rest_framework_pydantic_ai.SpecCapability.from_toolset" class="headerlink" title="Permanent link">&para;</a></h3>
-<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_toolset</span><span class="p">(</span><span class="n">toolset</span><span class="p">:</span> <span class="n">SpecToolset</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">defer_loading</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SpecCapability</span>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_toolset</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">toolset</span><span class="p">:</span> <span class="n">SpecToolset</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">defer_loading</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span> <span class="n">description</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SpecCapability</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -1949,6 +2107,9 @@ path).</p>
 instructions are the toolset's own — set an <code>instructions</code> override on
 the <code>SpecToolset</code> itself if you need one, so <code>from_toolset(ts)</code> and
 <code>SpecCapability(specs, …)</code> behave identically.</p>
+<p><code>description</code> means what it does on the constructor: the catalog line
+a deferred capability is chosen by. It has no toolset counterpart to
+adopt, so pass it here.</p>
 
 
     </div>
@@ -2010,9 +2171,18 @@ declaration whichever transport carries it. Pair it with
 <li><code>type</code> — the JSON-Schema type advertised to the caller (<code>"string"</code> by default;
   <code>"integer"</code> / <code>"number"</code> / <code>"boolean"</code> / <code>"array"</code> …).</li>
 <li><code>description</code> — optional help text shown to the caller.</li>
-<li><code>default</code> — optional value seeded when the caller omits the argument; also
-  surfaced as the schema <code>default</code>.</li>
+<li><code>default</code> — value seeded when the caller omits the argument; also surfaced
+  as the schema <code>default</code>. Left at <code>UNSET</code> there is no default, and the
+  schema carries no <code>default</code> key; <code>default=None</code> is a real declaration
+  ("defaults to null") and is surfaced like any other value. Read it with
+  <code>is not UNSET</code>, never with a truthiness or <code>is not None</code> test.</li>
 </ul>
+<p><strong>An explicit null from the caller is not a supplied value.</strong> Over HTTP a
+query param is always a string, so there is no value a caller can send that
+means null; off-HTTP, <code>{"fields": null}</code> is the shape a model emits for a
+param it chose not to fill. A transport treats it as an omitted argument —
+the <code>default</code> still applies — rather than routing <code>None</code> onto
+<code>request.query_params</code>.</p>
 <p><strong>No <code>required</code> flag, deliberately.</strong> A query param is <em>read-shaping</em> —
 omitting one is legitimate by construction, and the spec runs correctly
 without it. Requiredness belongs to inputs the spec cannot run without, which
@@ -2059,6 +2229,9 @@ is <a class="autorefs autorefs-internal" title="UrlKwarg
     <div class="doc doc-contents ">
 
         <p>The JSON-Schema property this param contributes to an input schema.</p>
+<p><code>default</code> is emitted whenever one was declared — <code>UNSET</code> is the
+"no default" sentinel, so an explicit <code>default=None</code> reaches the
+schema as <code>"default": None</code> instead of vanishing.</p>
 
 
     </div>
@@ -2116,6 +2289,13 @@ the key into the schema and <code>params</code> delivers it. A key can be <em>bo
 reflected and registered — the explicit <code>UrlKwarg</code> wins the adapter's schema
 merge, registration pops the argument into <code>kwargs=</code>, and the authoritative
 spread still delivers it to the selector pool, so both readers see it.</p>
+<p><strong>An explicit null from the caller is not a supplied value.</strong> A route capture
+is a URL segment, so over HTTP there is no value that means null; off-HTTP,
+<code>{"project_pk": null}</code> is what a model emits for a capture it could not
+resolve. A transport treats that as an omitted argument — <code>required</code> still
+refuses it and <code>default</code> still applies — rather than spreading <code>None</code> onto
+<code>view.kwargs</code>, where a scoping provider would turn it into a silent
+<code>IS NULL</code> lookup that returns rows and looks successful.</p>
 
 
 <p><span class="doc-section-title">Attributes:</span></p>
@@ -2171,8 +2351,12 @@ default, or <code>"integer"</code> / <code>"number"</code> / <code>"boolean"</co
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Optional value seeded when the caller omits the argument; also
-surfaced as the schema <code>default</code>.</p>
+                <p>Value seeded when the caller omits the argument; also surfaced as
+the schema <code>default</code>. Left at <code>UNSET</code> there is no default and the
+schema carries no <code>default</code> key; <code>default=None</code> is a real
+declaration ("defaults to null") and is surfaced like any other
+value. Read it with <code>is not UNSET</code>, never with a truthiness or
+<code>is not None</code> test.</p>
               </div>
             </td>
           </tr>
@@ -2233,6 +2417,9 @@ schema's <code>required</code>.</p>
     <div class="doc doc-contents ">
 
         <p>The JSON-Schema property this kwarg contributes to an input schema.</p>
+<p><code>default</code> is emitted whenever one was declared — <code>UNSET</code> is the
+"no default" sentinel, so an explicit <code>default=None</code> reaches the
+schema as <code>"default": None</code> instead of vanishing.</p>
 
 
     </div>
