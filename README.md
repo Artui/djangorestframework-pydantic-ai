@@ -59,9 +59,12 @@ selectors gain `page` / `limit` / `order` tool args.
 Failures map onto the model loop so the agent self-corrects: invalid input, a bad
 `page` / `limit` / `order` value, and unexpected (hallucinated) arguments come
 back as `ModelRetry`; a business error or missing row becomes a readable
-`{"error": ...}`; a denied permission raises `PermissionDenied` and aborts the
-run. Unexpected arguments are **rejected by default** — pass `unknown_arguments=`
-to `SpecToolset` (`IGNORE` / `PASSTHROUGH`) to change that.
+`{"error": ...}`; a denied permission raises `PermissionDenied`, which aborts
+the run under a plain `pydantic_ai.Agent`. A host that installs a tool-failure
+policy — `django-pydantic-agent`'s `build_agent` does by default — turns that
+denial into a failed-tool result instead, so the run continues; the call is
+still denied either way. Unexpected arguments are **rejected by default** — pass
+`unknown_arguments=` to `SpecToolset` (`IGNORE` / `PASSTHROUGH`) to change that.
 
 See the [documentation](https://artui.github.io/djangorestframework-pydantic-ai/)
 for the full reference.

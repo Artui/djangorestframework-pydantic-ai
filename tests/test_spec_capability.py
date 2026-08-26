@@ -112,6 +112,41 @@ def test_defer_loading_defaults_off_and_is_settable():
     Agent(FunctionModel(lambda m, i: ModelResponse(parts=[TextPart("ok")])), capabilities=[cap])
 
 
+# --- description -------------------------------------------------------------
+
+
+def test_a_description_reaches_the_deferred_catalog_entry():
+    """The line a deferred capability is chosen by.
+
+    Pydantic-AI's loader renders ``- {id}: {description}`` when a capability has
+    one and a bare ``- {id}`` when it does not, so a hardcoded ``None`` left
+    every deferred spec capability advertising a name and nothing else -- the
+    guess-or-load-everything outcome deferring exists to avoid. ``description=``
+    used to raise ``TypeError``, helpfully suggesting the unrelated per-tool
+    ``descriptions=``.
+    """
+    cap = SpecCapability(
+        {"go": ping_spec()},
+        id="orders",
+        defer_loading=True,
+        description="Order tools.",
+    )
+
+    assert cap.description == "Order tools."
+    assert cap.get_description() == "Order tools."
+
+
+def test_no_description_is_still_the_default():
+    """Unset stays unset -- the loader's bare-id line, not an invented blurb."""
+    assert SpecCapability({"go": ping_spec()}).get_description() is None
+
+
+def test_from_toolset_takes_a_description_too():
+    """The compose path has no toolset field to adopt one from."""
+    cap = SpecCapability.from_toolset(SpecToolset({"go": ping_spec()}), description="Order tools.")
+    assert cap.get_description() == "Order tools."
+
+
 # --- from_toolset ------------------------------------------------------------
 
 
@@ -154,10 +189,12 @@ def test_the_capability_accepts_every_keyword_the_toolset_does():
 
     unreachable = sorted(set(toolset) - set(capability))
     assert not unreachable, f"SpecToolset keywords with no way in: {unreachable}"
-    # And nothing extra beyond the one keyword that is genuinely the
+    # And nothing extra beyond the two keywords that are genuinely the
     # capability's own — an addition here that the toolset knows nothing about
-    # would be accepted and then quietly dropped on the floor.
-    assert set(capability) - set(toolset) == {"defer_loading"}
+    # would be accepted and then quietly dropped on the floor. ``description``
+    # earns its place for the same reason ``defer_loading`` does: it describes
+    # the capability's catalog entry, and a toolset has no catalog entry.
+    assert set(capability) - set(toolset) == {"defer_loading", "description"}
 
 
 def test_a_shared_keyword_means_the_same_thing_on_both():

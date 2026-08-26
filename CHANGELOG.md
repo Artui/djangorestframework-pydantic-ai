@@ -6,6 +6,96 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+**Floor raised to `djangorestframework-services>=0.44`** (was `>=0.43`), for one
+guarantee this package cannot provide itself: `build_offline_context` now wraps a
+shallow *copy* of the `http_request=` it is handed instead of writing to the
+caller's own object. Below that floor, a toolset configured with
+`http_request=` shares one request across every call it ever makes, so two
+concurrent runs overwrite each other's query params — a serializer shaped by
+another run's arguments, with no error anywhere — and the request stays
+overwritten (`method` forced to `POST`, `GET` replaced, `user` reassigned) for
+whatever reads it afterwards. Nothing in this package's own API changes; a
+project pinned below 0.44 has to move up.
+
+**A configured `http_request`'s query string no longer reaches the spec.** Every
+call now replaces the wrapped request's `GET` with the query params declared for
+that tool, an empty declaration included. Previously an empty declaration left
+the ambient request's own query string live inside the dispatch, so a
+django-restql `?query=` / `?fields=` serializer or a `filter_set` could reshape a
+result through a channel neither the tool schema nor the model chose. If you were
+relying on that — a project passing `http_request=` and expecting its query
+string to reach a `filter_set` — declare the value as a `QueryParam` (or a
+`filter_set` field) so it is an advertised, model-supplied argument.
+
+**`view.action` is now the tool name, where it used to be `None`.** A permission
+class that branches on the action will take a different arm than before. The old
+value was `None` for every spec alike, which is what made the same spec behind
+the same permission class gate one way over HTTP and another way through an
+agent; a class with a permissive `else` arm was granting on every agent call.
+Check such a class before upgrading, and rewrite `action` in a `build_context`
+override if it needs one of the viewset action names. An existing
+`build_context` override written in the documented forwarding form
+(`def build_context(self, user, params, *, ctx, **kwargs)`) needs no change; one
+that spells out every keyword must accept `action` as well.
+
+### Added
+
+- **`SpecCapability(description=…)`.** The capability's own description, which
+  `defer_loading`'s catalog renders as `- {id}: {description}`. It was
+  hardcoded to `None`, so several deferred capabilities gave the model a list
+  of bare ids with nothing to choose on — and it would either guess or load all
+  of them, which is the cost deferring was meant to avoid. Available on
+  `from_toolset` too, which has no toolset field to adopt one from. Not to be
+  confused with the `descriptions` mapping, which relabels individual tools.
+
+- **`SpecToolset.is_tool_listed(name, ctx)`** — the seam for a deployment that
+  wants a per-run tool catalog (hiding a staff-only tool from a non-staff run,
+  scoping to a tenant read off `ctx.deps`). Returns `True` for everything by
+  default, so nothing changes unless you override it.
+
+  **The catalog stays unfiltered by default, deliberately.** A permission whose
+  answer depends on the call arguments has none to read at listing time and
+  would hide a tool the caller can in fact invoke; the listing runs once per
+  model step, so a database-backed check costs a query per spec per step; and a
+  tool the model cannot see is one it cannot ask about. Hiding a tool is a
+  disclosure decision, never an authorization one — `permission_classes` gate
+  the call whatever this returns.
+
+### Fixed
+
+- **A permission class dispatched through the toolset now sees the tool name as
+  `view.action`, not `None`.** `action` is one of the three attributes
+  drf-services documents a permission class as being able to read off HTTP, and
+  the toolset never set it, so every spec authorized against `view.action is
+  None` — while the same spec exposed over MCP was gated with an action set. A
+  class shaped `if view.action in {…}: strict else: allow` therefore took the
+  permissive arm on every agent call. The tool name is the identity the model
+  called and the same one the MCP transport reports.
+
+### Changed
+
+- **The compatibility table's `drf-services` row read `0.36` while the pin was
+  `>=0.43`**, and the floor comment beside the pin still explained the 0.36
+  raise. Both now say what the current floor is and why.
+
+### Documentation
+
+- **"`PermissionDenied` is raised and aborts the run" now carries the host it is
+  true for.** It describes a plain `pydantic_ai.Agent`, where nothing catches the
+  exception. A host that installs a tool-failure policy — `django-pydantic-agent`'s
+  `build_agent` does by default — turns the denial into a failed-tool result
+  instead and the run continues, free to try the next row in the same turn. The
+  denial itself is unaffected on every host; what changes is whether the run
+  survives it, so it is not a stop signal to rely on.
+
+- **A new quickstart section, "What a permission class sees"**, naming the three
+  attributes of the synthetic request and view a permission class reads off HTTP
+  and what this package puts in each, plus why the tool catalog is not
+  permission-filtered and how to narrow it.
+
+
 ## [0.18.1] — 2026-08-26
 
 ### Fixed

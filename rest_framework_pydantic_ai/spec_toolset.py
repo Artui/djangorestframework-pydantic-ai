@@ -293,7 +293,12 @@ class SpecToolset(AbstractToolset[Any]):
             **Incidental request data, never an auth channel:** it exists so a
             serializer or scoping provider reading ``request.META`` finds
             something plausible. The acting identity is the user, and passing an
-            authenticated request authorizes nothing.
+            authenticated request authorizes nothing. Its **query string never
+            reaches the spec**: every call replaces it with the declared
+            ``query_params`` for that tool, empty declaration included, so the
+            ambient endpoint's own query string cannot shape a result. Its
+            headers and ``META`` are what it contributes; drf-services wraps a
+            copy, so nothing a dispatch does is visible on it afterwards.
         get_http_request: ``http_request`` resolved per run from ``RunContext``,
             the way ``get_user`` is. Wins over a static ``http_request``.
         exception_map: Maps an exception type to a handler returning the tool's
@@ -434,6 +439,22 @@ class SpecToolset(AbstractToolset[Any]):
         return MappingProxyType(self._specs)
 
     async def get_tools(self, ctx: RunContext[Any]) -> dict[str, ToolsetTool[Any]]:
+        """The tool catalog this run is offered, one entry per listed spec.
+
+        **The catalog is not permission-filtered, by design.** Every tool is
+        advertised to every run and ``permission_classes`` gate the *call*: a
+        denied tool is one the model can see and cannot use. Filtering by
+        default would be worse in three ways — a permission whose answer depends
+        on the arguments has none to read at listing time and would deny a tool
+        the caller can in fact invoke; ``get_tools`` runs once per model step, so
+        a DB-backed check becomes a query per spec per step; and a tool the model
+        never sees is one it cannot ask about, which is how a run ends in a
+        guess instead of a denial. Nothing row-level is exposed either way — a
+        listing carries a name, a description and an input schema.
+
+        Override [`is_tool_listed`][rest_framework_pydantic_ai.SpecToolset.is_tool_listed]
+        when a deployment does want a narrower catalog.
+        """
         return {
             name: ToolsetTool(
                 toolset=self,
@@ -442,7 +463,26 @@ class SpecToolset(AbstractToolset[Any]):
                 args_validator=_TOOL_ARGS_VALIDATOR,
             )
             for name, tool_def in self._tool_defs.items()
+            if await self.is_tool_listed(name, ctx)
         }
+
+    async def is_tool_listed(self, name: str, ctx: RunContext[Any]) -> bool:
+        """Whether ``name`` belongs in this run's catalog. ``True`` by default.
+
+        The seam for a deployment that wants a per-run catalog — hiding a
+        staff-only tool from a non-staff run, or scoping the catalog to a
+        tenant read off ``ctx.deps``. Hiding a tool is a *disclosure* decision,
+        never an authorization one: the call is gated by
+        ``spec.permission_classes`` whatever this returns, so an override that
+        wrongly returns ``True`` grants nothing.
+
+        ``async`` because ``get_tools`` is, and it is called once per tool per
+        model step. An override that queries the database must wrap that work in
+        ``asgiref.sync.sync_to_async`` — Django refuses ORM access on the event
+        loop, exactly as ``call_tool`` has to for dispatch.
+        """
+        del name, ctx  # unused by the default; present so an override has both
+        return True
 
     async def get_instructions(self, ctx: RunContext[Any]) -> str | None:
         """Teach the model this toolset's conventions.
@@ -491,6 +531,9 @@ class SpecToolset(AbstractToolset[Any]):
                     user,
                     dict(tool_args),
                     ctx=ctx,
+                    # The tool name is this call's view action, the same
+                    # identity the MCP transport reports for the same spec.
+                    action=name,
                     unknown_arguments=self._unknown_arguments,
                     query_params=self._tool_query_params[name],
                     url_kwargs=self._tool_url_kwargs[name],
@@ -531,6 +574,7 @@ class SpecToolset(AbstractToolset[Any]):
         params: Mapping[str, Any],
         *,
         ctx: RunContext[Any],
+        action: str | None = None,
         kwargs: Mapping[str, Any] | None = None,
         query_params: Mapping[str, Any] | None = None,
         host: str | None = None,
@@ -546,11 +590,20 @@ class SpecToolset(AbstractToolset[Any]):
         and nothing downstream re-derives it from the request; supplying an
         authenticated one authorizes nothing and would put a second, invisible
         identity in the call.
+
+        ``action`` is the tool name, landing on the synthetic view as
+        ``view.action`` — one of the three attributes (``request`` /
+        ``action`` / ``kwargs``) drf-services documents a permission class as
+        being able to read off HTTP, and left unset it reads as ``None`` for
+        every spec alike. Rewrite it in an override (it arrives in ``**kwargs``
+        in the forwarding form) when a permission class branches on the viewset
+        action names it knows.
         """
         return build_offline_context(
             user,
             params,
             http_request=self._get_http_request(ctx),
+            action=action,
             kwargs=kwargs,
             query_params=query_params,
             host=host,
@@ -1084,6 +1137,7 @@ def _call_spec(
     user: Any,
     args: dict[str, Any],
     *,
+    action: str | None = None,
     unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
     query_params: Sequence[QueryParam] = (),
     url_kwargs: Sequence[UrlKwarg] = (),
@@ -1106,6 +1160,9 @@ def _call_spec(
     [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] threads its
     overridable methods through; the defaults
     keep this function usable on its own.
+
+    ``action`` becomes ``view.action`` on the synthetic view, so a permission
+    class reading it sees the tool name rather than ``None``.
     """
     page_args = _pop_pagination(spec, args, ordering_fields, max_page_size)
     # Both channels pop before dispatch so their values never reach the spec as
@@ -1120,8 +1177,16 @@ def _call_spec(
     context = build_context(
         user,
         args,
+        action=action,
         kwargs=url_kwarg_values or None,
-        query_params=query_param_values or None,
+        # **Always a mapping, never ``None``.** ``build_offline_context``
+        # replaces the wrapped request's ``GET`` only when this is not ``None``,
+        # so a tool declaring no ``QueryParam`` would otherwise leave a
+        # configured ``http_request``'s own query string live inside the spec —
+        # a ``?query=`` / ``?fields=`` serializer or a ``filter_set`` reshaping
+        # the result through a channel neither the tool schema nor the model
+        # chose. An empty declaration means an empty query string.
+        query_params=query_param_values,
         host=host,
     )
     # Two-layer authorization, mirroring a DRF view: this call runs the

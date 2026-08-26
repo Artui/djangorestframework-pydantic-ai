@@ -27,7 +27,8 @@ class SpecCapability(AbstractCapability[Any]):
     [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] is a first-class toolset you
     can attach directly (``Agent(toolsets=[SpecToolset(...)])``), and it already
     exposes the tools *and* teaches the model its conventions. This wraps one to
-    add the capability-only feature, ``defer_loading``. It does **not** re-emit
+    add the two capability-only knobs, ``defer_loading`` and the
+    ``description`` its catalog entry is chosen by. It does **not** re-emit
     those conventions — Pydantic-AI collects them from the owned toolset — so
     wrapping and attaching directly yield the same instructions, exactly once.
 
@@ -65,6 +66,14 @@ class SpecCapability(AbstractCapability[Any]):
             it — progressive disclosure for a large spec map.
         id: As ``SpecToolset``. It keys ``defer_loading``'s catalog entry, so
             give each capability projected from one registry its own.
+        description: One line saying what this capability is for, rendered
+            beside ``id`` in ``defer_loading``'s catalog. **Give one to every
+            deferred capability:** Pydantic-AI's loader renders ``- {id}:
+            {description}`` when there is one and a bare ``- {id}`` when there
+            is not, so several undescribed capabilities leave the model
+            choosing between names alone — the guess-or-load-everything outcome
+            deferring exists to avoid. Not the same knob as ``descriptions``,
+            which relabels individual *tools*.
     """
 
     def __init__(
@@ -73,6 +82,7 @@ class SpecCapability(AbstractCapability[Any]):
         *,
         id: str = "drf-specs",
         defer_loading: bool = False,
+        description: str | None = None,
         instructions: str | None = None,
         get_user: UserExtractor | None = None,
         get_progress: ProgressExtractor | None = None,
@@ -120,7 +130,7 @@ class SpecCapability(AbstractCapability[Any]):
             get_http_request=get_http_request,
             exception_map=exception_map,
         )
-        self._configure(toolset, defer_loading=defer_loading)
+        self._configure(toolset, defer_loading=defer_loading, description=description)
 
     @classmethod
     def from_toolset(
@@ -128,6 +138,7 @@ class SpecCapability(AbstractCapability[Any]):
         toolset: SpecToolset,
         *,
         defer_loading: bool = False,
+        description: str | None = None,
     ) -> SpecCapability:
         """Wrap an already-built
         [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] (the compose
@@ -137,19 +148,25 @@ class SpecCapability(AbstractCapability[Any]):
         instructions are the toolset's own — set an ``instructions`` override on
         the ``SpecToolset`` itself if you need one, so ``from_toolset(ts)`` and
         ``SpecCapability(specs, …)`` behave identically.
+
+        ``description`` means what it does on the constructor: the catalog line
+        a deferred capability is chosen by. It has no toolset counterpart to
+        adopt, so pass it here.
         """
         self = cls.__new__(cls)
-        self._configure(toolset, defer_loading=defer_loading)
+        self._configure(toolset, defer_loading=defer_loading, description=description)
         return self
 
-    def _configure(self, toolset: SpecToolset, *, defer_loading: bool) -> None:
+    def _configure(
+        self, toolset: SpecToolset, *, defer_loading: bool, description: str | None
+    ) -> None:
         # ``AbstractCapability`` is a ``@dataclass(init=False)``, so its fields are
         # set as plain instance attributes. ``id`` mirrors the toolset's, so
         # ``defer_loading``'s catalog entry and the toolset resolve under one
         # identity. No ``get_instructions`` override: Pydantic-AI collects the
         # owned toolset's, and re-emitting here would duplicate them.
         self.id = toolset.id
-        self.description = None
+        self.description = description
         self.defer_loading = defer_loading
         self._toolset = toolset
 
