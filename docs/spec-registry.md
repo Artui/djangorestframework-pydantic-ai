@@ -79,8 +79,17 @@ catalog entry, so two capabilities sharing one would collide:
 ```python
 AgentConfig(
     capabilities=[
-        SpecCapability(registry.by_tag("read"), id="reads"),
-        SpecCapability(registry.by_tag("admin"), id="admin", defer_loading=True),
+        SpecCapability(
+            registry.by_tag("read"),
+            id="reads",
+            description="Read-only order and customer lookups.",
+        ),
+        SpecCapability(
+            registry.by_tag("admin"),
+            id="admin",
+            description="Account administration: suspend, refund, reassign.",
+            defer_loading=True,
+        ),
     ]
 )
 ```
@@ -88,6 +97,13 @@ AgentConfig(
 Here `defer_loading` hides the admin tools behind Pydantic-AI's native
 `load_capability` tool until the model asks for them — worth doing when the
 admin surface is large and rarely needed.
+
+**Give every deferred capability a `description`.** It is the line the model
+picks from: the catalog renders `- {id}: {description}` when there is one and a
+bare `- {id}` when there is not, so a few undescribed capabilities leave the
+model choosing between names alone — and it will either guess or load all of
+them, which is the cost deferring was meant to avoid. `description` names the
+*capability*; the separate `descriptions` mapping relabels individual tools.
 
 ## What the registry does *not* carry
 

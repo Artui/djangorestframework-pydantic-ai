@@ -2313,3 +2313,256 @@ def test_a_real_default_still_reaches_the_spec() -> None:
     """The other half of the predicate: a declared default is still applied."""
     assert _pop_url_kwargs([UrlKwarg(name="pk", type="integer", default=7)], {}) == {"pk": 7}
     assert _pop_query_params([QueryParam(name="fields", default="id")], {}) == {"fields": "id"}
+
+
+# --- what a permission class sees off HTTP -----------------------------------
+#
+# drf-services documents three attributes of the synthetic request / view a
+# permission class may read off HTTP. These pin what this package puts in each,
+# because a permission class is the only thing standing between a model and a
+# spec, and every one of them is authored against the HTTP transport.
+
+
+class RecordingPermission(BasePermission):
+    """Allows everything, and records what it was shown."""
+
+    seen: dict[str, Any] = {}
+
+    def has_permission(self, request, view):
+        RecordingPermission.seen = {
+            "action": view.action,
+            "kwargs": dict(view.kwargs),
+            "query_params": dict(request.query_params.lists()),
+            "user": request.user,
+        }
+        return True
+
+
+async def _call(toolset: SpecToolset, name: str, user: Any, args: dict[str, Any] | None = None):
+    tools = await toolset.get_tools(ctx_for(user))
+    return await toolset.call_tool(name, dict(args or {}), ctx_for(user), tools[name])
+
+
+@pytest.mark.django_db
+async def test_the_tool_name_is_the_view_action_a_permission_class_reads():
+    """``view.action`` used to be ``None`` for every spec this toolset exposed.
+
+    A permission class branching on the action -- strict for the actions it
+    knows, permissive otherwise -- then took the permissive arm on every call,
+    so the same spec behind the same class was gated one way over HTTP and
+    another way through an agent. The tool name is the identity the model
+    called, and it is what the MCP transport reports for the same spec.
+    """
+
+    def noop(user):
+        """Do it."""
+        return {"ok": True}
+
+    toolset = SpecToolset(
+        {
+            "suspend_account": ServiceSpec(
+                service=noop, atomic=False, permission_classes=[RecordingPermission]
+            )
+        },
+        descriptions={"suspend_account": "Suspend an account."},
+    )
+    RecordingPermission.seen = {}
+
+    await _call(toolset, "suspend_account", object())
+
+    assert RecordingPermission.seen["action"] == "suspend_account"
+
+
+@pytest.mark.django_db
+async def test_an_override_can_rewrite_the_action_it_is_handed():
+    """The seam stays a seam: ``action`` arrives in the forwarding ``**kwargs``.
+
+    A project whose permission class branches on viewset action names needs to
+    supply one of those, and must not have to reimplement the whole context
+    build to do it.
+    """
+
+    def noop(user):
+        """Do it."""
+        return {"ok": True}
+
+    class RetrieveShaped(SpecToolset):
+        def build_context(self, user, params, *, ctx, **kwargs):
+            return super().build_context(user, params, ctx=ctx, **{**kwargs, "action": "retrieve"})
+
+    toolset = RetrieveShaped(
+        {
+            "get_thing": ServiceSpec(
+                service=noop, atomic=False, permission_classes=[RecordingPermission]
+            )
+        },
+        descriptions={"get_thing": "Get a thing."},
+    )
+    RecordingPermission.seen = {}
+
+    await _call(toolset, "get_thing", object())
+
+    assert RecordingPermission.seen["action"] == "retrieve"
+
+
+@pytest.mark.django_db
+async def test_a_configured_requests_query_string_never_reaches_the_spec():
+    """A tool declaring no ``QueryParam`` dispatches with an empty query string.
+
+    ``build_offline_context`` replaces the wrapped request's ``GET`` only when
+    ``query_params`` is not ``None``, so passing ``None`` for an empty
+    declaration left the ambient endpoint's own query string live inside the
+    spec -- a field-selection or ``filter_set`` channel neither the tool schema
+    nor the model chose. The MCP transport passes a mapping at every call site
+    for exactly this reason.
+    """
+
+    def noop(user):
+        """Do it."""
+        return {"ok": True}
+
+    toolset = SpecToolset(
+        {
+            "do_it": ServiceSpec(
+                service=noop, atomic=False, permission_classes=[RecordingPermission]
+            )
+        },
+        descriptions={"do_it": "Do it."},
+        http_request=RequestFactory().post("/agent/?query={id,secret}&fields=ssn"),
+    )
+    RecordingPermission.seen = {}
+
+    await _call(toolset, "do_it", object())
+
+    assert RecordingPermission.seen["query_params"] == {}
+
+
+@pytest.mark.django_db
+async def test_a_declared_query_param_still_reaches_the_spec_alongside_it():
+    """The other half: replacing the query string is not dropping it."""
+
+    def noop(user):
+        """Do it."""
+        return {"ok": True}
+
+    toolset = SpecToolset(
+        {
+            "do_it": ServiceSpec(
+                service=noop, atomic=False, permission_classes=[RecordingPermission]
+            )
+        },
+        descriptions={"do_it": "Do it."},
+        query_params=[QueryParam(name="fields")],
+        http_request=RequestFactory().post("/agent/?fields=ssn&query={id}"),
+    )
+    RecordingPermission.seen = {}
+
+    await _call(toolset, "do_it", object(), {"fields": "id,name"})
+
+    assert RecordingPermission.seen["query_params"] == {"fields": ["id,name"]}
+
+
+# --- the shared-request guarantee the declared floor provides ----------------
+
+
+@pytest.mark.django_db
+def test_one_configured_request_is_not_shared_between_two_dispatches():
+    """Pins ``djangorestframework-services>=0.44``; lowering the floor fails here.
+
+    ``http_request=`` captures one object for the toolset's lifetime, and
+    ``call_tool`` dispatches through ``sync_to_async``, so two concurrent runs
+    on one module-level toolset build their contexts from the same request.
+    Below the declared floor ``build_offline_context`` wrapped that object
+    itself, so the two contexts aliased it and the second call's query params
+    silently became the first's -- a serializer shaped by another run's
+    arguments, with no error anywhere. The floor wraps a shallow copy instead.
+    """
+    shared = RequestFactory().get("/agent/?fields=original")
+    user = object()
+
+    first = build_offline_context(user, {}, http_request=shared, query_params={"fields": "id,name"})
+    second = build_offline_context(user, {}, http_request=shared, query_params={"fields": "id,ssn"})
+
+    assert first.request._request is not second.request._request
+    assert first.request.query_params["fields"] == "id,name"
+    assert second.request.query_params["fields"] == "id,ssn"
+
+
+@pytest.mark.django_db
+async def test_a_dispatch_leaves_the_configured_request_untouched():
+    """The second half: the caller's own request survives the call unchanged.
+
+    A project handing the toolset the request it is serving must be able to keep
+    reading it afterwards -- a later permission class, an audit hook, a
+    ``request.method`` branch. Below the declared floor a dispatch forced
+    ``method`` to ``POST``, replaced ``GET`` and reassigned ``user`` on that very
+    object, and the effects outlived the call.
+    """
+
+    def noop(user):
+        """Do it."""
+        return {"ok": True}
+
+    ambient = RequestFactory().get("/agent/?fields=original")
+    ambient.user = "the-operator"
+    toolset = SpecToolset(
+        {"do_it": ServiceSpec(service=noop, atomic=False, permission_classes=[AllowAny])},
+        descriptions={"do_it": "Do it."},
+        query_params=[QueryParam(name="fields")],
+        http_request=ambient,
+    )
+
+    await _call(toolset, "do_it", object(), {"fields": "id,name"})
+
+    assert ambient.method == "GET"
+    assert ambient.GET.dict() == {"fields": "original"}
+    assert ambient.user == "the-operator"
+
+
+# --- the tool catalog --------------------------------------------------------
+
+
+async def test_every_tool_is_listed_by_default():
+    """The documented posture: listing discloses, ``permission_classes`` gate.
+
+    A permission whose answer depends on the arguments has none to read at
+    listing time, so filtering by default would hide tools the caller can
+    actually invoke.
+    """
+    toolset = SpecToolset({"list_widgets": list_spec(), "make": create_spec()})
+
+    tools = await toolset.get_tools(ctx_for(object()))
+
+    assert sorted(tools) == ["list_widgets", "make"]
+
+
+async def test_is_tool_listed_can_narrow_the_catalog_for_one_run():
+    """The seam for a deployment that does want a per-run catalog."""
+
+    class StaffScoped(SpecToolset):
+        async def is_tool_listed(self, name, ctx):
+            return name != "make" or ctx.deps.user == "staff"
+
+    toolset = StaffScoped({"list_widgets": list_spec(), "make": create_spec()})
+
+    assert sorted(await toolset.get_tools(ctx_for("staff"))) == ["list_widgets", "make"]
+    assert sorted(await toolset.get_tools(ctx_for("visitor"))) == ["list_widgets"]
+
+
+async def test_a_hidden_tool_is_still_callable_and_still_gated():
+    """Hiding is a disclosure decision, never an authorization one.
+
+    Nothing routes tool calls through the catalog's absence, so an override that
+    hides the wrong tool must not become the only thing standing between a model
+    and a spec.
+    """
+
+    class HideEverything(SpecToolset):
+        async def is_tool_listed(self, name, ctx):
+            return False
+
+    toolset = HideEverything({"denied": create_spec(permission_classes=[DenyAll])})
+
+    assert await toolset.get_tools(ctx_for(object())) == {}
+    with pytest.raises(PermissionDenied):
+        await toolset.call_tool("denied", {}, ctx_for(object()), None)

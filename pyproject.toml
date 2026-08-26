@@ -38,12 +38,18 @@ classifiers = [
 dependencies = [
     "django>=4.2",
     "djangorestframework>=3.14",
-    # 0.36 floor: ``dispatch_spec(filter_data=…)`` reaches the *read* path, which
-    # is how a filter-owned ``ordering`` gets to the FilterSet without also
-    # landing in the selector callable's kwarg pool. The band also carries
-    # ``preconditions`` (0.34), ``AdditionalInputRequired`` (0.32), the
-    # ``progress`` pool seed (0.30) and consumer-owned spec ``metadata`` (0.31).
-    "djangorestframework-services>=0.43",
+    # 0.44 floor: ``build_offline_context`` wraps a shallow *copy* of the
+    # ``http_request=`` it is given instead of writing to the caller's own
+    # object. Below it, a toolset configured with one request shares that object
+    # across every call, so two concurrent runs overwrite each other's ``GET``
+    # (a serializer shaped by another run's arguments, with no error) and the
+    # caller's ``method`` / ``GET`` / ``user`` stay overwritten afterwards. The
+    # band below also carries per-field agent audiences (0.43),
+    # ``dispatch_spec(filter_data=…)`` on the read path (0.36),
+    # ``preconditions`` (0.34), ``AdditionalInputRequired`` (0.32),
+    # consumer-owned spec ``metadata`` (0.31) and the ``progress`` pool seed
+    # (0.30).
+    "djangorestframework-services>=0.44",
     "pydantic-ai-slim>=2,<3",
 ]
 
@@ -153,7 +159,7 @@ root = ["./rest_framework_pydantic_ai"]
 # rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.18.1"
+current_version = "0.19.0"
 allow_dirty = false
 commit = false
 tag = false

@@ -87,6 +87,60 @@ If your project carries identity on a richer deps object, hand the toolset a
 toolset = SpecToolset(specs, get_user=lambda ctx: ctx.deps.principal.user)
 ```
 
+## What a permission class sees
+
+Every call is authorized by `spec.permission_classes`, run against a synthetic
+request and view. drf-services supports a permission class reading `request`,
+`view.action` and `view.kwargs` off HTTP — anything beyond those three (a
+`view.queryset`, as `DjangoModelPermissions` wants) is not available. Here is
+what this package puts in each:
+
+- **`request.user`** is the acting identity — `deps.user`, or whatever
+  `get_user` returns. A configured `http_request` never contributes an identity.
+- **`request.query_params`** holds exactly the [query
+  params](#read-shaping-query-params) declared for that tool, and nothing else.
+  A tool that declares none dispatches with an empty query string even when the
+  toolset was given an `http_request`, so the ambient endpoint's own query
+  string can never reach a serializer or a `filter_set`.
+- **`view.action`** is the **tool name** — the key the spec is registered under
+  in the mapping you passed. Off HTTP there is no router to name an action, and
+  the tool name is the identity the model called, so it is the honest answer;
+  it is also what the MCP transport reports for the same spec. A permission
+  class branching on viewset action names (`"create"`, `"retrieve"`) will not
+  match one of those unless a tool happens to be named that — check the `else`
+  branch of such a class before exposing its spec, and rewrite `action` in a
+  `build_context` override if you need a specific one.
+- **`view.kwargs`** holds the [URL kwargs](#url-derived-values-route-captures)
+  declared for that tool, the off-HTTP counterpart of a route's captures.
+
+### The tool catalog is not permission-filtered
+
+`get_tools` advertises every spec to every run. A tool whose permissions will
+deny this caller is still listed — the denial happens on the call. That is
+deliberate: a permission whose answer depends on the arguments has none to read
+at listing time and would hide a tool the caller can actually use, the listing
+runs once per model step so a database-backed check would cost a query per spec
+per step, and a model that cannot see a tool cannot ask about it. A listing
+carries a name, a description and an input schema; no row data.
+
+If a deployment does want a narrower catalog, override `is_tool_listed`:
+
+```python
+from asgiref.sync import sync_to_async
+
+
+class OpsOnlyToolset(SpecToolset):
+    async def is_tool_listed(self, name, ctx):
+        if name != "suspend_account":
+            return True
+        # Django refuses ORM access on the event loop, so anything that
+        # queries has to go through a thread — as dispatch itself does.
+        return await sync_to_async(ctx.deps.user.groups.filter(name="ops").exists)()
+```
+
+Hiding a tool is a disclosure decision, never an authorization one: the call is
+gated by `permission_classes` whatever this returns.
+
 ## Unexpected arguments
 
 By default the toolset **rejects** tool args outside a spec's declared input set
@@ -330,7 +384,20 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | Non-integer `page` / `limit`, or an `ordering` outside the declared enum | `ModelRetry` — naming the values that are accepted |
 | An `ordering` outside a `filter_set`'s `OrderingFilter` choices | `ModelRetry` — the FilterSet rejects it, which arrives as the `ValidationError` row above |
 | An ordering name that isn't a real column (a declared `ordering_fields` entry, or a FilterSet `param_map` target) | `ModelRetry` — an author's error, not the model's; it can't be checked at construction without a queryset |
-| Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run |
+| Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run — see the caveat below |
+
+!!! warning "A tool-failure policy changes the last row"
+    "Aborts the run" is what a plain `pydantic_ai.Agent` does: nothing catches
+    the exception, so it propagates out of `agent.run`. A host that installs a
+    tool-failure policy catches it and hands the model a failed-tool result
+    instead, and the run keeps going — free to try the next row in the same
+    turn. `django-pydantic-agent`'s `build_agent` installs one **by default**
+    (`ToolFailureConfig(enabled=True)`), so that is the behaviour you get under
+    it and under `django-ag-ui` unless you opt out.
+
+    The denial itself is unaffected on every host: nothing is dispatched and no
+    data is rendered. What changes is whether the run survives it, so do not
+    rely on a `PermissionDenied` escaping as your only stop signal.
 
 Each `ModelRetry` row consumes one unit of the tool's retry budget: after
 `max_retries` failed attempts (default `1`, pydantic-ai's function-tool
