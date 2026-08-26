@@ -19,6 +19,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework_services import (
+    UNSET,
     AdditionalInputRequired,
     SelectorKind,
     SelectorSpec,
@@ -46,6 +47,8 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _ordering_values,
     _output_extras,
     _paginate,
+    _pop_query_params,
+    _pop_url_kwargs,
     _spec_owns_ordering,
     _with_deadline,
 )
@@ -2267,3 +2270,46 @@ async def test_handle_instruction_present_only_when_a_tool_has_a_handle():
     # An unmarked serializer teaches the model nothing about handles.
     without = await SpecToolset({"list": list_spec()}).get_instructions(None)
     assert _HANDLE_INSTRUCTION not in without
+
+
+@pytest.mark.parametrize("no_default", [None, UNSET])
+def test_a_kwarg_declaring_no_default_contributes_nothing(no_default: Any) -> None:
+    """Both sentinels the sister package has used for "no default" read as absent.
+
+    drf-services used a plain ``None`` through 0.43 and switched to ``UNSET`` in
+    0.44, so that ``default=None`` could mean an explicit null. A check of only
+    ``is not None`` reads ``UNSET`` as a real value and hands the sentinel object
+    to the spec as an argument. Parametrized over both so this keeps holding
+    whichever side of that boundary the resolved version falls on.
+    """
+    args: dict[str, Any] = {}
+    values = _pop_url_kwargs(
+        [UrlKwarg(name="project_pk", type="integer", default=no_default)], args
+    )
+    assert values == {}
+
+
+@pytest.mark.parametrize("no_default", [None, UNSET])
+def test_a_required_kwarg_is_not_satisfied_by_the_no_default_sentinel(no_default: Any) -> None:
+    """The requiredness check must still run, and must still name the kwarg.
+
+    Reading the sentinel as a value skips the ``elif required`` arm entirely, so
+    the model got no ``ModelRetry`` naming what it omitted -- the spec was handed
+    the sentinel and failed further in, where the reason is far less legible.
+    """
+    with pytest.raises(ModelRetry, match="project_pk"):
+        _pop_url_kwargs(
+            [UrlKwarg(name="project_pk", type="integer", required=True, default=no_default)], {}
+        )
+
+
+@pytest.mark.parametrize("no_default", [None, UNSET])
+def test_a_query_param_declaring_no_default_contributes_nothing(no_default: Any) -> None:
+    values = _pop_query_params([QueryParam(name="fields", default=no_default)], {})
+    assert values == {}
+
+
+def test_a_real_default_still_reaches_the_spec() -> None:
+    """The other half of the predicate: a declared default is still applied."""
+    assert _pop_url_kwargs([UrlKwarg(name="pk", type="integer", default=7)], {}) == {"pk": 7}
+    assert _pop_query_params([QueryParam(name="fields", default="id")], {}) == {"fields": "id"}

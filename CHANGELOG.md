@@ -6,6 +6,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-08-26
+
+### Fixed
+
+- **A `QueryParam` or `UrlKwarg` that declares no default no longer hands the spec a
+  sentinel object.** `djangorestframework-services` 0.44.0 changed the "no default"
+  sentinel on both dataclasses from a plain `None` to its `UNSET` marker, so that
+  `default=None` could express an explicit null. This package tested `default is not
+  None`, which reads `UNSET` as a real value: every declared parameter without a
+  default was passed to the spec as the sentinel itself, and a `UrlKwarg` registered
+  `required=True` was silently satisfied by it, so the model never got the
+  `ModelRetry` naming what it had omitted. Both sites now accept either sentinel, so
+  this works against 0.43 and 0.44 alike and the declared floor is unchanged.
+
+
 ## [0.18.0] — 2026-08-25
 
 ### Added
@@ -842,7 +857,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.15.0...v0.16.0

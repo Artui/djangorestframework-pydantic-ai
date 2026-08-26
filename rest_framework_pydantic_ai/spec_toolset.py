@@ -38,6 +38,7 @@ from pydantic_core import SchemaValidator, core_schema
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework_services import (
+    UNSET,
     AdditionalInputRequired,
     AgentProjection,
     FieldAudience,
@@ -1319,6 +1320,20 @@ def _pop_filter_ordering(spec: Spec, args: dict[str, Any]) -> dict[str, Any] | N
     return {**args, "ordering": ordering}
 
 
+def _declares_default(default: Any) -> bool:
+    """Whether a ``QueryParam`` / ``UrlKwarg`` actually declares a default.
+
+    Tolerates both sentinels the sister package has used for "no default": plain
+    ``None`` up to drf-services 0.43, and ``UNSET`` from 0.44, where the change was
+    made so that ``default=None`` could mean an explicit null. Checking only
+    ``is not None`` reads ``UNSET`` as a real value and hands the sentinel object
+    to the spec as an argument -- and, for a ``required=True`` kwarg, satisfies the
+    requiredness check with it. Written to accept either so this package keeps
+    working across that boundary without a floor raise.
+    """
+    return default is not None and default is not UNSET
+
+
 def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) -> dict[str, Any]:
     """Strip the registered query params from ``args`` into a plain ``dict``.
 
@@ -1330,7 +1345,7 @@ def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) 
     for query_param in query_params:
         if query_param.name in args:
             values[query_param.name] = args.pop(query_param.name)
-        elif query_param.default is not None:
+        elif _declares_default(query_param.default):
             values[query_param.name] = query_param.default
     return values
 
@@ -1354,7 +1369,7 @@ def _pop_url_kwargs(url_kwargs: Sequence[UrlKwarg], args: dict[str, Any]) -> dic
     for url_kwarg in url_kwargs:
         if url_kwarg.name in args:
             values[url_kwarg.name] = args.pop(url_kwarg.name)
-        elif url_kwarg.default is not None:
+        elif _declares_default(url_kwarg.default):
             values[url_kwarg.name] = url_kwarg.default
         elif url_kwarg.required:
             missing.append(url_kwarg.name)
