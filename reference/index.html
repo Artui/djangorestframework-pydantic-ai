@@ -1047,9 +1047,18 @@ agent = Agent(model, deps_type=AgentDeps, toolsets=[toolset])
 </code></pre></div>
 <p>Each key becomes one tool: the description is the spec's selector/service
 docstring, the parameter schema comes from <code>spec_to_json_schema</code> (with a
-list selector's <code>page</code> / <code>limit</code> args merged in), and the
-<code>readOnlyHint</code> annotation is derived from the spec kind (selectors read,
-services mutate).</p>
+list selector's <code>page</code> / <code>limit</code> args merged in), the <code>return_schema</code>
+comes from the same spec's projected output path, and the <code>readOnlyHint</code>
+annotation is derived from the spec kind (selectors read, services mutate).</p>
+<p><strong>A list selector's result is a page, always.</strong> It comes back as
+<code>{"items": [...], "page": 1, "totalPages": N, "hasNext": bool}</code> — never a
+bare list — with at most
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.dispatch.paginate_output.DEFAULT_PAGE_SIZE"><code>DEFAULT_PAGE_SIZE</code></a>
+rows unless <code>max_page_size</code> lowers it. That is the input contract this
+toolset has always published being honoured: <code>page</code> and <code>limit</code> were
+advertised on every list tool and the payload was a bare slice, so a model
+asking for a collection got 50 of 51 rows with nothing saying more existed.
+<code>hasNext</code> is what it was missing.</p>
 <p><strong>Filtering needs no declaration here, and ordering belongs to the
 <code>filter_set</code>.</strong> A <code>SelectorSpec.filter_set</code>'s fields are already
 generated into the tool's input schema and flow through as ordinary
@@ -1091,7 +1100,12 @@ per-run typed deps reach dispatch.</p>
 0.27+) — the shared
 declaration site for a project exposing the same specs over more than
 one transport, so the agent reads the source MCP and the HTTP views
-read. A filtered view is itself a registry, so several toolsets can
+read. <strong>Prefer the registry over <code>registry.specs()</code></strong>: an entry
+carries an
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/registry/#rest_framework_services.types.offline_contract.OfflineContract"><code>OfflineContract</code></a>
+and the flattened mapping does not, so a contract's <code>url_kwargs</code>,
+<code>query_params</code> and <code>field_audiences</code> are silently absent from a
+toolset built off the mapping. A filtered view is itself a registry, so several toolsets can
 be projected from one declaration with no shared state
 (<code>SpecToolset(registry.by_tag("read"), id="reads")</code>). Only the
 names come from it; everything else here is transport-specific, which
@@ -1258,6 +1272,11 @@ toolset awareness of the library.</p>
               <div class="doc-md-description">
                 <p><code>query_params</code> for one tool only, keyed by tool
 name. A per-tool param overrides a toolset-wide one of the same name.</p>
+<p>Both are <strong>this mount's</strong> declarations, and both override the entry's
+own <code>OfflineContract</code> by name. Where a project runs more than one
+agent transport, the contract is the better home: the operation needs
+the identical params whichever transport calls it, and declaring them
+per mount is how two mounts come to disagree.</p>
               </div>
             </td>
             <td>
@@ -1317,7 +1336,9 @@ and a <code>UrlKwarg</code> on one tool: a value cannot route to two channels.</
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>url_kwargs</code> for one tool only, same override rule.</p>
+                <p><code>url_kwargs</code> for one tool only, same override rule,
+and the same preference for the entry's <code>OfflineContract</code> where one
+exists.</p>
               </div>
             </td>
             <td>
@@ -1416,10 +1437,12 @@ complete.</p>
             <td>
               <div class="doc-md-description">
                 <p>Clamps a list tool's <code>limit</code> <em>and</em> advertises the
-ceiling as JSON-Schema <code>maximum</code>. With it set, an omitted <code>limit</code>
-becomes the ceiling rather than "everything" — the unbounded read is
-the one that hurts, and it is what a model produces by not thinking
-about pagination.</p>
+ceiling as JSON-Schema <code>maximum</code>. Lowers the default page size
+with it, so an omitted <code>limit</code> becomes the ceiling rather than
+<code>DEFAULT_PAGE_SIZE</code>. Unset, a list tool still returns at most
+<code>DEFAULT_PAGE_SIZE</code> rows per page — the unbounded read is the one
+that hurts, and it is what a model produces by not thinking about
+pagination.</p>
               </div>
             </td>
             <td>
@@ -1585,6 +1608,31 @@ arms, so a project can override those too.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>json_schema_registry</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="rest_framework_services.JsonSchemaRegistry" href="https://artui.github.io/djangorestframework-services/reference/jsonschema/#rest_framework_services.types.json_schema_registry.JsonSchemaRegistry">JsonSchemaRegistry</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Consumer rules for turning a custom serializer
+field, django-filter filter or Python type into a JSON Schema
+fragment — a
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/jsonschema/#rest_framework_services.types.json_schema_registry.JsonSchemaRegistry"><code>JsonSchemaRegistry</code></a>,
+threaded into every schema this toolset generates (input <em>and</em>
+return). Without it a project's own field type reaches the model as
+<code>{}</code> — "any value" — which is the schema saying nothing at exactly
+the field the model is most likely to get wrong. Build one by
+extending the shared default:
+<code>DEFAULT_JSON_SCHEMA_REGISTRY.extend(fields=[(MoneyField, {"type": "string"})])</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="rest_framework_services.DEFAULT_JSON_SCHEMA_REGISTRY" href="https://artui.github.io/djangorestframework-services/reference/jsonschema/#rest_framework_services.types.json_schema_registry.DEFAULT_JSON_SCHEMA_REGISTRY">DEFAULT_JSON_SCHEMA_REGISTRY</a></code>
             </td>
           </tr>
       </tbody>
