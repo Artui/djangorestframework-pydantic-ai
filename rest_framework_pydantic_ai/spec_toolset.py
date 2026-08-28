@@ -116,7 +116,7 @@ _TOOL_ARGS_VALIDATOR = SchemaValidator(schema=core_schema.any_schema())
 
 # Tool args a list selector accepts on top of its filter fields. Ordering is not
 # here: it belongs to the spec whenever the spec's own schema advertises it (see
-# ``_spec_owns_ordering``).
+# ``_spec_ordering_argument``).
 _LIST_PARAM_SCHEMA: dict[str, Any] = {
     "page": {
         "type": "integer",
@@ -861,7 +861,7 @@ def _validate_ordering_fields(
     clashing: list[str] = sorted(
         name
         for name, fields in tool_ordering_fields.items()
-        if fields and _spec_owns_ordering(specs[name])
+        if fields and _spec_ordering_argument(specs[name]) is not None
     )
     if clashing:
         names: str = ", ".join(repr(name) for name in clashing)
@@ -970,11 +970,26 @@ _HANDLE_INSTRUCTION = (
     "name in anything you say, never by the identifier."
 )
 
-_ORDERING_INSTRUCTION = (
-    "- Some collection tools also accept `ordering`. It takes exactly one of the values "
-    "listed in that tool's schema (a sortable name, or the same name prefixed with `-` for "
-    "descending) — not a comma-separated list, and not an arbitrary column."
-)
+
+def _ordering_instruction(names: Sequence[str]) -> str:
+    """The sort-usage line, naming the arguments the toolset actually advertises.
+
+    **Parameterised because the name is not fixed.** The prose used to say
+    ``ordering`` outright, which was a second hard-coding of the same assumption
+    the dispatch made — so a toolset whose ``OrderingFilter`` is called
+    ``sorting`` would have been handed an instruction naming an argument that
+    does not exist, which is worse than no instruction at all.
+
+    Several names can be live at once: one tool's filter may be ``ordering`` and
+    another's ``sorting``, and a model reading one block for the whole toolset
+    has to be told both.
+    """
+    listed = ", ".join(f"`{name}`" for name in names)
+    return (
+        f"- Some collection tools also accept {listed}. It takes exactly one of the values "
+        "listed in that tool's schema (a sortable name, or the same name prefixed with `-` for "
+        "descending) — not a comma-separated list, and not an arbitrary column."
+    )
 
 
 def _has_handle(projection: AgentProjection) -> bool:
@@ -1003,10 +1018,19 @@ def _derive_instructions(
     lines = [_BASE_INSTRUCTIONS]
     if any(_is_list_selector(spec) for spec in specs.values()):
         lines.append(_LIST_INSTRUCTION)
-    if any((tool_ordering_fields or {}).values()) or any(
-        _spec_owns_ordering(spec) for spec in specs.values()
-    ):
-        lines.append(_ORDERING_INSTRUCTION)
+    # Deduplicated, in first-seen order. The deprecated knob advertises under
+    # ``ordering``, so a toolset mixing it with a differently-named filter names
+    # both -- which is the case that used to produce a wrong instruction rather
+    # than a missing one.
+    ordering_names: list[str] = []
+    if any((tool_ordering_fields or {}).values()):
+        ordering_names.append("ordering")
+    for spec in specs.values():
+        advertised = _spec_ordering_argument(spec)
+        if advertised is not None and advertised not in ordering_names:
+            ordering_names.append(advertised)
+    if ordering_names:
+        lines.append(_ordering_instruction(ordering_names))
     # A toolset with no handle anywhere gains nothing from being told how to
     # treat one, and this block is prepended to every run.
     if any(_has_handle(projection) for projection in (projections or {}).values()):
@@ -1076,7 +1100,7 @@ def _input_schema(
             # a request for 100 000 rows, and telling the model is cheaper than
             # correcting it.
             extra["limit"] = {**_LIST_PARAM_SCHEMA["limit"], "maximum": max_page_size}
-        if ordering_fields and not _spec_owns_ordering(spec):
+        if ordering_fields and _spec_ordering_argument(spec) is None:
             # **Never written over a reflected ``ordering``.** ``extra`` is
             # merged over ``properties`` below, so writing here for a spec that
             # advertises its own would replace the filter's public choices with
@@ -1107,29 +1131,54 @@ def _is_list_selector(spec: Spec) -> bool:
     return isinstance(spec, SelectorSpec) and spec.kind == SelectorKind.LIST
 
 
-def _spec_owns_ordering(spec: Spec) -> bool:
-    """True when a list spec's own reflected schema already advertises ``ordering``.
+def _spec_ordering_argument(spec: Spec) -> str | None:
+    """The argument name a list spec advertises its sort under, or ``None``.
 
     **The one signal, read by both the schema builder and the dispatch path, so
     they cannot disagree** — the invariant being *whatever the schema advertises,
     the dispatch must deliver*.
 
-    **Deliberately not an ``isinstance`` test against ``django_filters``.**
-    django-filter is an optional extra the package never imports — a spec's
-    ``filter_set`` is duck-typed all the way down — and the property that matters
-    is what the tool *advertised*, not which library produced it. A list selector
-    whose callable happens to declare an ``ordering`` parameter is owned for the
-    same reason.
+    **Returns the name rather than a yes/no, and that is the fix.** This used to
+    ask whether the reflected schema contained the literal ``"ordering"``, which
+    silently assumed the one name the deprecation warning happens to suggest.
+    A project following that warning to the letter is fine; a project whose
+    ``OrderingFilter`` is called ``sorting`` was not. The sort still applied —
+    the FilterSet reads ``params`` either way — but the usage instruction was
+    dropped, and the value was never popped out of the callable's kwarg pool, so
+    a selector declaring ``**kwargs`` received a read-shaping argument it never
+    asked for. Which is precisely the hazard
+    :func:`_pop_filter_ordering` exists to prevent, arriving through the door it
+    was watching.
+
+    **Duck-typed, not an ``isinstance`` test against ``django_filters``.**
+    django-filter is an optional extra this package never imports, and a spec's
+    ``filter_set`` is duck-typed all the way down. ``get_ordering_value`` is
+    defined by ``OrderingFilter`` and by nothing else in the filter hierarchy, so
+    asking for it identifies the sort filter under whatever name it was
+    declared, including a project's own subclass.
+
+    Falls back to the literal ``"ordering"``, which covers the two cases a
+    ``filter_set`` cannot answer for: a list selector whose *callable* declares
+    an ``ordering`` parameter, and the deprecated ``ordering_fields`` knob, which
+    this package advertises under that name itself.
 
     Restricted to list selectors because that is the only kind the toolset ever
-    contributes an ``ordering`` argument to: elsewhere there is no ownership to
-    contest, and a service whose input serializer happens to have a field named
+    contributes a sort argument to: elsewhere there is no ownership to contest,
+    and a service whose input serializer happens to have a field named
     ``ordering`` must not be read as a clash.
     """
     if not _is_list_selector(spec):
-        return False
+        return None
     reflected = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input"))
-    return "ordering" in reflected.get("properties", {})
+    properties = reflected.get("properties", {})
+    filter_set = getattr(spec, "filter_set", None)
+    for name, declared in getattr(filter_set, "base_filters", {}).items():
+        # Advertised as well as declared: a filter the schema does not carry is
+        # not something the model can send, so claiming it would break the
+        # advertise/deliver invariant in the other direction.
+        if hasattr(declared, "get_ordering_value") and name in properties:
+            return cast("str", name)
+    return "ordering" if "ordering" in properties else None
 
 
 def _call_spec(
@@ -1342,7 +1391,7 @@ def _pop_pagination(
         # exactly the caller that needs the ceiling applied for it.
         limit = max_page_size if limit is None else min(limit, max_page_size)
     ordering: str | None = None
-    if not _spec_owns_ordering(spec):
+    if _spec_ordering_argument(spec) is None:
         ordering = _coerce_ordering(args.pop("ordering", None), ordering_fields)
     return _PageArgs(
         page=_coerce_positive_int(args.pop("page", None), "page"),
@@ -1370,19 +1419,25 @@ def _pop_filter_ordering(spec: Spec, args: dict[str, Any]) -> dict[str, Any] | N
     argument it never asked for.
 
     **The two checks here are not redundant with each other.**
-    ``_spec_owns_ordering`` answers *whether* the spec owns ``ordering``; the
+    :func:`_spec_ordering_argument` answers *what the spec calls* its sort; the
     ``filter_set`` check answers *what to hand it to*. A ``filter_set``
     advertised it, so the FilterSet is the consumer, and it reads ``filter_data``
     rather than the callable's arguments. When only the selector's own signature
     advertised it there is no FilterSet to reach, so the value stays in
     ``params`` — popping it would starve the one thing that asked for it.
+
+    **The name is asked for rather than assumed.** A FilterSet whose
+    ``OrderingFilter`` is called anything other than ``ordering`` used to fall
+    through here, leaving its value in the callable's kwarg pool — the exact
+    surprise the paragraph above says this function exists to prevent.
     """
     if not isinstance(spec, SelectorSpec) or spec.filter_set is None:
         return None
-    if not _spec_owns_ordering(spec) or "ordering" not in args:
+    name = _spec_ordering_argument(spec)
+    if name is None or name not in args:
         return None
-    ordering: Any = args.pop("ordering")
-    return {**args, "ordering": ordering}
+    ordering: Any = args.pop(name)
+    return {**args, name: ordering}
 
 
 def _declares_default(default: Any) -> bool:
