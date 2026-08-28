@@ -40,6 +40,7 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework_services import (
     UNSET,
     AdditionalInputRequired,
+    AgentContract,
     AgentProjection,
     FieldAudience,
     SelectorKind,
@@ -97,6 +98,33 @@ so ``LOGGING`` can set the two independently.
 def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
     """Normalise a ``SpecSource`` to the plain mapping the internals expect."""
     return specs.specs() if isinstance(specs, SpecRegistry) else specs
+
+
+def _resolve_contracts(specs: SpecSource) -> Mapping[str, AgentContract]:
+    """Each registry entry's ``AgentContract``, by tool name.
+
+    ``SpecRegistry.specs()`` flattens an entry to its spec, which is everything
+    the dispatch internals need and drops the one thing this toolset cannot
+    derive: what a caller with **no HTTP request** has to be told. Over HTTP the
+    URLconf supplies the route captures and the query string supplies the
+    read-shaping params; here nobody does, and the entry is where a project that
+    also runs an MCP server has already said so.
+
+    A bare mapping carries no entries and so no contracts. That toolset declares
+    its channels in the constructor, as it always has.
+    """
+    if not isinstance(specs, SpecRegistry):
+        return {}
+    return {
+        entry.name: entry.agent_contract
+        for entry in specs.all()
+        if entry.agent_contract is not None
+    }
+
+
+# The absent contract, so a lookup miss reads like an entry that declared
+# nothing rather than needing a branch at every use.
+_NO_CONTRACT = AgentContract()
 
 
 # List-selector pagination args own these names; a registered ``QueryParam`` or
@@ -184,7 +212,12 @@ class SpecToolset(AbstractToolset[Any]):
             0.27+) — the shared
             declaration site for a project exposing the same specs over more than
             one transport, so the agent reads the source MCP and the HTTP views
-            read. A filtered view is itself a registry, so several toolsets can
+            read. **Prefer the registry over ``registry.specs()``**: an entry
+            carries an
+            [`AgentContract`][rest_framework_services.types.agent_contract.AgentContract]
+            and the flattened mapping does not, so a contract's ``url_kwargs``,
+            ``query_params`` and ``field_audiences`` are silently absent from a
+            toolset built off the mapping. A filtered view is itself a registry, so several toolsets can
             be projected from one declaration with no shared state
             (``SpecToolset(registry.by_tag("read"), id="reads")``). Only the
             names come from it; everything else here is transport-specific, which
@@ -221,6 +254,12 @@ class SpecToolset(AbstractToolset[Any]):
             toolset awareness of the library.
         tool_query_params: ``query_params`` for one tool only, keyed by tool
             name. A per-tool param overrides a toolset-wide one of the same name.
+
+            Both are **this mount's** declarations, and both override the entry's
+            own ``AgentContract`` by name. Where a project runs more than one
+            agent transport, the contract is the better home: the operation needs
+            the identical params whichever transport calls it, and declaring them
+            per mount is how two mounts come to disagree.
         url_kwargs:
             [`UrlKwarg`][rest_framework_services.types.url_kwarg.UrlKwarg] args
             — URL route captures (``parent_pk``) seeded into
@@ -236,7 +275,9 @@ class SpecToolset(AbstractToolset[Any]):
             ``UrlKwarg`` schema wins and the authoritative ``kwargs=`` spread
             still reaches the selector. A name cannot be both a ``QueryParam``
             and a ``UrlKwarg`` on one tool: a value cannot route to two channels.
-        tool_url_kwargs: ``url_kwargs`` for one tool only, same override rule.
+        tool_url_kwargs: ``url_kwargs`` for one tool only, same override rule,
+            and the same preference for the entry's ``AgentContract`` where one
+            exists.
         host: The origin the synthesized request reports, so
             ``build_absolute_uri`` builds real absolute URLs — DRF's
             ``FileField`` and the ``Hyperlinked*`` fields call it for every value
@@ -343,6 +384,7 @@ class SpecToolset(AbstractToolset[Any]):
         exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
     ) -> None:
         resolved = _resolve_specs(specs)
+        contracts = _resolve_contracts(specs)
         _validate_tool_names(resolved)
         _validate_permissions(resolved, require=require_permissions)
         _validate_query_params(query_params, tool_query_params, resolved)
@@ -378,12 +420,23 @@ class SpecToolset(AbstractToolset[Any]):
             for name in self._specs
         }
         # Effective declarations per tool, built once — they are static.
+        #
+        # The entry's contract is the base and this mount's constructor
+        # declarations override it by name: the contract says what the operation
+        # needs off HTTP, which every agent transport needs identically, while
+        # the constructor is one mount's word about one deployment.
         self._tool_query_params: dict[str, tuple[QueryParam, ...]] = {
-            name: _merge_query_params(query_params, (tool_query_params or {}).get(name, ()))
+            name: _merge_query_params(
+                _merge_query_params(contracts.get(name, _NO_CONTRACT).query_params, query_params),
+                (tool_query_params or {}).get(name, ()),
+            )
             for name in self._specs
         }
         self._tool_url_kwargs: dict[str, tuple[UrlKwarg, ...]] = {
-            name: _merge_url_kwargs(url_kwargs, (tool_url_kwargs or {}).get(name, ()))
+            name: _merge_url_kwargs(
+                _merge_url_kwargs(contracts.get(name, _NO_CONTRACT).url_kwargs, url_kwargs),
+                (tool_url_kwargs or {}).get(name, ()),
+            )
             for name in self._specs
         }
         self._tool_ordering_fields: dict[str, tuple[str, ...]] = {
@@ -418,7 +471,12 @@ class SpecToolset(AbstractToolset[Any]):
         # they are resolved once rather than paying a serializer instantiation
         # on every tool call.
         self._projections: dict[str, AgentProjection] = {
-            name: agent_projection_for_spec(spec) for name, spec in self._specs.items()
+            name: agent_projection_for_spec(
+                spec,
+                overrides=contracts.get(name, _NO_CONTRACT).field_audiences,
+                name=f"Tool {name!r}",
+            )
+            for name, spec in self._specs.items()
         }
 
     @property
