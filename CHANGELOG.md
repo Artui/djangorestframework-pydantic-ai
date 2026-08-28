@@ -6,6 +6,50 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The registry entry's `AgentContract` is read, so this toolset finally has
+  the audience override the MCP transport always had.** drf-services 0.46
+  carries an `AgentContract` on each `SpecRegistry` entry: the `url_kwargs`,
+  `query_params` and `field_audiences` a caller with **no HTTP request** has to
+  be told, because the URLconf and query string tell an HTTP one for free.
+
+  ```python
+  registry.register(
+      "list_orders",
+      specs.list_orders,
+      agent_contract=AgentContract(url_kwargs=(UrlKwarg(name="tenant_pk"),)),
+  )
+
+  SpecToolset(registry)  # the tool takes tenant_pk, declared once
+  ```
+
+  **`field_audiences` had no equivalent here at all.** `agent_projection_for_spec`
+  took only the spec, while drf-mcp layered a per-tool override on top — so one
+  spec projected a **different field set depending on which transport served
+  it**, and a project that hid a field from its agents had not hidden it from
+  half of them. `AgentField`'s axis is audience, not protocol; an in-process
+  toolset and an MCP server are one audience, so this could never have been a
+  legitimate difference.
+
+  The two constructor channels still work and still win by name — the contract
+  is a default this mount may override, not a mandate — and a toolset with no
+  registry behind it is unaffected.
+
+### Changed
+
+- **Pass the registry, not `registry.specs()`.** The flattened mapping is what
+  the registry holds *minus the entries*, and the contract is on the entry. A
+  toolset built from `.specs()` silently has none of it. Both paths still work
+  and the docstring, the registry page and the migration note now say which one
+  to reach for.
+
+- **Floor raised to `djangorestframework-services>=0.46`** for `AgentContract`
+  and for `agent_projection_for_spec(overrides=…)` — the merge of a mount's
+  overrides over the serializer's own markings, which now lives upstream so both
+  agent transports layer the shared declaration by the same rule rather than
+  each carrying a copy.
+
 ### Fixed
 
 - **A sort argument was only found when it was called `ordering`.** The

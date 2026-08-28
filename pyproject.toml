@@ -49,7 +49,7 @@ dependencies = [
     # ``preconditions`` (0.34), ``AdditionalInputRequired`` (0.32),
     # consumer-owned spec ``metadata`` (0.31) and the ``progress`` pool seed
     # (0.30).
-    "djangorestframework-services>=0.44",
+    "djangorestframework-services>=0.46",
     "pydantic-ai-slim>=2,<3",
 ]
 

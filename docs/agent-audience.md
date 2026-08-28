@@ -49,6 +49,36 @@ actually returns a handle:
 > output. Pass them to other tools that ask for one; refer to records by their
 > name in anything you say, never by the identifier.
 
+## One tool that needs what its siblings hide
+
+The serializer is the declaration and stays authoritative. The exception is a
+tool whose whole job is handing back something the others drop — a lookup
+returning the identifier a list view hides. That is an override, and it goes on
+the registry entry:
+
+```python
+from rest_framework_services import AgentContract, AgentField
+
+registry.register(
+    "lookup_widget",
+    specs.lookup_widget,
+    agent_contract=AgentContract(field_audiences={"price": AgentField()}),
+)
+```
+
+`SpecToolset(registry)` reads it, and so does an MCP server registering the same
+entry — which is the reason it lives there rather than in either constructor.
+`AgentField`'s axis is *audience*, not transport: an in-process toolset and an
+MCP server want the same thing as each other and something different from a
+browser, so a field hidden from one agent caller and visible to another is a bug
+you find in a transcript rather than in a test.
+
+A project that genuinely wants two agent audiences with different visibility
+does not want this. It wants two serializers.
+
+Two fields left claiming `AgentField.label()` raises `ImproperlyConfigured`
+naming the tool, at construction: a record has one name.
+
 ## What it costs
 
 Nothing per call. The markings are pure in the serializer class, like the tool
