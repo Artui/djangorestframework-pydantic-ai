@@ -8,9 +8,38 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **The registry entry's `AgentContract` is read, so this toolset finally has
+- **Tool definitions carry a `return_schema`.** Generated from the same spec as
+  the payload and through the same projection, so a field marked hidden is
+  absent from both and a marked handle carries its description in both. A list
+  selector's is the pagination envelope, which is what makes the schema and the
+  result agree for the first time. A spec with no `output_serializer` gets
+  `None` — a guessed shape would be a claim the payload never has to honour.
+
+  It is **populated but not sent by default**. `include_return_schema` stays at
+  pydantic-ai's default, because a return schema costs context on every turn of
+  every run and only the consumer's model and serializers say whether that is
+  worth it. The opt-in is pydantic-ai's own, at either scope:
+  `SpecToolset(specs).include_return_schemas()`, or the
+  `IncludeToolReturnSchemas` capability.
+
+  **This corrects a claim this changelog made twice.** The 0.18.0 entries state
+  that a `ToolDefinition` carries no output schema, and cite it as the reason
+  the payload is the model's only view of a result. It was never true of the
+  pydantic-ai this package pins; the field was simply never populated. Both
+  entries now carry a correction in place, and `docs/agent-audience.md` opened
+  on the same claim and no longer does.
+
+- **`json_schema_registry=` on `SpecToolset` and `SpecCapability`**, a
+  `JsonSchemaRegistry` threaded into every schema this toolset generates —
+  input, return, and the reflected read behind the ordering predicate. Without
+  it a project's own serializer field or filter type reaches the model as `{}`,
+  "any value", at exactly the field it is most likely to get wrong. Build one
+  with `DEFAULT_JSON_SCHEMA_REGISTRY.extend(fields=…, filters=…,
+  python_types=…)`.
+
+- **The registry entry's `OfflineContract` is read, so this toolset finally has
   the audience override the MCP transport always had.** drf-services 0.46
-  carries an `AgentContract` on each `SpecRegistry` entry: the `url_kwargs`,
+  carries an `OfflineContract` on each `SpecRegistry` entry: the `url_kwargs`,
   `query_params` and `field_audiences` a caller with **no HTTP request** has to
   be told, because the URLconf and query string tell an HTTP one for free.
 
@@ -18,17 +47,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   registry.register(
       "list_orders",
       specs.list_orders,
-      agent_contract=AgentContract(url_kwargs=(UrlKwarg(name="tenant_pk"),)),
+      agent_contract=OfflineContract(url_kwargs=(UrlKwarg(name="tenant_pk"),)),
   )
 
   SpecToolset(registry)  # the tool takes tenant_pk, declared once
   ```
 
-  **`field_audiences` had no equivalent here at all.** `agent_projection_for_spec`
+  **`field_audiences` had no equivalent here at all.** `audience_projection_for_spec`
   took only the spec, while drf-mcp layered a per-tool override on top — so one
   spec projected a **different field set depending on which transport served
   it**, and a project that hid a field from its agents had not hidden it from
-  half of them. `AgentField`'s axis is audience, not protocol; an in-process
+  half of them. `FieldMarking`'s axis is audience, not protocol; an in-process
   toolset and an MCP server are one audience, so this could never have been a
   legitimate difference.
 
@@ -38,17 +67,77 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A list tool's result shape changes: every list selector now returns one
+  page.** Where a tool used to answer with a bare array it now answers with the
+  pagination envelope drf-services publishes:
+
+  ```python
+  {"items": [...], "page": 1, "totalPages": 4, "hasNext": True}
+  ```
+
+  **This is the input contract being honoured, not a new claim.** `page` and
+  `limit` were merged into *every* list tool's parameter schema from the
+  beginning, and the shaper behind them sliced and returned a bare list — no
+  total, no clamp, and nothing in the payload saying rows had been left behind.
+  A model asking for a collection received 50 of 51 rows and answered as if that
+  were all of them. `hasNext` is the half that was missing.
+
+  Consequences worth stating plainly:
+
+  - **A list tool that used to return an unbounded result now returns at most
+    100 rows per page** (`DEFAULT_PAGE_SIZE`), because an omitted `limit` is now
+    a page size rather than "everything". It says so in the same payload, which
+    is what makes it strictly better than the silent truncation available
+    before.
+  - `max_page_size` lowers that default as well as capping an explicit `limit`,
+    and still advertises itself as JSON-Schema `maximum`.
+  - An out-of-range `page` clamps to the last page that exists and the envelope
+    reports the page actually served — a caller that asked for page 10 of 3 is
+    told which one it got.
+  - The byte ceiling is measured on the envelope, because the envelope is what
+    is sent.
+  - **Anything reading a list tool's result programmatically needs `["items"]`.**
+    A model reading it does not; the derived instructions now describe the
+    envelope and what `hasNext` means.
+
+  The shaper itself is drf-services' `paginate_output` / `OutputPage`, so the
+  MCP transport and this one now slice, count and clamp through one
+  implementation. What stays here is the coercion: a malformed `limit` is still
+  a `ModelRetry` naming the problem rather than a clamped value. That is the one
+  place the two transports legitimately differ — a public endpoint has to answer
+  *something*, an in-process toolset can hand the model its own mistake back —
+  and it is a policy about bad input, not about what a page is.
+
+- **Adopted drf-services 0.48's renamed audience symbols**: `AgentField` is
+  `FieldMarking`, `AGENT` is `MARKING`, `AgentProjection` is
+  `AudienceProjection`, `AgentContract` is `OfflineContract`,
+  `agent_projection_for_spec` is `audience_projection_for_spec`, and
+  `render_for_agent` is `render_for_audience`. The names moved where "agent"
+  described *which callers use it* rather than an audience a serializer author
+  declares. This package is an agent toolset, so its own names and its prose
+  still say agent where that is the truth.
+
+- **A `ChoiceFilter` with labels now reaches the model as labelled `const`
+  options rather than a bare `enum`** (drf-services 0.47). `OrderingFilter`
+  subclasses `ChoiceFilter`, so a FilterSet-derived `ordering` argument changes
+  shape in the tool schema; filters also gained `title` and `description`, and
+  serializer fields a `title` from an author-declared `label`. Nothing in the
+  dispatch path reads those, and the sort vocabulary is unchanged.
+
 - **Pass the registry, not `registry.specs()`.** The flattened mapping is what
   the registry holds *minus the entries*, and the contract is on the entry. A
   toolset built from `.specs()` silently has none of it. Both paths still work
   and the docstring, the registry page and the migration note now say which one
   to reach for.
 
-- **Floor raised to `djangorestframework-services>=0.46`** for `AgentContract`
-  and for `agent_projection_for_spec(overrides=…)` — the merge of a mount's
-  overrides over the serializer's own markings, which now lives upstream so both
-  agent transports layer the shared declaration by the same rule rather than
-  each carrying a copy.
+- **Floor raised to `djangorestframework-services>=0.48`.** 0.46 for
+  `OfflineContract` and for `audience_projection_for_spec(overrides=…)` — the
+  merge of a mount's overrides over the serializer's own markings, which now
+  lives upstream so both agent transports layer the shared declaration by the
+  same rule rather than each carrying a copy. 0.48 for `paginate_output` /
+  `OutputPage` and for the renamed audience symbols, which ship with no aliases
+  behind them and are imported at module level, so the floor is hard rather than
+  preferred.
 
 ### Fixed
 
@@ -224,6 +313,12 @@ that spells out every keyword must accept `action` as well.
   parameter schema and no output schema, so the payload is the model's *only*
   view of a result: a label that lives only in a schema would never reach it.
 
+  *Correction, kept in place because it was the stated reason for a design
+  choice: that was never true. `ToolDefinition.return_schema` exists in the
+  pydantic-ai this release already pinned; the toolset simply did not populate
+  it. It does as of the entry under `[Unreleased]`, and the projection now
+  reaches both halves.*
+
   The projection is resolved once per spec at construction, beside the tool
   definitions, rather than paid on every call.
 
@@ -237,6 +332,11 @@ that spells out every keyword must accept `action` as well.
 - **Floor raised to `djangorestframework-services>=0.43`** for the audience API.
   That release also fixes output-schema generation, which this package does not
   consume — `ToolDefinition` has no output schema — so nothing here changes shape.
+
+  *Correction: the second clause was wrong on both counts. `ToolDefinition` has
+  carried `return_schema` throughout; this package did not consume drf-services'
+  output-schema generation because it never asked for it, not because there was
+  nowhere to put the answer. See `[Unreleased]`.*
 
 ### Fixed
 

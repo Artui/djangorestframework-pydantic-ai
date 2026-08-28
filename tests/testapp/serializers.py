@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from rest_framework import serializers
-from rest_framework_services import AGENT, AgentField
+from rest_framework_services import MARKING, FieldMarking
 
 from tests.testapp.models import Widget
 
@@ -29,7 +29,7 @@ class AgentWidgetSerializer(serializers.ModelSerializer):
         model = Widget
         fields = ["id", "name", "price", "status"]
         extra_kwargs = {
-            "id": {"style": {AGENT: AgentField.handle("Widget handle.")}},
-            "name": {"style": {AGENT: AgentField.label()}},
-            "price": {"style": {AGENT: AgentField.hidden()}},
+            "id": {"style": {MARKING: FieldMarking.handle("Widget handle.")}},
+            "name": {"style": {MARKING: FieldMarking.label()}},
+            "price": {"style": {MARKING: FieldMarking.hidden()}},
         }

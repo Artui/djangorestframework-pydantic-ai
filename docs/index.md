@@ -18,8 +18,12 @@ drf-services' transport-neutral surface:
 - **`enforce_permissions`** runs `spec.permission_classes` — `dispatch_spec`
   deliberately does not, so building a toolset naively on it would skip
   authorization;
-- **`spec_to_json_schema`** derives each tool's parameter schema;
-- **`render_spec_output`** renders the result through the spec's serializer.
+- **`spec_to_json_schema`** derives each tool's parameter schema and
+  **`output_to_json_schema`** its `return_schema`, projected for the audience;
+- **`paginate_output`** slices a list selector into the page the tool returns,
+  the same shaper the MCP transport uses;
+- **`render_for_audience`** renders the result through the spec's serializer and
+  applies the field markings.
 
 The result is that an agent driving these tools sees exactly what an HTTP client
 would: the same validation errors, the same `permission_classes` checks (both

@@ -24,7 +24,7 @@ import re
 import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, cast
 
@@ -38,11 +38,15 @@ from pydantic_core import SchemaValidator, core_schema
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework_services import (
+    DEFAULT_JSON_SCHEMA_REGISTRY,
+    DEFAULT_PAGE_SIZE,
     UNSET,
     AdditionalInputRequired,
-    AgentContract,
-    AgentProjection,
+    AudienceProjection,
     FieldAudience,
+    JsonSchemaRegistry,
+    OfflineContract,
+    OutputPage,
     SelectorKind,
     SelectorSpec,
     ServiceError,
@@ -50,11 +54,13 @@ from rest_framework_services import (
     ServiceValidationError,
     SpecRegistry,
     UnknownArguments,
-    agent_projection_for_spec,
+    audience_projection_for_spec,
     build_offline_context,
     dispatch_spec,
     enforce_permissions,
-    render_for_agent,
+    output_to_json_schema,
+    paginate_output,
+    render_for_audience,
     spec_to_json_schema,
 )
 from rest_framework_services.dispatch.unguarded_specs import unguarded_specs
@@ -100,8 +106,8 @@ def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
     return specs.specs() if isinstance(specs, SpecRegistry) else specs
 
 
-def _resolve_contracts(specs: SpecSource) -> Mapping[str, AgentContract]:
-    """Each registry entry's ``AgentContract``, by tool name.
+def _resolve_contracts(specs: SpecSource) -> Mapping[str, OfflineContract]:
+    """Each registry entry's ``OfflineContract``, by tool name.
 
     ``SpecRegistry.specs()`` flattens an entry to its spec, which is everything
     the dispatch internals need and drops the one thing this toolset cannot
@@ -124,7 +130,7 @@ def _resolve_contracts(specs: SpecSource) -> Mapping[str, AgentContract]:
 
 # The absent contract, so a lookup miss reads like an entry that declared
 # nothing rather than needing a branch at every use.
-_NO_CONTRACT = AgentContract()
+_NO_CONTRACT = OfflineContract()
 
 
 # List-selector pagination args own these names; a registered ``QueryParam`` or
@@ -149,14 +155,22 @@ _LIST_PARAM_SCHEMA: dict[str, Any] = {
     "page": {
         "type": "integer",
         "minimum": 1,
-        "description": "1-based page number (requires `limit`).",
+        "description": "1-based page number.",
     },
     "limit": {
         "type": "integer",
         "minimum": 1,
-        "description": "Maximum number of items to return.",
+        "description": (
+            f"Maximum number of items per page. Defaults to {DEFAULT_PAGE_SIZE}; "
+            "the result reports `totalPages` and `hasNext`."
+        ),
     },
 }
+# ``page`` no longer says "requires `limit`", because it no longer does: every
+# list result is a page, so an omitted ``limit`` is the default page size rather
+# than "everything". The pair used to be advertised and then not honoured — the
+# schema claimed pagination while the payload was a bare list — and the wording
+# was the last place that claim was still qualified.
 
 
 @dataclass(frozen=True)
@@ -186,9 +200,19 @@ class SpecToolset(AbstractToolset[Any]):
 
     Each key becomes one tool: the description is the spec's selector/service
     docstring, the parameter schema comes from ``spec_to_json_schema`` (with a
-    list selector's ``page`` / ``limit`` args merged in), and the
-    ``readOnlyHint`` annotation is derived from the spec kind (selectors read,
-    services mutate).
+    list selector's ``page`` / ``limit`` args merged in), the ``return_schema``
+    comes from the same spec's projected output path, and the ``readOnlyHint``
+    annotation is derived from the spec kind (selectors read, services mutate).
+
+    **A list selector's result is a page, always.** It comes back as
+    ``{"items": [...], "page": 1, "totalPages": N, "hasNext": bool}`` — never a
+    bare list — with at most
+    [`DEFAULT_PAGE_SIZE`][rest_framework_services.dispatch.paginate_output.DEFAULT_PAGE_SIZE]
+    rows unless ``max_page_size`` lowers it. That is the input contract this
+    toolset has always published being honoured: ``page`` and ``limit`` were
+    advertised on every list tool and the payload was a bare slice, so a model
+    asking for a collection got 50 of 51 rows with nothing saying more existed.
+    ``hasNext`` is what it was missing.
 
     **Filtering needs no declaration here, and ordering belongs to the
     ``filter_set``.** A ``SelectorSpec.filter_set``'s fields are already
@@ -214,7 +238,7 @@ class SpecToolset(AbstractToolset[Any]):
             one transport, so the agent reads the source MCP and the HTTP views
             read. **Prefer the registry over ``registry.specs()``**: an entry
             carries an
-            [`AgentContract`][rest_framework_services.types.agent_contract.AgentContract]
+            [`OfflineContract`][rest_framework_services.types.offline_contract.OfflineContract]
             and the flattened mapping does not, so a contract's ``url_kwargs``,
             ``query_params`` and ``field_audiences`` are silently absent from a
             toolset built off the mapping. A filtered view is itself a registry, so several toolsets can
@@ -256,7 +280,7 @@ class SpecToolset(AbstractToolset[Any]):
             name. A per-tool param overrides a toolset-wide one of the same name.
 
             Both are **this mount's** declarations, and both override the entry's
-            own ``AgentContract`` by name. Where a project runs more than one
+            own ``OfflineContract`` by name. Where a project runs more than one
             agent transport, the contract is the better home: the operation needs
             the identical params whichever transport calls it, and declaring them
             per mount is how two mounts come to disagree.
@@ -276,7 +300,7 @@ class SpecToolset(AbstractToolset[Any]):
             still reaches the selector. A name cannot be both a ``QueryParam``
             and a ``UrlKwarg`` on one tool: a value cannot route to two channels.
         tool_url_kwargs: ``url_kwargs`` for one tool only, same override rule,
-            and the same preference for the entry's ``AgentContract`` where one
+            and the same preference for the entry's ``OfflineContract`` where one
             exists.
         host: The origin the synthesized request reports, so
             ``build_absolute_uri`` builds real absolute URLs — DRF's
@@ -301,10 +325,12 @@ class SpecToolset(AbstractToolset[Any]):
         tool_max_result_bytes: ``max_result_bytes`` per tool. An explicit
             ``None`` opts that tool out; an absent key inherits the default.
         max_page_size: Clamps a list tool's ``limit`` *and* advertises the
-            ceiling as JSON-Schema ``maximum``. With it set, an omitted ``limit``
-            becomes the ceiling rather than "everything" — the unbounded read is
-            the one that hurts, and it is what a model produces by not thinking
-            about pagination.
+            ceiling as JSON-Schema ``maximum``. Lowers the default page size
+            with it, so an omitted ``limit`` becomes the ceiling rather than
+            ``DEFAULT_PAGE_SIZE``. Unset, a list tool still returns at most
+            ``DEFAULT_PAGE_SIZE`` rows per page — the unbounded read is the one
+            that hurts, and it is what a model produces by not thinking about
+            pagination.
         dispatch_timeout: Seconds bounding one call, so the model gets an answer
             instead of a hang. It does not *stop* the work: the dispatch runs in
             a ``sync_to_async`` thread and asyncio cannot interrupt a thread
@@ -346,6 +372,16 @@ class SpecToolset(AbstractToolset[Any]):
             result (or raising ``ModelRetry``). Matched along
             the MRO, most specific first, and consulted **before** the built-in
             arms, so a project can override those too.
+        json_schema_registry: Consumer rules for turning a custom serializer
+            field, django-filter filter or Python type into a JSON Schema
+            fragment — a
+            [`JsonSchemaRegistry`][rest_framework_services.types.json_schema_registry.JsonSchemaRegistry],
+            threaded into every schema this toolset generates (input *and*
+            return). Without it a project's own field type reaches the model as
+            ``{}`` — "any value" — which is the schema saying nothing at exactly
+            the field the model is most likely to get wrong. Build one by
+            extending the shared default:
+            ``DEFAULT_JSON_SCHEMA_REGISTRY.extend(fields=[(MoneyField, {"type": "string"})])``.
 
     Raises:
         ImproperlyConfigured: A spec has no ``permission_classes`` and
@@ -382,6 +418,7 @@ class SpecToolset(AbstractToolset[Any]):
         http_request: HttpRequest | None = None,
         get_http_request: HttpRequestExtractor | None = None,
         exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
+        json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
     ) -> None:
         resolved = _resolve_specs(specs)
         contracts = _resolve_contracts(specs)
@@ -402,6 +439,7 @@ class SpecToolset(AbstractToolset[Any]):
         )
         self._exception_map: dict[type[BaseException], ExceptionHandler] = dict(exception_map or {})
         self._unknown_arguments: UnknownArguments = unknown_arguments
+        self._json_schema_registry = json_schema_registry
         self._host = host
         self._max_retries = max_retries
         self._max_page_size = max_page_size
@@ -443,7 +481,9 @@ class SpecToolset(AbstractToolset[Any]):
             name: tuple((tool_ordering_fields or {}).get(name, ordering_fields))
             for name in self._specs
         }
-        _validate_ordering_fields(self._specs, self._tool_ordering_fields)
+        _validate_ordering_fields(
+            self._specs, self._tool_ordering_fields, registry=json_schema_registry
+        )
         _validate_no_param_channel_overlap(self._tool_query_params, self._tool_url_kwargs)
         # Checked on the **merged** tuples, not the raw declarations: a
         # toolset-wide and a per-tool entry of the same name are an intentional
@@ -452,6 +492,22 @@ class SpecToolset(AbstractToolset[Any]):
         for name in self._specs:
             _validate_channel_declarations(name, self._tool_query_params[name], "query_params")
             _validate_channel_declarations(name, self._tool_url_kwargs[name], "url_kwargs")
+        # Agent markings are pure in the serializer, like the schemas below, so
+        # they are resolved once rather than paying a serializer instantiation
+        # on every tool call.
+        #
+        # **Built before the tool definitions, which now read them.** A tool's
+        # ``return_schema`` describes the payload the model actually receives,
+        # and that payload is projected — so the schema has to be projected by
+        # the same declaration, or it would advertise a field the render drops.
+        self._projections: dict[str, AudienceProjection] = {
+            name: audience_projection_for_spec(
+                spec,
+                overrides=contracts.get(name, _NO_CONTRACT).field_audiences,
+                name=f"Tool {name!r}",
+            )
+            for name, spec in self._specs.items()
+        }
         # Schemas derive purely from the specs (no DB), so the tool defs are built
         # once up front. ``ToolDefinition`` defaults to ``kind="function"`` — the
         # in-process kind the run loop routes into ``call_tool``.
@@ -464,17 +520,8 @@ class SpecToolset(AbstractToolset[Any]):
                 self._descriptions.get(name),
                 self._tool_ordering_fields[name],
                 self._max_page_size,
-            )
-            for name, spec in self._specs.items()
-        }
-        # Agent markings are pure in the serializer, like the schemas above, so
-        # they are resolved once rather than paying a serializer instantiation
-        # on every tool call.
-        self._projections: dict[str, AgentProjection] = {
-            name: agent_projection_for_spec(
-                spec,
-                overrides=contracts.get(name, _NO_CONTRACT).field_audiences,
-                name=f"Tool {name!r}",
+                projection=self._projections[name],
+                registry=json_schema_registry,
             )
             for name, spec in self._specs.items()
         }
@@ -566,6 +613,7 @@ class SpecToolset(AbstractToolset[Any]):
             self._tool_query_params,
             self._tool_ordering_fields,
             self._projections,
+            registry=self._json_schema_registry,
         )
 
     async def call_tool(
@@ -602,6 +650,11 @@ class SpecToolset(AbstractToolset[Any]):
                     label=name,
                     progress=self._get_progress(ctx),
                     host=self._host,
+                    # The dispatch path asks the same question the schema
+                    # builder did — *what does this spec call its sort?* — so
+                    # it has to ask it against the same registry, or the two
+                    # could answer differently for one spec.
+                    json_schema_registry=self._json_schema_registry,
                 ),
                 self._dispatch_timeout,
                 label=name,
@@ -905,6 +958,8 @@ def _validate_no_param_channel_overlap(
 def _validate_ordering_fields(
     specs: Mapping[str, Spec],
     tool_ordering_fields: Mapping[str, Sequence[str]],
+    *,
+    registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
 ) -> None:
     """Refuse a tool that declares ordering twice, then deprecate the second way.
 
@@ -919,7 +974,7 @@ def _validate_ordering_fields(
     clashing: list[str] = sorted(
         name
         for name, fields in tool_ordering_fields.items()
-        if fields and _spec_ordering_argument(specs[name]) is not None
+        if fields and _spec_ordering_argument(specs[name], registry=registry) is not None
     )
     if clashing:
         names: str = ", ".join(repr(name) for name in clashing)
@@ -1018,8 +1073,11 @@ _BASE_INSTRUCTIONS = (
 )
 
 _LIST_INSTRUCTION = (
-    "- Read-only tools that return a collection accept optional `page` and `limit`: `limit` "
-    "caps the number of items and `page` (1-based, requires `limit`) selects the page."
+    "- Read-only tools that return a collection always return one page, shaped "
+    '{"items": [...], "page": 1, "totalPages": N, "hasNext": true|false}. They accept optional '
+    f"`limit` (items per page, default {DEFAULT_PAGE_SIZE}) and `page` (1-based). When "
+    "`hasNext` is true there are more items than you were shown: ask for the next `page`, or "
+    "narrow the request with a filter — never answer as if the page were the whole collection."
 )
 
 _HANDLE_INSTRUCTION = (
@@ -1027,6 +1085,18 @@ _HANDLE_INSTRUCTION = (
     "output. Pass them to other tools that ask for one; refer to records by their "
     "name in anything you say, never by the identifier."
 )
+
+_HANDLE_DESCRIPTION = (
+    "An opaque identifier. Pass it to other tools that ask for one; refer to the record "
+    "by its name in anything you say, never by this value."
+)
+"""Fallback wording for a ``HANDLE`` field that declares no description of its own.
+
+drf-services deliberately supplies none: what a reader should *do* with an
+identifier depends on the reader, and only the transport knows its audience.
+Ours is a model reading a tool's output schema, so the sentence is the per-field
+half of ``_HANDLE_INSTRUCTION`` — same advice, at the field that needs it.
+"""
 
 
 def _ordering_instruction(names: Sequence[str]) -> str:
@@ -1050,7 +1120,7 @@ def _ordering_instruction(names: Sequence[str]) -> str:
     )
 
 
-def _has_handle(projection: AgentProjection) -> bool:
+def _has_handle(projection: AudienceProjection) -> bool:
     """Whether any field on this tool's output is an opaque identifier."""
     return any(marking.audience is FieldAudience.HANDLE for marking in projection.fields.values())
 
@@ -1059,7 +1129,9 @@ def _derive_instructions(
     specs: Mapping[str, Spec],
     tool_query_params: Mapping[str, Sequence[QueryParam]],
     tool_ordering_fields: Mapping[str, Sequence[str]] | None = None,
-    projections: Mapping[str, AgentProjection] | None = None,
+    projections: Mapping[str, AudienceProjection] | None = None,
+    *,
+    registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
 ) -> str:
     """Build the conventions block from the specs / query params / ordering.
 
@@ -1084,7 +1156,7 @@ def _derive_instructions(
     if any((tool_ordering_fields or {}).values()):
         ordering_names.append("ordering")
     for spec in specs.values():
-        advertised = _spec_ordering_argument(spec)
+        advertised = _spec_ordering_argument(spec, registry=registry)
         if advertised is not None and advertised not in ordering_names:
             ordering_names.append(advertised)
     if ordering_names:
@@ -1111,15 +1183,84 @@ def _build_tool_def(
     description: str | None = None,
     ordering_fields: Sequence[str] = (),
     max_page_size: int | None = None,
+    *,
+    projection: AudienceProjection | None = None,
+    registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
 ) -> ToolDefinition:
+    """One tool definition: what the model may send, and what it gets back.
+
+    ``include_return_schema`` is deliberately **left at its default**, which
+    resolves to ``False``. Populating ``return_schema`` costs nothing; putting it
+    on the wire costs context on every turn of every run, and whether that trade
+    is worth it depends on the model and the size of the serializer — neither of
+    which this package knows. Pydantic-AI already owns the opt-in, at both
+    scopes: ``SpecToolset(...).include_return_schemas()`` for one toolset, or the
+    ``IncludeToolReturnSchemas`` capability for a run. A knob here would be a
+    third way to say the same thing, and the one a consumer composing through
+    ``SpecCapability`` still could not reach.
+    """
     return ToolDefinition(
         name=name,
         description=description,
         parameters_json_schema=_input_schema(
-            spec, query_params, url_kwargs, ordering_fields, max_page_size
+            spec, query_params, url_kwargs, ordering_fields, max_page_size, registry=registry
         ),
+        return_schema=_return_schema(spec, projection=projection, registry=registry),
         metadata={"annotations": {"readOnlyHint": isinstance(spec, SelectorSpec)}},
     )
+
+
+def _return_schema(
+    spec: Spec,
+    *,
+    projection: AudienceProjection | None = None,
+    registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+) -> dict[str, Any] | None:
+    """The shape of what this tool returns, or ``None`` when the spec declares none.
+
+    Generated from the **projected** output path rather than from the raw
+    serializer, so it describes the payload the model is actually handed:
+    ``render_for_audience`` drops hidden fields and substitutes a choice field's
+    display value, and a schema still advertising either would be worse than no
+    schema at all — a model asking for a field the render removes gets nothing
+    back and no reason why.
+
+    ``paginate`` is ``_is_list_selector`` and not ``kind is LIST``, because it
+    has to answer *does this toolset wrap the result*, not *is the result a
+    collection*. A ``ServiceSpec`` whose
+    ``output_selector_spec`` is a LIST returns a bare array here — the toolset
+    paginates list *selectors* only — so claiming the envelope for it would
+    re-introduce, one spec kind over, exactly the schema-versus-payload
+    disagreement this release exists to close.
+
+    ``None`` for a spec with no ``output_serializer`` is the correct answer and
+    not a gap: drf-services refuses to fabricate a shape it cannot derive, and a
+    guessed one would be a claim the payload never has to honour.
+    """
+    serializer, kind = _output_serializer_and_kind(spec)
+    return output_to_json_schema(
+        serializer,
+        kind=kind,
+        paginate=_is_list_selector(spec),
+        projection=projection,
+        handle_description=_HANDLE_DESCRIPTION,
+        registry=registry,
+    )
+
+
+def _output_serializer_and_kind(spec: Spec) -> tuple[type | None, SelectorKind | None]:
+    """Where a spec keeps its output serializer, and under which kind.
+
+    A selector holds both itself; a service holds them one level down on its
+    ``output_selector_spec``. drf-services exposes ``output_serializer_for`` for
+    the first half but nothing for the pair, and the ``kind`` is what decides
+    between an item and a collection — so the two are read together here rather
+    than deriving one from the spec and the other from an assumption.
+    """
+    if isinstance(spec, SelectorSpec):
+        return spec.output_serializer, spec.kind
+    nested = spec.output_selector_spec
+    return (None, None) if nested is None else (nested.output_serializer, nested.kind)
 
 
 def _spec_description(spec: Spec) -> str | None:
@@ -1134,6 +1275,8 @@ def _input_schema(
     url_kwargs: Sequence[UrlKwarg] = (),
     ordering_fields: Sequence[str] = (),
     max_page_size: int | None = None,
+    *,
+    registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
 ) -> dict[str, Any]:
     """The tool's parameter schema, with list-selector pagination + registered
     query params + URL kwargs merged into ``properties``.
@@ -1149,7 +1292,7 @@ def _input_schema(
     registered-required appears once: that is one statement made twice, not two
     requirements.
     """
-    schema = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input"))
+    schema = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input", registry=registry))
     extra: dict[str, Any] = {}
     if _is_list_selector(spec):
         extra.update(_LIST_PARAM_SCHEMA)
@@ -1158,7 +1301,7 @@ def _input_schema(
             # a request for 100 000 rows, and telling the model is cheaper than
             # correcting it.
             extra["limit"] = {**_LIST_PARAM_SCHEMA["limit"], "maximum": max_page_size}
-        if ordering_fields and _spec_ordering_argument(spec) is None:
+        if ordering_fields and _spec_ordering_argument(spec, registry=registry) is None:
             # **Never written over a reflected ``ordering``.** ``extra`` is
             # merged over ``properties`` below, so writing here for a spec that
             # advertises its own would replace the filter's public choices with
@@ -1189,7 +1332,9 @@ def _is_list_selector(spec: Spec) -> bool:
     return isinstance(spec, SelectorSpec) and spec.kind == SelectorKind.LIST
 
 
-def _spec_ordering_argument(spec: Spec) -> str | None:
+def _spec_ordering_argument(
+    spec: Spec, *, registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY
+) -> str | None:
     """The argument name a list spec advertises its sort under, or ``None``.
 
     **The one signal, read by both the schema builder and the dispatch path, so
@@ -1227,7 +1372,7 @@ def _spec_ordering_argument(spec: Spec) -> str | None:
     """
     if not _is_list_selector(spec):
         return None
-    reflected = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input"))
+    reflected = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input", registry=registry))
     properties = reflected.get("properties", {})
     filter_set = getattr(spec, "filter_set", None)
     for name, declared in getattr(filter_set, "base_filters", {}).items():
@@ -1251,10 +1396,11 @@ def _call_spec(
     ordering_fields: Sequence[str] = (),
     max_page_size: int | None = None,
     max_result_bytes: int | None = None,
-    projection: AgentProjection | None = None,
+    projection: AudienceProjection | None = None,
     label: str = "",
     progress: ProgressReporter | None = None,
     host: str | None = None,
+    json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
     build_context: _ContextBuilder = build_offline_context,
     translate_exception: _ExceptionTranslator | None = None,
 ) -> Any:
@@ -1271,7 +1417,7 @@ def _call_spec(
     ``action`` becomes ``view.action`` on the synthetic view, so a permission
     class reading it sees the tool name rather than ``None``.
     """
-    page_args = _pop_pagination(spec, args, ordering_fields, max_page_size)
+    page_args = _pop_pagination(spec, args, ordering_fields, registry=json_schema_registry)
     # Both channels pop before dispatch so their values never reach the spec as
     # inputs, where ``unknown_arguments`` (REJECT by default) would flag them.
     # That is what makes the provider-only case work: a ``project_pk`` a scoping
@@ -1280,7 +1426,7 @@ def _call_spec(
     url_kwarg_values = _pop_url_kwargs(url_kwargs, args)
     # Last of the pops, because the filter data it returns is built from whatever
     # ``args`` is left holding once every other channel has taken its own.
-    filter_data = _pop_filter_ordering(spec, args)
+    filter_data = _pop_filter_ordering(spec, args, registry=json_schema_registry)
     context = build_context(
         user,
         args,
@@ -1353,13 +1499,15 @@ def _call_spec(
     value = result.value
     # ``page_args`` is non-None exactly for list selectors — the only specs that
     # advertise pagination args and return a (lazy) queryset to slice.
+    page: OutputPage | None = None
     if page_args is not None:
         try:
-            value = _shape_list(value, page_args)
+            page = _shape_list(value, page_args, max_page_size)
         except FieldError as exc:
             raise ModelRetry(f"invalid ordering: {exc}") from exc
+        value = page.items
     many = result.kind == "list"
-    rendered = render_for_agent(
+    rendered = render_for_audience(
         spec,
         value,
         projection=projection,
@@ -1368,6 +1516,15 @@ def _call_spec(
         view=context.view,
         extras=_output_extras(spec, value, many=many),
     )
+    if page is not None:
+        # **After the render, never before.** The projection lands on the rows;
+        # ``items`` / ``page`` / ``totalPages`` / ``hasNext`` are the envelope's
+        # own keys and belong to no serializer, so a projection walking them
+        # would look for markings that cannot exist.
+        rendered = page.envelope(rendered)
+    # Measured on the envelope, because the envelope is what is sent. It adds
+    # three small scalars and the "there is more" signal the model needs in
+    # order to act on a refusal that tells it to lower `limit`.
     return _enforce_result_bytes(rendered, max_result_bytes, label=label)
 
 
@@ -1425,7 +1582,8 @@ def _pop_pagination(
     spec: Spec,
     args: dict[str, Any],
     ordering_fields: Sequence[str] = (),
-    max_page_size: int | None = None,
+    *,
+    registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
 ) -> _PageArgs | None:
     """Strip + validate the list-selector args this toolset owns.
 
@@ -1435,6 +1593,20 @@ def _pop_pagination(
     here untyped. Coerce and validate rather than letting a ``TypeError`` abort
     the run, mapping a bad value to ``ModelRetry``.
 
+    **The coercion stays here rather than moving to drf-services' shaper, which
+    takes both values already parsed.** That is the one place the two agent
+    transports legitimately differ: an MCP server answering a public endpoint has
+    to clamp a malformed value and serve *something*, while an in-process toolset
+    can hand the model its own mistake back and get a corrected call. Clamping is
+    about a page's bounds; this is about bad input, and only the second is a
+    policy.
+
+    Clamping ``limit`` to ``max_page_size`` is therefore **not** done here any
+    more: ``paginate_output(max_page_size=…)`` applies it at the slice, where the
+    ``totalPages`` the caller is told about is computed from the same number. Two
+    clamps meant two places for that number to be, and only one of them was ever
+    reported back.
+
     **``ordering`` is left entirely alone for a spec that advertises it**, so the
     value reaches the ``filter_set`` that declared it. For a spec that does not,
     the pop is unconditional: the argument was never offered, so a model that
@@ -1443,13 +1615,11 @@ def _pop_pagination(
     """
     if not _is_list_selector(spec):
         return None
+    # Popped in the advertised order (limit, ordering, page) so that a call with
+    # two bad arguments is corrected on the same one every time.
     limit: int | None = _coerce_positive_int(args.pop("limit", None), "limit")
-    if max_page_size is not None:
-        # Clamped rather than rejected: a model that did not think to paginate is
-        # exactly the caller that needs the ceiling applied for it.
-        limit = max_page_size if limit is None else min(limit, max_page_size)
     ordering: str | None = None
-    if _spec_ordering_argument(spec) is None:
+    if _spec_ordering_argument(spec, registry=registry) is None:
         ordering = _coerce_ordering(args.pop("ordering", None), ordering_fields)
     return _PageArgs(
         page=_coerce_positive_int(args.pop("page", None), "page"),
@@ -1458,7 +1628,9 @@ def _pop_pagination(
     )
 
 
-def _pop_filter_ordering(spec: Spec, args: dict[str, Any]) -> dict[str, Any] | None:
+def _pop_filter_ordering(
+    spec: Spec, args: dict[str, Any], *, registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY
+) -> dict[str, Any] | None:
     """Route a filter-owned ``ordering`` out of the callable's args into filter data.
 
     Returns the mapping ``dispatch_spec(filter_data=…)`` should hand the
@@ -1491,7 +1663,7 @@ def _pop_filter_ordering(spec: Spec, args: dict[str, Any]) -> dict[str, Any] | N
     """
     if not isinstance(spec, SelectorSpec) or spec.filter_set is None:
         return None
-    name = _spec_ordering_argument(spec)
+    name = _spec_ordering_argument(spec, registry=registry)
     if name is None or name not in args:
         return None
     ordering: Any = args.pop(name)
@@ -1614,14 +1786,20 @@ def _ordering_values(fields: Sequence[str]) -> list[str]:
     return values
 
 
-def _shape_list(value: Any, page_args: _PageArgs) -> list[Any]:
+def _shape_list(value: Any, page_args: _PageArgs, max_page_size: int | None) -> OutputPage:
     """Paginate a list selector's queryset, ordering it only when ordering is ours.
+
+    The slicing itself is ``paginate_output``, drf-services' shared shaper, which
+    also counts the rows and clamps both bounds. This function is what is left
+    once that moved out: apply the sort this toolset owns, and force evaluation.
 
     Forces evaluation (``list(...)``) so a ``FieldError`` surfaces here — where
     ``_call_spec`` turns it into a ``ModelRetry`` — rather than later inside the
     serializer. That covers both ordering routes, since a FilterSet's own
     ``order_by`` is applied to the lazy queryset upstream and only raises once
-    this materializes it.
+    this materializes it. ``replace`` rather than mutation because ``OutputPage``
+    is frozen, and rather than materializing at the call site because the point
+    is that *nothing downstream* holds a lazy queryset once this returns.
 
     ``page_args.ordering`` is ``None`` whenever the spec advertises ``ordering``
     itself, so the sort a FilterSet already applied is never applied twice, in a
@@ -1630,14 +1808,13 @@ def _shape_list(value: Any, page_args: _PageArgs) -> list[Any]:
     queryset = value
     if page_args.ordering:
         queryset = queryset.order_by(page_args.ordering)
-    return list(_paginate(queryset, page_args.page, page_args.limit))
-
-
-def _paginate(queryset: Any, page: int | None, limit: int | None) -> Any:
-    if limit is None:
-        return queryset
-    offset = ((page or 1) - 1) * limit
-    return queryset[offset : offset + limit]
+    page: OutputPage = paginate_output(
+        queryset,
+        page=page_args.page,
+        limit=page_args.limit,
+        max_page_size=max_page_size,
+    )
+    return replace(page, items=list(page.items))
 
 
 def _output_extras(spec: Spec, value: Any, *, many: bool) -> dict[str, Any]:
