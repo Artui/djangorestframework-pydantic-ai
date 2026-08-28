@@ -6,9 +6,9 @@ import pytest
 from django.core.exceptions import ImproperlyConfigured
 from rest_framework.permissions import AllowAny
 from rest_framework_services import (
-    AgentContract,
-    AgentField,
     FieldAudience,
+    FieldMarking,
+    OfflineContract,
     SelectorKind,
     SelectorSpec,
     ServiceSpec,
@@ -172,7 +172,7 @@ class TestCapabilityFromRegistry:
         assert capability.id == capability.get_toolset().id == "reads"
 
 
-class TestTheEntrysAgentContract:
+class TestTheEntrysOfflineContract:
     """What a caller with no HTTP request has to be told, declared on the entry.
 
     Over HTTP the URLconf supplies the route captures and the query string the
@@ -182,14 +182,14 @@ class TestTheEntrysAgentContract:
     this toolset's constructor or an MCP server's registrar.
     """
 
-    def _contract_registry(self, contract: AgentContract) -> SpecRegistry:
+    def _contract_registry(self, contract: OfflineContract) -> SpecRegistry:
         registry = SpecRegistry()
         registry.register("list_widgets", _agent_list_spec(), agent_contract=contract)
         return registry
 
     def test_url_kwargs_reach_the_tool_with_nothing_in_the_constructor(self) -> None:
         toolset = SpecToolset(
-            self._contract_registry(AgentContract(url_kwargs=(UrlKwarg("tenant_pk"),)))
+            self._contract_registry(OfflineContract(url_kwargs=(UrlKwarg("tenant_pk"),)))
         )
 
         props = toolset._tool_defs["list_widgets"].parameters_json_schema["properties"]
@@ -197,7 +197,7 @@ class TestTheEntrysAgentContract:
 
     def test_query_params_reach_the_tool_with_nothing_in_the_constructor(self) -> None:
         toolset = SpecToolset(
-            self._contract_registry(AgentContract(query_params=(QueryParam(name="since"),)))
+            self._contract_registry(OfflineContract(query_params=(QueryParam(name="since"),)))
         )
 
         props = toolset._tool_defs["list_widgets"].parameters_json_schema["properties"]
@@ -208,13 +208,13 @@ class TestTheEntrysAgentContract:
         # and nowhere here, so one spec projected a different field set
         # depending on which agent transport served it.
         toolset = SpecToolset(
-            self._contract_registry(AgentContract(field_audiences={"price": AgentField()}))
+            self._contract_registry(OfflineContract(field_audiences={"price": FieldMarking()}))
         )
 
         assert toolset._projections["list_widgets"].audience("price") is FieldAudience.CONTENT
 
     def test_the_serializer_still_decides_when_the_contract_is_silent(self) -> None:
-        toolset = SpecToolset(self._contract_registry(AgentContract()))
+        toolset = SpecToolset(self._contract_registry(OfflineContract()))
 
         assert toolset._projections["list_widgets"].audience("price") is FieldAudience.HIDDEN
 
@@ -223,7 +223,9 @@ class TestTheEntrysAgentContract:
         # well leaves two, and a record has one name.
         with pytest.raises(ImproperlyConfigured, match="list_widgets"):
             SpecToolset(
-                self._contract_registry(AgentContract(field_audiences={"id": AgentField.label()}))
+                self._contract_registry(
+                    OfflineContract(field_audiences={"id": FieldMarking.label()})
+                )
             )
 
     def test_this_mounts_declaration_overrides_the_entrys_by_name(self) -> None:
@@ -231,7 +233,7 @@ class TestTheEntrysAgentContract:
         # word about this deployment, and wins.
         toolset = SpecToolset(
             self._contract_registry(
-                AgentContract(query_params=(QueryParam(name="since", description="entry"),))
+                OfflineContract(query_params=(QueryParam(name="since", description="entry"),))
             ),
             query_params=[QueryParam(name="since", description="mount")],
         )
@@ -241,7 +243,7 @@ class TestTheEntrysAgentContract:
 
     def test_a_per_tool_declaration_overrides_both(self) -> None:
         toolset = SpecToolset(
-            self._contract_registry(AgentContract(url_kwargs=(UrlKwarg("tenant_pk"),))),
+            self._contract_registry(OfflineContract(url_kwargs=(UrlKwarg("tenant_pk"),))),
             url_kwargs=[UrlKwarg("tenant_pk", description="mount")],
             tool_url_kwargs={"list_widgets": [UrlKwarg("tenant_pk", description="tool")]},
         )
@@ -254,7 +256,7 @@ class TestTheEntrysAgentContract:
         # checks a constructor one answers to: both are merged first, and the
         # merged tuple is what is validated and what reaches the schema.
         registry = self._contract_registry(
-            AgentContract(
+            OfflineContract(
                 url_kwargs=(UrlKwarg("tenant_pk"),),
                 query_params=(QueryParam(name="tenant_pk"),),
             )
@@ -269,7 +271,7 @@ class TestTheEntrysAgentContract:
         The documented consequence of passing the mapping rather than the
         registry: what the entry declared is not in the mapping to be read.
         """
-        registry = self._contract_registry(AgentContract(url_kwargs=(UrlKwarg("tenant_pk"),)))
+        registry = self._contract_registry(OfflineContract(url_kwargs=(UrlKwarg("tenant_pk"),)))
 
         toolset = SpecToolset(registry.specs())
 

@@ -50,10 +50,11 @@ toolset = SpecToolset(
 ```
 
 Each key is the tool name. The description comes from the selector/service
-docstring, the parameter schema from the spec's input serializer, and the
-`readOnlyHint` annotation from the spec kind (selectors read, services mutate).
-List selectors additionally accept `page` and `limit` tool args, plus `ordering`
-where the selector's [`filter_set` declares one](#ordering).
+docstring, the parameter schema from the spec's input serializer, the
+`return_schema` from its output serializer, and the `readOnlyHint` annotation
+from the spec kind (selectors read, services mutate). List selectors
+additionally accept `page` and `limit` tool args, plus `ordering` where the
+selector's [`filter_set` declares one](#ordering).
 
 ## 3. Run an agent
 
@@ -77,6 +78,54 @@ For that request the model can call `list_orders` with
 runs the selector as `request.user`, hands `ordering` to the selector's
 [`filter_set`](#ordering), slices the result, and renders it through
 `OrderSerializer`.
+
+## Every list result is a page
+
+A list selector answers with the pagination envelope, never a bare array:
+
+```python
+{
+    "items": [{"id": 12, "total": "48.00"}, ...],
+    "page": 1,
+    "totalPages": 4,
+    "hasNext": True,
+}
+```
+
+`limit` defaults to 100 rows and `page` to 1, so a tool that used to return an
+entire table now returns its first hundred rows **and says so**. That is the
+point: `page` and `limit` were advertised on every list tool from the start
+while the payload was a bare slice, so a model asking for a collection received
+50 of 51 rows with nothing in the answer telling it more existed. `hasNext` is
+what was missing — the model can ask for `page: 2`, or narrow the request with a
+filter, instead of answering from a page it took for the whole set.
+
+`max_page_size` lowers the default and advertises itself as JSON-Schema
+`maximum` on `limit`:
+
+```python
+toolset = SpecToolset(specs, max_page_size=25)
+```
+
+The same envelope is what the tool's `return_schema` describes, generated from
+the same spec — so the schema and the payload cannot disagree about it.
+
+## The output schema
+
+Each tool definition carries a `return_schema` derived from the spec's output
+serializer, projected the same way the payload is: a field marked
+[hidden](agent-audience.md) is absent from both, and a marked handle carries its
+description in both.
+
+It is populated but **not sent** by default, because a return schema costs
+context on every turn of every run and only your model and your serializers say
+whether that trade is worth it. Pydantic-AI owns the opt-in, at either scope:
+
+```python
+agent = Agent(model, toolsets=[SpecToolset(specs).include_return_schemas()])
+```
+
+A spec with no `output_serializer` gets `None` rather than a guessed shape.
 
 ## Custom identity
 
@@ -174,10 +223,11 @@ class OrderFilterSet(django_filters.FilterSet):
         fields = ["status"]
 ```
 
-drf-services reflects that filter into the tool's input schema as an enum of its
-public choices (`created`, `-created`, `total`, `-total`) — `OrderingFilter`
-subclasses `ChoiceFilter`, which the schema generator maps to an enum — so the
-model is told exactly what it may sort by. At call time the value is handed to
+drf-services reflects that filter into the tool's input schema as its public
+choices (`created`, `-created`, `total`, `-total`) — `OrderingFilter` subclasses
+`ChoiceFilter`, which the schema generator maps to a set of `const` options
+carrying the filter's own labels — so the model is told exactly what it may sort
+by, in the words the FilterSet uses. At call time the value is handed to
 the FilterSet as filter data: it validates the choice, applies its own
 `param_map`, and a value outside the enum comes back as a `ModelRetry`. The
 toolset contributes nothing and takes nothing away.
@@ -382,6 +432,7 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | Unresolved instance | `{"error": "not found"}` |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
 | Non-integer `page` / `limit`, or an `ordering` outside the declared enum | `ModelRetry` — naming the values that are accepted |
+| A `limit` over `max_page_size`, or a `page` past the last one | Clamped, not refused — the envelope reports the `page` and `totalPages` actually served, so the clamp is visible rather than silent |
 | An `ordering` outside a `filter_set`'s `OrderingFilter` choices | `ModelRetry` — the FilterSet rejects it, which arrives as the `ValidationError` row above |
 | An ordering name that isn't a real column (a declared `ordering_fields` entry, or a FilterSet `param_map` target) | `ModelRetry` — an author's error, not the model's; it can't be checked at construction without a queryset |
 | Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run — see the caveat below |

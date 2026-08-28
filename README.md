@@ -54,7 +54,9 @@ result = await agent.run(
 The agent acts as `deps.user`: each call builds an off-HTTP request/view context,
 **enforces the spec's `permission_classes`** (class- and object-level),
 dispatches the spec, and renders the result through the spec's serializer. List
-selectors gain `page` / `limit` / `order` tool args.
+selectors gain `page` / `limit` / `order` tool args, and return **one page** —
+`{"items": [...], "page": 1, "totalPages": N, "hasNext": bool}` — so a model
+reading a collection can tell whether it saw all of it.
 
 Failures map onto the model loop so the agent self-corrects: invalid input, a bad
 `page` / `limit` / `order` value, and unexpected (hallucinated) arguments come

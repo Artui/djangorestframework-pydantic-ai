@@ -111,7 +111,7 @@ them, which is the cost deferring was meant to avoid. `description` names the
 ## What the entry carries for an agent
 
 An entry may hold an
-[`AgentContract`][rest_framework_services.types.agent_contract.AgentContract]:
+[`OfflineContract`][rest_framework_services.types.offline_contract.OfflineContract]:
 what a caller with **no HTTP request** has to be told, because the URLconf and
 query string tell an HTTP one for free.
 
@@ -120,7 +120,7 @@ registry.register(
     "list_orders",
     specs.list_orders,
     tags=("read", "public"),
-    agent_contract=AgentContract(
+    agent_contract=OfflineContract(
         url_kwargs=(UrlKwarg(name="tenant_pk"),),
         query_params=(QueryParam(name="fields"),),
     ),

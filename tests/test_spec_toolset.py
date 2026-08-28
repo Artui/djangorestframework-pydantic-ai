@@ -19,8 +19,12 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework_services import (
+    DEFAULT_JSON_SCHEMA_REGISTRY,
+    DEFAULT_PAGE_SIZE,
+    MARKING,
     UNSET,
     AdditionalInputRequired,
+    FieldMarking,
     SelectorKind,
     SelectorSpec,
     ServiceError,
@@ -35,10 +39,12 @@ from typing_extensions import TypedDict, Unpack
 from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset, UrlKwarg
 from rest_framework_pydantic_ai.spec_toolset import (
     _BASE_INSTRUCTIONS,
+    _HANDLE_DESCRIPTION,
     _HANDLE_INSTRUCTION,
     _LIST_INSTRUCTION,
     UndescribedToolWarning,
     UnguardedSpecWarning,
+    _build_tool_def,
     _default_get_http_request,
     _default_get_progress,
     _derive_instructions,
@@ -46,9 +52,11 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _is_list_selector,
     _ordering_values,
     _output_extras,
-    _paginate,
+    _PageArgs,
     _pop_query_params,
     _pop_url_kwargs,
+    _return_schema,
+    _shape_list,
     _spec_ordering_argument,
     _with_deadline,
 )
@@ -156,6 +164,20 @@ class DenyAll(BasePermission):
 
 def ctx_for(user):
     return SimpleNamespace(deps=AgentDeps(user=user))
+
+
+def _rows(result: Any) -> list[Any]:
+    """The rows out of a list tool's page envelope.
+
+    Every list-selector result is a page as of the pagination change, so the
+    tests that are about *what the rows are* unwrap it here rather than each
+    re-deriving the wrapper. Asserting the four keys on the way through is what
+    keeps this from hiding a regression in the envelope itself: a result that
+    stopped being a page would fail here rather than reading as a row that
+    happens to lack a ``name``. The envelope's own values have their own tests.
+    """
+    assert set(result) == {"items", "page", "totalPages", "hasNext"}
+    return result["items"]
 
 
 # --- get_instructions --------------------------------------------------------
@@ -328,7 +350,7 @@ def test_list_selector_renders_owned_widgets():
     Widget.objects.create(name="a", price=1, owner=user)
     Widget.objects.create(name="b", price=2, owner=other)
     result = _dispatch(list_spec(), user, {})
-    assert [w["name"] for w in result] == ["a"]
+    assert [w["name"] for w in _rows(result)] == ["a"]
 
 
 @pytest.mark.django_db
@@ -339,7 +361,7 @@ def test_list_selector_orders_and_limits():
     result = _dispatch(
         list_spec(), user, {"ordering": "price", "limit": 2}, ordering_fields=["price"]
     )
-    assert [w["name"] for w in result] == ["b", "c"]
+    assert [w["name"] for w in _rows(result)] == ["b", "c"]
 
 
 @pytest.mark.django_db
@@ -353,7 +375,7 @@ def test_list_selector_second_page():
         {"ordering": "price", "page": 2, "limit": 2},
         ordering_fields=["price"],
     )
-    assert [w["name"] for w in result] == ["c"]
+    assert [w["name"] for w in _rows(result)] == ["c"]
 
 
 @pytest.mark.django_db
@@ -484,11 +506,36 @@ def test_ordering_values_pairs_each_field_with_its_descending_form():
     assert _ordering_values(["name", "price"]) == ["name", "-name", "price", "-price"]
 
 
-def test_paginate_variants():
-    assert _paginate([1, 2, 3], None, None) == [1, 2, 3]
-    assert _paginate([1, 2, 3, 4], None, 2) == [1, 2]
-    assert _paginate([1, 2, 3, 4], 1, 2) == [1, 2]
-    assert _paginate([1, 2, 3, 4], 2, 2) == [3, 4]
+def test_shape_list_returns_a_page_rather_than_a_bare_slice():
+    """The defect this closes, at the helper that had it.
+
+    ``page`` / ``limit`` were advertised on every list tool and the shaper
+    answered with a bare slice: no total, no clamp, and nothing in the payload
+    saying more rows existed.
+    """
+    page = _shape_list([1, 2, 3, 4, 5], _PageArgs(page=2, limit=2, ordering=None), None)
+    assert page.items == [3, 4]
+    assert (page.page, page.limit, page.total) == (2, 2, 5)
+    assert page.total_pages == 3
+    assert page.has_next is True
+
+
+def test_shape_list_bounds_a_limitless_call_to_one_default_page():
+    """An omitted ``limit`` used to mean *everything*, unbounded and unremarked."""
+    rows = list(range(DEFAULT_PAGE_SIZE + 1))
+    page = _shape_list(rows, _PageArgs(page=None, limit=None, ordering=None), None)
+    assert page.items == rows[:DEFAULT_PAGE_SIZE]
+    assert page.total == DEFAULT_PAGE_SIZE + 1
+    assert page.has_next is True
+
+
+def test_shape_list_clamps_the_limit_to_max_page_size():
+    """The clamp moved out of ``_pop_pagination`` and onto the slice, so the
+    ``totalPages`` reported is computed from the limit actually applied."""
+    page = _shape_list([1, 2, 3, 4], _PageArgs(page=None, limit=3, ordering=None), 2)
+    assert page.items == [1, 2]
+    assert page.limit == 2
+    assert page.total_pages == 2
 
 
 def test_output_extras_branches():
@@ -521,7 +568,7 @@ def test_string_limit_is_coerced_to_int():
     Widget.objects.create(owner=user, name="a", price=1)
     Widget.objects.create(owner=user, name="b", price=2)
     result = _dispatch(list_spec(), user, {"limit": "1"})
-    assert len(result) == 1
+    assert len(_rows(result)) == 1
 
 
 @pytest.mark.parametrize("value", ["abc", "2.5", "-1", 0, -3, 2.0])
@@ -753,7 +800,7 @@ def test_query_param_reaches_the_serializer_via_request_query_params():
     result = _dispatch(
         _echo_list_spec(), user, {"fields": "id,name"}, query_params=(QueryParam("fields"),)
     )
-    assert result == [{"name": "a", "fields": "id,name"}]
+    assert _rows(result) == [{"name": "a", "fields": "id,name"}]
 
 
 @pytest.mark.django_db
@@ -763,7 +810,7 @@ def test_query_param_default_is_seeded_when_the_model_omits_it():
     result = _dispatch(
         _echo_list_spec(), user, {}, query_params=(QueryParam("fields", default="id"),)
     )
-    assert result == [{"name": "a", "fields": "id"}]
+    assert _rows(result) == [{"name": "a", "fields": "id"}]
 
 
 @pytest.mark.django_db
@@ -771,7 +818,7 @@ def test_query_param_omitted_without_default_seeds_nothing():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
     result = _dispatch(_echo_list_spec(), user, {}, query_params=(QueryParam("fields"),))
-    assert result == [{"name": "a", "fields": None}]
+    assert _rows(result) == [{"name": "a", "fields": None}]
 
 
 @pytest.mark.django_db
@@ -787,7 +834,7 @@ def test_query_param_is_popped_before_dispatch_so_reject_ignores_it():
         query_params=(QueryParam("fields"),),
         unknown_arguments=UnknownArguments.REJECT,
     )
-    assert [w["name"] for w in result] == ["a"]
+    assert [w["name"] for w in _rows(result)] == ["a"]
 
 
 # --- full agent-run integration ----------------------------------------------
@@ -923,7 +970,7 @@ def test_filter_set_filters_via_ordinary_params_not_query_params():
     # set is open (REJECT doesn't flag it), and dispatch hands it to the FilterSet
     # as filter_data. No QueryParam involved.
     result = _dispatch(_filtered_list_spec(), user, {"min_price": "5"})
-    assert [w["name"] for w in result] == ["pricey"]
+    assert [w["name"] for w in _rows(result)] == ["pricey"]
 
 
 # --- UrlKwarg registration ---------------------------------------------------
@@ -1038,7 +1085,7 @@ def test_url_kwarg_reaches_a_scoping_provider_via_view_kwargs():
         {"project_pk": "10"},
         url_kwargs=(UrlKwarg("project_pk"),),
     )
-    assert [w["name"] for w in result] == ["cheap"]
+    assert [w["name"] for w in _rows(result)] == ["cheap"]
 
 
 @pytest.mark.django_db
@@ -1055,7 +1102,7 @@ def test_url_kwarg_is_popped_before_dispatch_so_reject_ignores_it():
         url_kwargs=(UrlKwarg("project_pk"),),
         unknown_arguments=UnknownArguments.REJECT,
     )
-    assert [w["name"] for w in result] == ["cheap"]
+    assert [w["name"] for w in _rows(result)] == ["cheap"]
 
 
 @pytest.mark.django_db
@@ -1069,7 +1116,7 @@ def test_url_kwarg_default_is_seeded_when_the_model_omits_it():
         {},
         url_kwargs=(UrlKwarg("project_pk", default="10"),),
     )
-    assert [w["name"] for w in result] == ["cheap"]
+    assert [w["name"] for w in _rows(result)] == ["cheap"]
 
 
 @pytest.mark.django_db
@@ -1078,7 +1125,7 @@ def test_url_kwarg_omitted_without_default_seeds_nothing():
     Widget.objects.create(name="cheap", price=5, owner=user)
     # No project_pk, no default → view.kwargs empty → provider ceiling 0 → nothing.
     result = _dispatch(_provider_scoped_spec(), user, {}, url_kwargs=(UrlKwarg("project_pk"),))
-    assert result == []
+    assert _rows(result) == []
 
 
 class _ProjectExtras(TypedDict, total=False):
@@ -1140,7 +1187,7 @@ def test_reflected_extras_key_never_reaches_view_kwargs():
     )
     # Supplied as an ordinary argument, with no ``UrlKwarg`` registered.
     result = _dispatch(spec, user, {"project_pk": 10})
-    assert [w["name"] for w in result] == ["cheap"]  # the selector did get it
+    assert [w["name"] for w in _rows(result)] == ["cheap"]  # the selector did get it
     assert seen["view_kwargs"] == {}  # the provider did not
 
 
@@ -1154,7 +1201,7 @@ def test_dual_declared_url_kwarg_delivers_to_the_selector_pool():
     result = _dispatch(
         _dual_declared_spec(), user, {"project_pk": 10}, url_kwargs=(UrlKwarg("project_pk"),)
     )
-    assert [w["name"] for w in result] == ["cheap"]
+    assert [w["name"] for w in _rows(result)] == ["cheap"]
 
 
 # --- required URL kwargs (drf-services 0.28) ---------------------------------
@@ -1200,7 +1247,7 @@ def test_supplying_a_required_url_kwarg_dispatches_normally():
         {"project_pk": "P1"},
         url_kwargs=[UrlKwarg("project_pk", required=True)],
     )
-    assert [w["name"] for w in result] == ["a"]
+    assert [w["name"] for w in _rows(result)] == ["a"]
 
 
 def test_required_url_kwarg_with_a_default_is_rejected():
@@ -1257,7 +1304,7 @@ def test_render_supplies_the_request_in_the_serializer_context():
         selector=list_widgets,
         output_serializer=ContextReadingSerializer,
     )
-    assert [w["owned_by"] for w in _dispatch(spec, user, {})] == ["u"]
+    assert [w["owned_by"] for w in _rows(_dispatch(spec, user, {}))] == ["u"]
 
 
 @pytest.mark.django_db
@@ -1311,7 +1358,7 @@ def fileish_spec():
 def test_without_a_host_file_urls_are_relative():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
-    assert [w["doc_url"] for w in _dispatch(fileish_spec(), user, {})] == ["/media/doc.pdf"]
+    assert [w["doc_url"] for w in _rows(_dispatch(fileish_spec(), user, {}))] == ["/media/doc.pdf"]
 
 
 @pytest.mark.django_db
@@ -1319,7 +1366,7 @@ def test_host_makes_file_urls_absolute():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
     result = _dispatch(fileish_spec(), user, {}, host="https://files.example.com")
-    assert [w["doc_url"] for w in result] == ["https://files.example.com/media/doc.pdf"]
+    assert [w["doc_url"] for w in _rows(result)] == ["https://files.example.com/media/doc.pdf"]
 
 
 @pytest.mark.django_db(transaction=True)
@@ -1331,7 +1378,7 @@ async def test_toolset_threads_its_host_into_the_call():
     toolset = SpecToolset({"list_widgets": fileish_spec()}, host="app.example.com:8000")
     tools = await toolset.get_tools(None)
     result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
-    assert [w["doc_url"] for w in result] == ["http://app.example.com:8000/media/doc.pdf"]
+    assert [w["doc_url"] for w in _rows(result)] == ["http://app.example.com:8000/media/doc.pdf"]
 
 
 @pytest.mark.django_db(transaction=True)
@@ -1343,7 +1390,7 @@ async def test_toolset_without_a_host_still_renders():
     toolset = SpecToolset({"list_widgets": fileish_spec()})
     tools = await toolset.get_tools(None)
     result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
-    assert [w["doc_url"] for w in result] == ["/media/doc.pdf"]
+    assert [w["doc_url"] for w in _rows(result)] == ["/media/doc.pdf"]
 
 
 # ----- registration-time honesty: permissions and descriptions -----
@@ -1601,7 +1648,7 @@ def test_a_renamed_sort_is_popped_out_of_the_callables_kwargs():
     result = _dispatch(spec, user, {"sorting": "cost"})
 
     assert "sorting" not in seen, "the sort reached the selector as a surprise kwarg"
-    assert [w["name"] for w in result] == ["b", "c", "a"]
+    assert [w["name"] for w in _rows(result)] == ["b", "c", "a"]
 
 
 @pytest.mark.django_db
@@ -1611,7 +1658,7 @@ def test_a_renamed_sort_still_orders_the_rows():
 
     result = _dispatch(_sorting_list_spec(), user, {"sorting": "cost"})
 
-    assert [w["name"] for w in result] == ["b", "c", "a"]
+    assert [w["name"] for w in _rows(result)] == ["b", "c", "a"]
 
 
 def test_the_instruction_names_the_argument_that_actually_exists():
@@ -1649,7 +1696,7 @@ def test_filter_owned_ordering_actually_orders_the_rows():
     user = User.objects.create(username="u")
     _three_widgets(user)
     result = _dispatch(_ordered_list_spec(), user, {"ordering": "cost"})
-    assert [w["name"] for w in result] == ["b", "c", "a"]
+    assert [w["name"] for w in _rows(result)] == ["b", "c", "a"]
 
 
 @pytest.mark.django_db
@@ -1657,7 +1704,7 @@ def test_filter_owned_ordering_descends():
     user = User.objects.create(username="u")
     _three_widgets(user)
     result = _dispatch(_ordered_list_spec(), user, {"ordering": "-cost"})
-    assert [w["name"] for w in result] == ["a", "c", "b"]
+    assert [w["name"] for w in _rows(result)] == ["a", "c", "b"]
 
 
 @pytest.mark.django_db
@@ -1669,7 +1716,7 @@ def test_filter_owned_ordering_composes_with_the_other_filters():
     user = User.objects.create(username="u")
     _three_widgets(user)
     result = _dispatch(_ordered_list_spec(), user, {"min_price": "2", "ordering": "cost"})
-    assert [w["name"] for w in result] == ["c", "a"]
+    assert [w["name"] for w in _rows(result)] == ["c", "a"]
 
 
 @pytest.mark.django_db
@@ -1677,7 +1724,7 @@ def test_filter_owned_tool_still_works_with_no_ordering_supplied():
     user = User.objects.create(username="u")
     _three_widgets(user)
     result = _dispatch(_ordered_list_spec(), user, {"min_price": "2"})
-    assert sorted(w["name"] for w in result) == ["a", "c"]
+    assert sorted(w["name"] for w in _rows(result)) == ["a", "c"]
 
 
 @pytest.mark.django_db
@@ -1694,10 +1741,21 @@ def test_an_ordering_outside_the_filters_choices_is_a_retry():
 
 
 async def test_the_advertised_ordering_enum_is_the_filters_own_vocabulary():
+    """drf-services 0.47 publishes a labelled ``ChoiceFilter`` as ``oneOf`` const
+    options rather than a bare ``enum``, so the filter's *labels* travel to the
+    model beside its values. ``OrderingFilter`` is a ``ChoiceFilter``, so this is
+    the shape a filter-owned sort now takes. What matters here is unchanged: the
+    vocabulary is the filter's public one, never the toolset's ORM paths.
+    """
     toolset = SpecToolset({"list_widgets": _ordered_list_spec()})
     tools = await toolset.get_tools(None)
     props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
-    assert props["ordering"]["enum"] == ["cost", "-cost", "title", "-title"]
+    assert [option["const"] for option in props["ordering"]["oneOf"]] == [
+        "cost",
+        "-cost",
+        "title",
+        "-title",
+    ]
 
 
 def test_spec_owns_ordering_reads_the_reflected_schema():
@@ -1755,7 +1813,15 @@ def test_the_schema_builder_never_overwrites_the_filters_enum():
     would then reject.
     """
     props = _input_schema(_ordered_list_spec(), ordering_fields=["price"])["properties"]
-    assert props["ordering"]["enum"] == ["cost", "-cost", "title", "-title"]
+    assert [option["const"] for option in props["ordering"]["oneOf"]] == [
+        "cost",
+        "-cost",
+        "title",
+        "-title",
+    ]
+    # The overwrite this guards against would have written an ``enum`` key of ORM
+    # paths under the same property name, so its absence is the assertion.
+    assert "enum" not in props["ordering"]
 
 
 async def test_the_ordering_instruction_is_emitted_for_a_filter_owned_tool():
@@ -1820,7 +1886,7 @@ def test_the_transport_args_never_reach_a_kwargs_selector():
         permission_classes=[AllowAny],
     )
     result = _dispatch(spec, user, {"page": 1, "limit": 2, "ordering": "cost", "min_price": "1"})
-    assert [w["name"] for w in result] == ["b", "c"]
+    assert [w["name"] for w in _rows(result)] == ["b", "c"]
 
     seen = _KWARGS_SEEN[-1]
     assert "page" not in seen
@@ -1858,7 +1924,7 @@ def test_an_ordering_the_selector_itself_declares_reaches_the_selector():
     )
     assert _spec_ordering_argument(spec) == "ordering"
     result = _dispatch(spec, user, {"ordering": "price"})
-    assert [w["name"] for w in result] == ["b", "c", "a"]
+    assert [w["name"] for w in _rows(result)] == ["b", "c", "a"]
 
 
 # ----- progress: accepted and forwarded, never constructed -----
@@ -2012,7 +2078,7 @@ async def test_a_result_inside_the_ceiling_passes_through_untouched():
     tools = await toolset.get_tools(None)
     result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
 
-    assert [w["name"] for w in result] == ["a"]
+    assert [w["name"] for w in _rows(result)] == ["a"]
 
 
 @pytest.mark.django_db(transaction=True)
@@ -2031,7 +2097,7 @@ async def test_a_per_tool_ceiling_of_none_means_no_ceiling_for_that_tool():
     tools = await toolset.get_tools(None)
     result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
 
-    assert [w["name"] for w in result] == ["a"]
+    assert [w["name"] for w in _rows(result)] == ["a"]
 
 
 def test_a_per_tool_ceiling_for_an_unknown_tool_is_a_typo():
@@ -2054,7 +2120,7 @@ def test_the_page_ceiling_is_clamped_as_well_as_advertised():
         Widget.objects.create(name=f"w{n}", price=n, owner=user)
 
     result = _dispatch(list_spec(), user, {"limit": 1000}, max_page_size=2)
-    assert len(result) == 2
+    assert len(_rows(result)) == 2
 
 
 @pytest.mark.django_db
@@ -2065,9 +2131,14 @@ def test_an_omitted_limit_becomes_the_ceiling():
     for n in range(5):
         Widget.objects.create(name=f"w{n}", price=n, owner=user)
 
-    assert len(_dispatch(list_spec(), user, {}, max_page_size=3)) == 3
-    # With no ceiling configured, an omitted limit still means "everything".
-    assert len(_dispatch(list_spec(), user, {})) == 5
+    assert len(_rows(_dispatch(list_spec(), user, {}, max_page_size=3))) == 3
+    # With no ceiling configured, an omitted limit is the default page size --
+    # not "everything", which is what it used to mean and what made an
+    # unremarked truncation possible. Five rows fit inside one default page, so
+    # they all come back, and ``hasNext`` says there is no more.
+    page = _dispatch(list_spec(), user, {})
+    assert len(_rows(page)) == 5
+    assert page["hasNext"] is False
 
 
 async def test_a_call_past_its_deadline_answers_instead_of_hanging():
@@ -2350,13 +2421,13 @@ def agent_list_spec(**kwargs):
 
 @pytest.mark.django_db
 def test_hidden_fields_leave_the_payload_and_choices_are_spoken():
-    """A toolset advertises no output schema, so the payload is all the model sees."""
+    """The payload half of the projection; the schema half is asserted below."""
     user = User.objects.create(username="u")
     Widget.objects.create(name="Sprocket", price=100, owner=user)
 
     rows = _dispatch(agent_list_spec(), user)
 
-    assert rows == [{"id": 1, "name": "Sprocket", "status": "In stock"}]
+    assert _rows(rows) == [{"id": 1, "name": "Sprocket", "status": "In stock"}]
 
 
 @pytest.mark.django_db
@@ -2367,7 +2438,7 @@ async def test_call_tool_uses_the_projection_built_at_construction():
 
     rows = await toolset.call_tool("widgets", {}, ctx_for(user), None)
 
-    assert rows == [{"id": 1, "name": "Sprocket", "status": "In stock"}]
+    assert _rows(rows) == [{"id": 1, "name": "Sprocket", "status": "In stock"}]
 
 
 async def test_handle_instruction_present_only_when_a_tool_has_a_handle():
@@ -2673,3 +2744,374 @@ async def test_a_hidden_tool_is_still_callable_and_still_gated():
     assert await toolset.get_tools(ctx_for(object())) == {}
     with pytest.raises(PermissionDenied):
         await toolset.call_tool("denied", {}, ctx_for(object()), None)
+
+
+# --- the pagination envelope --------------------------------------------------
+#
+# Every list-selector result is a page. The input contract said so all along --
+# ``page`` and ``limit`` were advertised on every list tool -- while the payload
+# was a bare slice with no total and no clamp. These are about the half that was
+# missing: what the model is told about the rows it was *not* given.
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_list_result_is_a_page_not_a_bare_list():
+    user = await User.objects.acreate(username="u")
+    await Widget.objects.acreate(name="a", price=1, owner=user)
+
+    widget = await Widget.objects.aget(name="a")
+    result = await _call(SpecToolset({"list_widgets": list_spec()}), "list_widgets", user)
+
+    assert result == {
+        "items": [{"id": widget.pk, "name": "a", "price": 1}],
+        "page": 1,
+        "totalPages": 1,
+        "hasNext": False,
+    }
+
+
+@pytest.mark.django_db
+def test_a_truncated_page_says_that_it_was_truncated():
+    """The defect stated as its symptom.
+
+    Asking for a collection used to return ``limit`` rows and nothing at all
+    about the rest, so a model answered "there are 2 widgets" from a page of 2
+    out of 5 -- confidently, and with no way to find out otherwise.
+    """
+    user = User.objects.create(username="u")
+    for n in range(5):
+        Widget.objects.create(name=f"w{n}", price=n, owner=user)
+
+    result = _dispatch(list_spec(), user, {"limit": 2})
+
+    assert len(_rows(result)) == 2
+    assert result["page"] == 1
+    assert result["totalPages"] == 3
+    assert result["hasNext"] is True
+
+
+@pytest.mark.django_db
+def test_the_last_page_reports_no_next():
+    user = User.objects.create(username="u")
+    for n in range(5):
+        Widget.objects.create(name=f"w{n}", price=n, owner=user)
+
+    result = _dispatch(list_spec(), user, {"limit": 2, "page": 3})
+
+    assert len(_rows(result)) == 1
+    assert result["page"] == 3
+    assert result["hasNext"] is False
+
+
+@pytest.mark.django_db
+def test_a_page_past_the_end_is_clamped_and_says_which_page_it_served():
+    """drf-services clamps rather than serving an empty page at a huge OFFSET.
+
+    The clamp is the part that has to be visible: a model asking for page 99 and
+    silently receiving page 2 would read the rows as the ninety-ninth page.
+    """
+    user = User.objects.create(username="u")
+    for n in range(3):
+        Widget.objects.create(name=f"w{n}", price=n, owner=user)
+
+    result = _dispatch(list_spec(), user, {"limit": 2, "page": 99})
+
+    assert result["page"] == 2
+    assert result["totalPages"] == 2
+    assert result["hasNext"] is False
+
+
+@pytest.mark.django_db
+def test_an_empty_collection_is_one_empty_page():
+    """Not zero pages: ``page`` is 1-based and the page served is 1, so reporting
+    zero would describe the page the caller was just handed as not existing."""
+    user = User.objects.create(username="u")
+
+    result = _dispatch(list_spec(), user, {})
+
+    assert result == {"items": [], "page": 1, "totalPages": 1, "hasNext": False}
+
+
+@pytest.mark.django_db
+def test_the_envelope_carries_projected_rows_and_is_not_itself_projected():
+    """The projection lands on the rows; the envelope's keys belong to no
+    serializer, so a projection walking them would look for markings that cannot
+    exist."""
+    user = User.objects.create(username="u")
+    widget = Widget.objects.create(name="Sprocket", price=100, owner=user)
+
+    result = _dispatch(agent_list_spec(), user)
+
+    assert _rows(result) == [{"id": widget.pk, "name": "Sprocket", "status": "In stock"}]
+    assert result["page"] == 1
+
+
+@pytest.mark.django_db
+def test_the_byte_ceiling_is_measured_on_the_envelope():
+    """What is sent is what is measured. The envelope is small, but a ceiling
+    computed on the unwrapped rows would be a bound on something else."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+
+    result = _dispatch(list_spec(), user, {}, max_result_bytes=40)
+
+    assert "error" in result and "40 byte ceiling" in result["error"]
+
+
+async def test_the_pagination_instruction_teaches_the_envelope():
+    """A model told to send ``limit`` and not told what comes back reads
+    ``items`` as the whole collection."""
+    instructions = await SpecToolset({"list": list_spec()}).get_instructions(None)
+
+    assert instructions is not None
+    assert '"items"' in instructions
+    assert "hasNext" in instructions
+
+
+async def test_the_page_argument_no_longer_claims_to_require_limit():
+    """It never did anything on its own before, because an omitted ``limit``
+    meant "everything" and the slice was skipped. Now every call is a page."""
+    tools = await SpecToolset({"list": list_spec()}).get_tools(None)
+    props = tools["list"].tool_def.parameters_json_schema["properties"]
+
+    assert "requires" not in props["page"]["description"]
+    assert str(DEFAULT_PAGE_SIZE) in props["limit"]["description"]
+
+
+# --- ToolDefinition.return_schema ---------------------------------------------
+
+
+async def test_a_list_tool_advertises_the_envelope_it_returns():
+    tools = await SpecToolset({"list": list_spec()}).get_tools(None)
+    return_schema = tools["list"].tool_def.return_schema
+
+    assert return_schema is not None
+    assert set(return_schema["properties"]) == {"items", "page", "totalPages", "hasNext"}
+    assert set(return_schema["properties"]["items"]["items"]["properties"]) == {
+        "id",
+        "name",
+        "price",
+    }
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_the_return_schema_and_the_payload_agree_for_a_list_tool():
+    """The two halves generated from one spec, compared against each other.
+
+    This is the assertion the release exists for: the schema claimed a
+    pagination envelope (drf-services published that shape long before anything
+    produced it) and the payload was a bare list.
+    """
+    user = await User.objects.acreate(username="u")
+    await Widget.objects.acreate(name="a", price=1, owner=user)
+    toolset = SpecToolset({"list_widgets": list_spec()})
+
+    tools = await toolset.get_tools(None)
+    payload = await _call(toolset, "list_widgets", user)
+    return_schema = tools["list_widgets"].tool_def.return_schema
+
+    assert return_schema is not None
+    assert set(payload) == set(return_schema["properties"])
+    assert set(payload["items"][0]) == set(
+        return_schema["properties"]["items"]["items"]["properties"]
+    )
+
+
+async def test_a_retrieve_tool_advertises_the_bare_item():
+    """``paginate`` asks *does this toolset wrap the result*, and for anything
+    but a list selector the answer is no."""
+    tools = await SpecToolset({"get": retrieve_spec()}).get_tools(None)
+    return_schema = tools["get"].tool_def.return_schema
+
+    assert return_schema is not None
+    assert set(return_schema["properties"]) == {"id", "name", "price"}
+
+
+async def test_a_service_tool_reads_its_output_serializer_one_level_down():
+    """A ``ServiceSpec`` keeps the output shape on its ``output_selector_spec``."""
+    tools = await SpecToolset({"make": create_spec()}).get_tools(None)
+    return_schema = tools["make"].tool_def.return_schema
+
+    assert return_schema is not None
+    assert set(return_schema["properties"]) == {"id", "name", "price"}
+
+
+async def test_a_service_whose_output_is_a_list_is_an_array_not_an_envelope():
+    """The toolset paginates list *selectors*. Claiming the envelope here would
+    re-open the same schema-versus-payload gap one spec kind over.
+    """
+    spec = ServiceSpec(
+        service=create_widget,
+        input_serializer=WidgetInputSerializer,
+        output_selector_spec=SelectorSpec(
+            kind=SelectorKind.LIST, output_serializer=WidgetSerializer
+        ),
+        permission_classes=[AllowAny],
+    )
+
+    return_schema = _return_schema(spec)
+
+    assert return_schema is not None
+    assert return_schema["type"] == "array"
+
+
+def test_a_spec_with_no_output_serializer_advertises_nothing():
+    """``None`` is the correct answer, not a gap: a fabricated shape would be a
+    claim the payload never has to honour."""
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST, selector=list_widgets, permission_classes=[AllowAny]
+    )
+
+    assert _return_schema(spec) is None
+    assert _build_tool_def("list", spec).return_schema is None
+
+
+async def test_the_return_schema_is_projected_like_the_payload():
+    """A schema advertising a field the render drops is worse than no schema:
+    the model asks for it, gets nothing back, and is told nothing about why."""
+    toolset = SpecToolset({"widgets": agent_list_spec()})
+
+    tools = await toolset.get_tools(None)
+    item = tools["widgets"].tool_def.return_schema["properties"]["items"]["items"]
+
+    assert "price" not in item["properties"]  # FieldMarking.hidden()
+    assert item["properties"]["id"]["description"] == "Widget handle."
+
+
+async def test_an_unlabelled_handle_gets_this_transports_own_wording():
+    """drf-services supplies no fallback on purpose -- what to do with an
+    identifier depends on the reader, and only the transport knows its audience.
+    """
+
+    class BareHandleSerializer(serializers.ModelSerializer):
+        class Meta:
+            model = Widget
+            fields = ["id", "name"]
+            extra_kwargs = {"id": {"style": {MARKING: FieldMarking.handle()}}}
+
+    spec = SelectorSpec(
+        kind=SelectorKind.RETRIEVE,
+        selector=get_widget,
+        output_serializer=BareHandleSerializer,
+        permission_classes=[AllowAny],
+    )
+    tools = await SpecToolset({"get": spec}).get_tools(None)
+
+    description = tools["get"].tool_def.return_schema["properties"]["id"]["description"]
+    assert description == _HANDLE_DESCRIPTION
+
+
+async def test_the_return_schema_is_not_pushed_at_the_model_by_default():
+    """Populating it costs nothing; putting it on the wire costs context every
+    turn. Pydantic-AI owns that opt-in at both scopes, so this stays ``None``.
+    """
+    tools = await SpecToolset({"list": list_spec()}).get_tools(None)
+
+    assert tools["list"].tool_def.include_return_schema is None
+
+
+async def test_a_consumer_can_opt_into_sending_the_return_schema():
+    """The opt-in has to actually reach a schema that is there -- the wrapper
+    only preserves what the tool def already carries.
+    """
+    toolset = SpecToolset({"list": list_spec()}).include_return_schemas()
+
+    tools = await toolset.get_tools(None)
+
+    assert tools["list"].tool_def.include_return_schema is True
+    assert tools["list"].tool_def.return_schema is not None
+
+
+# --- JsonSchemaRegistry threading ---------------------------------------------
+
+
+class _RatingField(serializers.IntegerField):
+    """A project's own field type, which the built-in walkers know nothing about."""
+
+
+class _RatedWidgetSerializer(serializers.ModelSerializer):
+    rating = _RatingField(required=False)
+
+    class Meta:
+        model = Widget
+        fields = ["id", "name", "rating"]
+
+
+def _rated_spec(kind=SelectorKind.LIST):
+    return SelectorSpec(
+        kind=kind,
+        selector=list_widgets,
+        output_serializer=_RatedWidgetSerializer,
+        permission_classes=[AllowAny],
+    )
+
+
+_RATING_SCHEMA = {"type": "integer", "minimum": 1, "maximum": 5}
+_RATING_REGISTRY = DEFAULT_JSON_SCHEMA_REGISTRY.extend(fields=[(_RatingField, _RATING_SCHEMA)])
+
+
+async def test_a_consumer_registry_reaches_the_return_schema():
+    """Without it a project's own field type reaches the model as ``{}`` -- the
+    schema saying nothing at the field most likely to be got wrong."""
+    tools = await SpecToolset(
+        {"list": _rated_spec()}, json_schema_registry=_RATING_REGISTRY
+    ).get_tools(None)
+
+    item = tools["list"].tool_def.return_schema["properties"]["items"]["items"]
+    assert item["properties"]["rating"] == _RATING_SCHEMA
+
+
+async def test_a_consumer_registry_reaches_the_input_schema():
+    spec = ServiceSpec(
+        service=create_widget,
+        input_serializer=_RatedWidgetSerializer,
+        permission_classes=[AllowAny],
+    )
+    tools = await SpecToolset({"make": spec}, json_schema_registry=_RATING_REGISTRY).get_tools(None)
+
+    props = tools["make"].tool_def.parameters_json_schema["properties"]
+    assert props["rating"] == _RATING_SCHEMA
+
+
+async def test_without_a_registry_a_custom_field_says_nothing():
+    """The pre-change behaviour, kept as the contrast: the default registry is
+    empty, so an unrecognised field falls back to "any value"."""
+    tools = await SpecToolset({"list": _rated_spec()}).get_tools(None)
+
+    item = tools["list"].tool_def.return_schema["properties"]["items"]["items"]
+    assert item["properties"]["rating"] != _RATING_SCHEMA
+
+
+class _RatingFilter(django_filters.NumberFilter):
+    """A custom filter type, for the other half of the registry."""
+
+
+class _RatedFilterSet(django_filters.FilterSet):
+    rating = _RatingFilter(field_name="price")
+
+    class Meta:
+        model = Widget
+        fields = []
+
+
+async def test_a_consumer_registry_reaches_the_ordering_predicate_too():
+    """``_spec_ordering_argument`` reads the same reflected schema the builder
+    does, so it has to read it against the same registry -- one signal, one
+    answer, whatever rules a consumer added.
+    """
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=WidgetSerializer,
+        filter_set=_RatedFilterSet,
+        permission_classes=[AllowAny],
+    )
+    registry = DEFAULT_JSON_SCHEMA_REGISTRY.extend(filters=[(_RatingFilter, _RATING_SCHEMA)])
+
+    tools = await SpecToolset({"list": spec}, json_schema_registry=registry).get_tools(None)
+
+    rating = tools["list"].tool_def.parameters_json_schema["properties"]["rating"]
+    # The registry supplies the *type*; drf-services still annotates what the
+    # filter matches, which is the half a consumer rule has no opinion about.
+    assert {key: rating[key] for key in _RATING_SCHEMA} == _RATING_SCHEMA
+    assert _spec_ordering_argument(spec, registry=registry) is None

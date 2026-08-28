@@ -7,7 +7,11 @@ from typing import Any
 
 from django.http import HttpRequest
 from pydantic_ai.capabilities import AbstractCapability
-from rest_framework_services import UnknownArguments
+from rest_framework_services import (
+    DEFAULT_JSON_SCHEMA_REGISTRY,
+    JsonSchemaRegistry,
+    UnknownArguments,
+)
 
 from rest_framework_pydantic_ai.spec_toolset import (
     ExceptionHandler,
@@ -104,6 +108,7 @@ class SpecCapability(AbstractCapability[Any]):
         http_request: HttpRequest | None = None,
         get_http_request: HttpRequestExtractor | None = None,
         exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
+        json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
     ) -> None:
         toolset = SpecToolset(
             specs,
@@ -129,6 +134,7 @@ class SpecCapability(AbstractCapability[Any]):
             http_request=http_request,
             get_http_request=get_http_request,
             exception_map=exception_map,
+            json_schema_registry=json_schema_registry,
         )
         self._configure(toolset, defer_loading=defer_loading, description=description)
 
