@@ -49,7 +49,7 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _paginate,
     _pop_query_params,
     _pop_url_kwargs,
-    _spec_owns_ordering,
+    _spec_ordering_argument,
     _with_deadline,
 )
 from tests.testapp.models import Widget
@@ -1524,10 +1524,117 @@ def _ordered_list_spec():
     )
 
 
+class _SortingWidgetFilterSet(django_filters.FilterSet):
+    """The same sort, declared under a name that is not ``ordering``.
+
+    Nothing requires the name. The deprecation warning suggests ``ordering``,
+    and a project following it to the letter was fine, but the name is the
+    project's to choose and django-filter has no opinion about it.
+    """
+
+    sorting = django_filters.OrderingFilter(fields=(("price", "cost"), ("name", "title")))
+
+    class Meta:
+        model = Widget
+        fields = []
+
+
+def _sorting_list_spec():
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=WidgetSerializer,
+        filter_set=_SortingWidgetFilterSet,
+        permission_classes=[AllowAny],
+    )
+
+
 def _three_widgets(user):
     """Insertion order a, b, c; price order b, c, a — so the two are tellable apart."""
     for name, price in [("a", 3), ("b", 1), ("c", 2)]:
         Widget.objects.create(name=name, price=price, owner=user)
+
+
+def test_the_sort_argument_is_found_under_whatever_name_it_was_declared():
+    """The name is the project's to choose, and nothing required ``ordering``.
+
+    This used to test the literal string, so a FilterSet declaring ``sorting``
+    read as "owns no ordering" -- which dropped the usage instruction and, more
+    quietly, left the value in the callable's kwarg pool.
+    """
+    assert _spec_ordering_argument(_sorting_list_spec()) == "sorting"
+
+
+def test_a_plain_filter_is_not_mistaken_for_a_sort():
+    # min_price is a NumberFilter. Only OrderingFilter defines
+    # ``get_ordering_value``, which is what makes the duck-type specific.
+    assert _spec_ordering_argument(_filtered_list_spec()) is None
+
+
+@pytest.mark.django_db
+def test_a_renamed_sort_is_popped_out_of_the_callables_kwargs():
+    """The half nobody had found, and the one with a consequence.
+
+    With a filter named ``sorting`` the rows still came back correctly sorted --
+    ``filter_data`` stayed defaulted to ``params`` and the FilterSet reads
+    ``params`` either way. What was lost was the *pop*: the value stayed in the
+    selector's kwarg pool, so a selector declaring ``**kwargs`` received a
+    read-shaping argument it never asked for. Which is exactly the hazard
+    ``_pop_filter_ordering``'s own docstring describes for the ``ordering`` case.
+    """
+    seen: dict[str, object] = {}
+
+    def recording_selector(**kwargs):
+        seen.update(kwargs)
+        return Widget.objects.all()
+
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=recording_selector,
+        output_serializer=WidgetSerializer,
+        filter_set=_SortingWidgetFilterSet,
+        permission_classes=[AllowAny],
+    )
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+
+    result = _dispatch(spec, user, {"sorting": "cost"})
+
+    assert "sorting" not in seen, "the sort reached the selector as a surprise kwarg"
+    assert [w["name"] for w in result] == ["b", "c", "a"]
+
+
+@pytest.mark.django_db
+def test_a_renamed_sort_still_orders_the_rows():
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+
+    result = _dispatch(_sorting_list_spec(), user, {"sorting": "cost"})
+
+    assert [w["name"] for w in result] == ["b", "c", "a"]
+
+
+def test_the_instruction_names_the_argument_that_actually_exists():
+    """A hard-coded name in the prose is a second copy of the same assumption.
+
+    An instruction naming an argument the schema does not carry is worse than no
+    instruction: the model is told to send something that will be rejected.
+    """
+    instructions = _derive_instructions({"list_widgets": _sorting_list_spec()}, {})
+
+    assert "`sorting`" in instructions
+    assert "`ordering`" not in instructions
+
+
+def test_the_instruction_names_every_live_sort_argument():
+    # One toolset, two tools, two names. A model reads one block for all of them.
+    instructions = _derive_instructions(
+        {"a": _ordered_list_spec(), "b": _sorting_list_spec()},
+        {},
+    )
+
+    assert "`ordering`" in instructions
+    assert "`sorting`" in instructions
 
 
 @pytest.mark.django_db
@@ -1594,13 +1701,13 @@ async def test_the_advertised_ordering_enum_is_the_filters_own_vocabulary():
 
 
 def test_spec_owns_ordering_reads_the_reflected_schema():
-    assert _spec_owns_ordering(_ordered_list_spec()) is True
-    assert _spec_owns_ordering(_filtered_list_spec()) is False
-    assert _spec_owns_ordering(list_spec()) is False
+    assert _spec_ordering_argument(_ordered_list_spec()) == "ordering"
+    assert _spec_ordering_argument(_filtered_list_spec()) is None
+    assert _spec_ordering_argument(list_spec()) is None
     # Only a list selector can contest the argument: nothing else is ever offered
     # one, so a service with an `ordering` input field is not a clash.
-    assert _spec_owns_ordering(retrieve_spec()) is False
-    assert _spec_owns_ordering(create_spec()) is False
+    assert _spec_ordering_argument(retrieve_spec()) is None
+    assert _spec_ordering_argument(create_spec()) is None
 
 
 def test_declaring_ordering_fields_beside_a_filter_that_owns_ordering_is_refused():
@@ -1749,7 +1856,7 @@ def test_an_ordering_the_selector_itself_declares_reaches_the_selector():
         output_serializer=WidgetSerializer,
         permission_classes=[AllowAny],
     )
-    assert _spec_owns_ordering(spec) is True
+    assert _spec_ordering_argument(spec) == "ordering"
     result = _dispatch(spec, user, {"ordering": "price"})
     assert [w["name"] for w in result] == ["b", "c", "a"]
 

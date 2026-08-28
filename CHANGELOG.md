@@ -6,6 +6,46 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A sort argument was only found when it was called `ordering`.** The
+  deprecation on `ordering_fields` tells consumers to declare a django-filter
+  `OrderingFilter` instead — and nothing requires that filter to be *named*
+  `ordering`. A project whose filter is called `sorting` followed the migration
+  correctly and lost two things:
+
+  - the **usage instruction** was dropped, so the tool advertised a large enum
+    with no guidance on how to send it;
+  - the value was **never popped** out of the callable's kwarg pool, so a
+    selector declaring `**kwargs` received a read-shaping argument it never
+    asked for — precisely the hazard `_pop_filter_ordering` exists to prevent,
+    arriving through the door it was watching.
+
+  The sort itself always worked: `filter_data` stayed defaulted to `params` and
+  the FilterSet reads `params` either way. That is why it went unnoticed.
+
+  The argument is now discovered rather than assumed, by asking the FilterSet
+  which of its filters defines `get_ordering_value` — the method `OrderingFilter`
+  declares and nothing else in the hierarchy does. Duck-typed, so django-filter
+  stays an optional extra this package never imports, and a project's own
+  `OrderingFilter` subclass is found too. It falls back to the literal
+  `ordering`, which covers a selector whose *callable* declares the parameter and
+  the deprecated knob this package advertises under that name itself.
+
+  The instruction text is parameterised in the same change: it hard-coded
+  `ordering` in its prose, so moving only the predicate would have produced an
+  instruction naming an argument that does not exist — worse than none, since the
+  model is told to send something that will be rejected. A toolset mixing both
+  names now names both.
+
+  **Note for anyone sweeping the family:** `djangorestframework-mcp-server` has a
+  character-for-character identical predicate and it is **correct there**. It is
+  collision detection — drf-mcp advertises the deprecated knob under the literal
+  name `ordering` and checks whether a FilterSet already claimed it — and its
+  dispatch read is gated on `ordering_fields`, so on the FilterSet path it never
+  pops. The same expression is a bug in one repo and right in the other, because
+  the two own the name differently. Do not align them.
+
 ## [0.19.0] — 2026-08-26
 
 ### Upgrade notes
