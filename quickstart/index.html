@@ -651,6 +651,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../background-runs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running from a worker
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/" class="md-nav__link">
         
   
@@ -989,6 +1016,13 @@ selector's <a href="#ordering"><code>filter_set</code> declares one</a>.</p>
 </span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="n">deps</span><span class="o">=</span><span class="n">AgentDeps</span><span class="p">(</span><span class="n">user</span><span class="o">=</span><span class="n">request</span><span class="o">.</span><span class="n">user</span><span class="p">),</span>
 </span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
 </span></code></pre></div>
+<div class="admonition tip">
+<p class="admonition-title">No request in sight?</p>
+<p><code>request.user</code> is the HTTP shape. A Celery task, a management command or a
+scheduled job resolves the acting user itself and passes it the same way —
+see <a href="../background-runs/">Running from a worker</a>, which also covers the one
+setting a fan-out genuinely needs.</p>
+</div>
 <p>For that request the model can call <code>list_orders</code> with
 <code>{"limit": 5, "ordering": "-created"}</code> and the toolset enforces permissions,
 runs the selector as <code>request.user</code>, hands <code>ordering</code> to the selector's
