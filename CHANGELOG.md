@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-29
+
 ### Removed
 
 - **`SpecToolset(ordering_fields=…)` and `tool_ordering_fields=` are gone**, along
@@ -1192,7 +1194,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.18.0...v0.18.1
