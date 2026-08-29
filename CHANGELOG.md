@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-08-29
+
 ### Added
 
 - **The back half of a tool call is overridable.** 0.14.0 made argument intake
@@ -1288,7 +1290,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.19.0...v0.20.0
