@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`thread_sensitive=` and `executor=` on `SpecToolset` and `SpecCapability`** —
+  the dispatch thread is now the caller's to choose.
+
+  Every tool call went through a bare `sync_to_async`, which defaults
+  `thread_sensitive=True`, and asgiref's `single_thread_executor` is a **class**
+  attribute — so it is one thread shared by every toolset instance and every
+  concurrent run in the process, not one per toolset. Pydantic-AI genuinely runs
+  function tools in parallel within a segment, so **four 0.30s calls under one
+  model step took ~1.2s rather than ~0.3s**, measured. That is invisible in a
+  chat turn calling one tool and severe in a fan-out, which is why it surfaced
+  from a consumer running background agents rather than from a chatbox.
+
+  **The default is unchanged and deliberately so**: `thread_sensitive=True` is
+  what keeps Django's thread-local database connections coherent, so this is a
+  knob for callers who know their dispatch is connection-safe, not a flip.
+  `executor=` is only consulted when `thread_sensitive` is `False`, which is
+  asgiref's own rule.
+
+
 ## [0.21.0] — 2026-08-29
 
 ### Removed
