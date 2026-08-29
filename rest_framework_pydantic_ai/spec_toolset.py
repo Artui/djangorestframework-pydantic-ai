@@ -24,6 +24,7 @@ import re
 import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, cast
@@ -330,6 +331,24 @@ class SpecToolset(AbstractToolset[Any]):
             ``DEFAULT_PAGE_SIZE`` rows per page — the unbounded read is the one
             that hurts, and it is what a model produces by not thinking about
             pagination.
+        thread_sensitive: Whether every dispatch shares one thread. ``True``
+            (the default, and asgiref's) is what keeps Django's thread-local
+            database connections coherent, and is why it is not flipped for you.
+
+            **The cost is that concurrent tool calls serialise, process-wide.**
+            asgiref's ``single_thread_executor`` is a *class* attribute, so it is
+            one thread shared by every toolset instance and every concurrent run
+            in the process -- not one per toolset. Pydantic-AI genuinely runs
+            function tools in parallel within a segment, so four 0.30s calls
+            under one model step take ~1.2s rather than ~0.3s. That is invisible
+            in a chat turn calling one tool and severe in a fan-out.
+
+            Set ``False`` only when you know the dispatched work is safe off the
+            main thread -- typically because each call opens and closes its own
+            connection, or you pass an ``executor`` you control.
+        executor: A ``ThreadPoolExecutor`` to run dispatch on, instead of
+            asgiref's shared single thread. Only consulted when
+            ``thread_sensitive`` is ``False``, which is asgiref's own rule.
         dispatch_timeout: Seconds bounding one call, so the model gets an answer
             instead of a hang. It does not *stop* the work: the dispatch runs in
             a ``sync_to_async`` thread and asyncio cannot interrupt a thread
@@ -403,6 +422,8 @@ class SpecToolset(AbstractToolset[Any]):
         get_http_request: HttpRequestExtractor | None = None,
         exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
         json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+        thread_sensitive: bool = True,
+        executor: ThreadPoolExecutor | None = None,
     ) -> None:
         resolved = _resolve_specs(specs)
         contracts = _resolve_contracts(specs)
@@ -428,6 +449,8 @@ class SpecToolset(AbstractToolset[Any]):
         self._max_retries = max_retries
         self._max_page_size = max_page_size
         self._dispatch_timeout = dispatch_timeout
+        self._thread_sensitive = thread_sensitive
+        self._executor = executor
         overrides: Mapping[str, int | None] = tool_max_result_bytes or {}
         for tool_name in overrides:
             if tool_name not in self._specs:
@@ -607,7 +630,11 @@ class SpecToolset(AbstractToolset[Any]):
             # private copy, so popping the transport's args never mutates the
             # caller's dict.
             result = await _with_deadline(
-                sync_to_async(self._call_spec)(
+                sync_to_async(
+                    self._call_spec,
+                    thread_sensitive=self._thread_sensitive,
+                    executor=self._executor,
+                )(
                     spec,
                     user,
                     dict(tool_args),

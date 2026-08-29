@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from django.http import HttpRequest
@@ -107,6 +108,8 @@ class SpecCapability(AbstractCapability[Any]):
         get_http_request: HttpRequestExtractor | None = None,
         exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
         json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+        thread_sensitive: bool = True,
+        executor: ThreadPoolExecutor | None = None,
     ) -> None:
         toolset = SpecToolset(
             specs,
@@ -131,6 +134,8 @@ class SpecCapability(AbstractCapability[Any]):
             get_http_request=get_http_request,
             exception_map=exception_map,
             json_schema_registry=json_schema_registry,
+            thread_sensitive=thread_sensitive,
+            executor=executor,
         )
         self._configure(toolset, defer_loading=defer_loading, description=description)
 

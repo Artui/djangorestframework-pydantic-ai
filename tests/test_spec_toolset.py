@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from typing import Any
 
@@ -3065,3 +3068,63 @@ async def test_a_consumer_registry_reaches_the_ordering_predicate_too():
     # filter matches, which is the half a consumer rule has no opinion about.
     assert {key: rating[key] for key in _RATING_SCHEMA} == _RATING_SCHEMA
     assert _spec_ordering_argument(spec, registry=registry) is None
+
+
+def _thread_naming_spec() -> ServiceSpec:
+    """A spec whose result is the name of the thread it was dispatched on."""
+
+    def _service(**_: Any) -> dict[str, str]:
+        """Report the thread this dispatch ran on."""
+        time.sleep(0.05)
+        return {"thread": threading.current_thread().name}
+
+    return ServiceSpec(service=_service, permission_classes=[AllowAny])
+
+
+async def _call_concurrently(toolset: SpecToolset, *, times: int) -> list[str]:
+    """Run ``times`` tool calls under one ``gather``, returning their threads."""
+    ctx = ctx_for(User(username="worker"))
+    tools = await toolset.get_tools(ctx)
+    results = await asyncio.gather(
+        *(toolset.call_tool("echo", {}, ctx, tools["echo"]) for _ in range(times))
+    )
+    return [r["thread"] for r in results]
+
+
+# ---------- the dispatch thread ----------
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_concurrent_tool_calls_share_one_thread_by_default() -> None:
+    """asgiref's default, and the reason the knob exists rather than a flip.
+
+    ``thread_sensitive=True`` runs every call on asgiref's
+    ``single_thread_executor``, which is a *class* attribute -- one thread shared
+    by every toolset instance and every concurrent run in the process. That is
+    what keeps Django's thread-local connections coherent, and it is also why a
+    fan-out serialises.
+    """
+    toolset = SpecToolset({"echo": _thread_naming_spec()})
+
+    names = await _call_concurrently(toolset, times=3)
+
+    assert len(set(names)) == 1
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_the_dispatch_thread_is_the_callers_to_choose() -> None:
+    """With ``thread_sensitive=False`` and an executor, calls actually fan out.
+
+    Pydantic-AI runs function tools in parallel within a segment, so a toolset
+    that funnels them onto one thread turns a parallel step into a serial one.
+    Asserted on thread identity rather than on elapsed time, which would make
+    the suite a benchmark.
+    """
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        toolset = SpecToolset(
+            {"echo": _thread_naming_spec()}, thread_sensitive=False, executor=pool
+        )
+
+        names = await _call_concurrently(toolset, times=3)
+
+    assert len(set(names)) == 3
