@@ -16,8 +16,7 @@ from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.test import RequestFactory
 from pydantic_ai import Agent, ModelRetry
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.usage import RunUsage
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, BasePermission
@@ -36,6 +35,7 @@ from rest_framework_services import (
     SpecRegistry,
     UnknownArguments,
     build_offline_context,
+    render_spec_output,
 )
 from typing_extensions import TypedDict, Unpack
 
@@ -54,13 +54,16 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _input_schema,
     _is_list_selector,
     _output_extras,
-    _PageArgs,
     _pop_query_params,
     _pop_url_kwargs,
     _return_schema,
     _shape_list,
     _spec_ordering_argument,
     _with_deadline,
+)
+from rest_framework_pydantic_ai.testing import (
+    instruction_capturing_model,
+    tool_calling_model,
 )
 from tests.testapp.models import Widget
 from tests.testapp.serializers import (
@@ -117,7 +120,7 @@ def _dispatch(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         toolset = SpecToolset({"t": spec}, require_permissions=False, **toolset_kwargs)
-    ctx = SimpleNamespace(deps=AgentDeps(user=user))
+    ctx = ctx_for(user)
     return toolset._call_spec(spec, user, dict(args or {}), ctx=ctx, **kwargs)
 
 
@@ -164,8 +167,27 @@ class DenyAll(BasePermission):
         return False
 
 
-def ctx_for(user):
-    return SimpleNamespace(deps=AgentDeps(user=user))
+#: Every ``RunContext`` field this package reads. Kept as data because
+#: ``ctx_for`` builds the double from it and
+#: ``test_the_run_context_double_carries_every_field_the_package_reads`` pins it
+#: against the real dataclass -- a double shaped by whatever the tests happened
+#: to need is how a helper ends up describing a context no run produces.
+RUN_CONTEXT_FIELDS_READ = frozenset(
+    {"deps", "run_id", "conversation_id", "run_step", "tool_call_id", "usage"}
+)
+
+
+def ctx_for(user=None, *, deps=None, **overrides):
+    """A stand-in for the live ``RunContext``, carrying every field we read."""
+    fields = {
+        "deps": deps if deps is not None else AgentDeps(user=user),
+        "run_id": "run-1",
+        "conversation_id": "conv-1",
+        "run_step": 1,
+        "tool_call_id": "call-1",
+        "usage": RunUsage(),
+    }
+    return SimpleNamespace(**(fields | overrides))
 
 
 def _rows(result: Any) -> list[Any]:
@@ -339,7 +361,7 @@ async def test_call_tool_honours_custom_get_user():
         {"ping": ServiceSpec(service=ping, permission_classes=[AllowAny], atomic=False)},
         get_user=lambda ctx: ctx.principal,
     )
-    await toolset.call_tool("ping", {}, SimpleNamespace(principal="bob"), None)
+    await toolset.call_tool("ping", {}, ctx_for(principal="bob"), None)
     assert seen["user"] == "bob"
 
 
@@ -491,7 +513,7 @@ def test_shape_list_returns_a_page_rather_than_a_bare_slice():
     answered with a bare slice: no total, no clamp, and nothing in the payload
     saying more rows existed.
     """
-    page = _shape_list([1, 2, 3, 4, 5], _PageArgs(page=2, limit=2), None)
+    page = _shape_list([1, 2, 3, 4, 5], page=2, limit=2, max_page_size=None)
     assert page.items == [3, 4]
     assert (page.page, page.limit, page.total) == (2, 2, 5)
     assert page.total_pages == 3
@@ -501,7 +523,7 @@ def test_shape_list_returns_a_page_rather_than_a_bare_slice():
 def test_shape_list_bounds_a_limitless_call_to_one_default_page():
     """An omitted ``limit`` used to mean *everything*, unbounded and unremarked."""
     rows = list(range(DEFAULT_PAGE_SIZE + 1))
-    page = _shape_list(rows, _PageArgs(page=None, limit=None), None)
+    page = _shape_list(rows, page=None, limit=None, max_page_size=None)
     assert page.items == rows[:DEFAULT_PAGE_SIZE]
     assert page.total == DEFAULT_PAGE_SIZE + 1
     assert page.has_next is True
@@ -510,7 +532,7 @@ def test_shape_list_bounds_a_limitless_call_to_one_default_page():
 def test_shape_list_clamps_the_limit_to_max_page_size():
     """The clamp moved out of ``_pop_pagination`` and onto the slice, so the
     ``totalPages`` reported is computed from the limit actually applied."""
-    page = _shape_list([1, 2, 3, 4], _PageArgs(page=None, limit=3), 2)
+    page = _shape_list([1, 2, 3, 4], page=None, limit=3, max_page_size=2)
     assert page.items == [1, 2]
     assert page.limit == 2
     assert page.total_pages == 2
@@ -819,20 +841,6 @@ def test_query_param_is_popped_before_dispatch_so_reject_ignores_it():
 # to the model to self-correct instead of aborting the run.
 
 
-def _tool_calling_model(tool_name: str, first_args: dict, retry_args: dict):
-    """A model that calls ``tool_name``, corrects itself once if retried, then stops."""
-
-    def model_fn(messages, info):
-        last = messages[-1]
-        if any(part.part_kind == "retry-prompt" for part in last.parts):
-            return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=retry_args)])
-        if any(part.part_kind == "tool-return" for part in last.parts):
-            return ModelResponse(parts=[TextPart("done")])
-        return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=first_args)])
-
-    return FunctionModel(model_fn)
-
-
 async def test_agent_run_executes_spec_tool_in_process():
     seen = {}
 
@@ -844,7 +852,7 @@ async def test_agent_run_executes_spec_tool_in_process():
     toolset = SpecToolset(
         {"ping": ServiceSpec(service=ping, permission_classes=[AllowAny], atomic=False)}
     )
-    agent = Agent(_tool_calling_model("ping", {}, {}), deps_type=AgentDeps, toolsets=[toolset])
+    agent = Agent(tool_calling_model("ping"), deps_type=AgentDeps, toolsets=[toolset])
     result = await agent.run("go", deps=AgentDeps(user="alice"))
     assert result.output == "done"
     assert seen["user"] == "alice"
@@ -853,14 +861,9 @@ async def test_agent_run_executes_spec_tool_in_process():
 async def test_toolset_instructions_reach_the_model_when_attached_directly():
     # A plain Agent adding SpecToolset to ``toolsets=`` (no capability) gets the
     # conventions: Pydantic-AI collects the toolset's ``get_instructions``.
-    captured = {}
-
-    def model_fn(messages, info):
-        captured["instructions"] = messages[-1].instructions
-        return ModelResponse(parts=[TextPart("done")])
-
+    captured: dict[str, Any] = {}
     agent = Agent(
-        FunctionModel(model_fn),
+        instruction_capturing_model(captured),
         deps_type=AgentDeps,
         toolsets=[SpecToolset({"list": list_spec()})],
     )
@@ -896,7 +899,7 @@ async def test_agent_run_recovers_from_model_retry():
         }
     )
     agent = Agent(
-        _tool_calling_model("flaky", {"mode": "bad"}, {"mode": "good"}),
+        tool_calling_model("flaky", {"mode": "bad"}, retry_args={"mode": "good"}),
         deps_type=AgentDeps,
         toolsets=[toolset],
     )
@@ -1928,7 +1931,7 @@ async def test_a_reporter_on_the_deps_reaches_the_service():
     await toolset.call_tool(
         "create_widget",
         {"name": "a", "price": 1},
-        SimpleNamespace(deps=AgentDeps(user=user, progress=sink)),
+        ctx_for(deps=AgentDeps(user=user, progress=sink)),
         tools["create_widget"],
     )
     assert sink.reports == [(1, 1, "Creating", None)]
@@ -2300,7 +2303,7 @@ def test_build_context_is_overridable_and_sees_the_run():
 
     spec = ServiceSpec(service=peek, atomic=False, permission_classes=[AllowAny])
     toolset = TenantToolset({"t": spec})
-    ctx = SimpleNamespace(deps=AgentDeps(user="gamma-ltd"))
+    ctx = ctx_for("gamma-ltd")
     toolset._call_spec(spec, "gamma-ltd", {}, ctx=ctx)
 
     assert seen["tenant"] == "gamma-ltd"
@@ -2321,7 +2324,7 @@ def test_translate_exception_is_overridable_without_a_map():
 
     spec = ServiceSpec(service=boom, atomic=False, permission_classes=[AllowAny])
     toolset = Translating({"t": spec})
-    ctx = SimpleNamespace(deps=AgentDeps(user=object()))
+    ctx = ctx_for(object())
 
     assert toolset._call_spec(spec, object(), {}, ctx=ctx) == {"error": "handled subclassed"}
 
@@ -3128,3 +3131,187 @@ async def test_the_dispatch_thread_is_the_callers_to_choose() -> None:
         names = await _call_concurrently(toolset, times=3)
 
     assert len(set(names)) == 3
+
+
+# --- the back half of a call is overridable ----------------------------------
+#
+# 0.14.0 made argument intake through dispatch overridable and stopped there, so
+# everything after the dispatch returned -- pagination, rendering, the resolved-
+# data pool, the byte bound -- stayed module-level privates reached from a
+# module-level function. A project wanting to change one of them had to replace
+# ``call_tool`` wholesale or nothing at all.
+
+
+def test_the_run_context_double_carries_every_field_the_package_reads():
+    """Pin the stand-in against the real dataclass, in both directions.
+
+    A double grown field-by-field as tests needed them is how a helper ends up
+    describing a context no run produces -- and the failure mode is silent, since
+    every test using it agrees with it. Reading a field the real
+    ``RunContext`` does not have would pass here and ``AttributeError`` in
+    production; carrying one fewer than the package reads would do the reverse.
+    """
+    import dataclasses
+
+    from pydantic_ai import RunContext
+
+    real = {f.name for f in dataclasses.fields(RunContext)}
+    assert real >= RUN_CONTEXT_FIELDS_READ, RUN_CONTEXT_FIELDS_READ - real
+    double = set(vars(ctx_for("alice")))
+    assert double >= RUN_CONTEXT_FIELDS_READ, RUN_CONTEXT_FIELDS_READ - double
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_shape_page_override_replaces_the_slice():
+    """The seam is reached for a list selector, with the model's page args."""
+    from asgiref.sync import sync_to_async
+
+    seen = {}
+
+    class Windowed(SpecToolset):
+        def shape_page(self, rows, *, ctx, page, limit, max_page_size):
+            seen["args"] = (page, limit, max_page_size)
+            # A deliberately different window, so the assertion below cannot
+            # also be satisfied by the default shaper having run.
+            return super().shape_page(rows, ctx=ctx, page=1, limit=1, max_page_size=max_page_size)
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    await sync_to_async(Widget.objects.create)(name="b", price=2, owner=user)
+    toolset = Windowed({"list_widgets": list_spec()})
+    tools = await toolset.get_tools(None)
+
+    result = await toolset.call_tool(
+        "list_widgets", {"page": 2, "limit": 1}, ctx_for(user), tools["list_widgets"]
+    )
+
+    assert seen["args"] == (2, 1, None)
+    assert [w["name"] for w in _rows(result)] == ["a"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_render_output_override_can_skip_the_projection():
+    """``render_spec_output`` is the opt-out; ``projection=None`` is not.
+
+    ``render_for_audience`` reads ``projection=None`` as *derive one from the
+    spec*, so a project wanting the unprojected payload -- a chaining pipeline
+    that needs the handles the next step reads by -- has to render with
+    ``render_spec_output`` instead. That is reachable only because the render
+    step is a seam.
+    """
+    from asgiref.sync import sync_to_async
+
+    class Unprojected(SpecToolset):
+        def render_output(self, spec, value, *, ctx, projection, many, request, view, extras):
+            return render_spec_output(
+                spec, value, many=many, view=view, request=request, extras=extras
+            )
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    plain = SpecToolset({"list_widgets": agent_list_spec()})
+    unprojected = Unprojected({"list_widgets": agent_list_spec()})
+    tools = await plain.get_tools(None)
+
+    projected = _rows(
+        await plain.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+    )
+    raw = _rows(
+        await unprojected.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+    )
+
+    # If this ever stops holding, the override has stopped being an opt-out of
+    # anything and the test is passing for the wrong reason.
+    assert projected != raw
+    assert set(raw[0]) - set(projected[0])
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_output_extras_override_reaches_the_resolved_data_pool():
+    from asgiref.sync import sync_to_async
+
+    seen = {}
+
+    class Extra(SpecToolset):
+        def output_extras(self, spec, value, *, ctx, many):
+            pool = super().output_extras(spec, value, ctx=ctx, many=many)
+            seen["default_keys"] = sorted(pool)
+            return pool
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    toolset = Extra({"list_widgets": list_spec()})
+    tools = await toolset.get_tools(None)
+
+    await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    # The same key the HTTP path uses for a list, so an output-context provider
+    # written against one transport reads the same name under the other.
+    assert seen["default_keys"] == ["page"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_enforce_result_bytes_override_can_bound_on_something_else():
+    """Overriding the bound is how a non-byte ceiling gets written at all."""
+    from asgiref.sync import sync_to_async
+
+    class RowCapped(SpecToolset):
+        def enforce_result_bytes(self, payload, *, ctx, max_bytes, label):
+            if isinstance(payload, dict) and len(payload.get("items", [])) > 1:
+                return {"error": f"too many rows for {label}"}
+            return super().enforce_result_bytes(payload, ctx=ctx, max_bytes=max_bytes, label=label)
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    await sync_to_async(Widget.objects.create)(name="b", price=2, owner=user)
+    toolset = RowCapped({"list_widgets": list_spec()})
+    tools = await toolset.get_tools(None)
+
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert result == {"error": "too many rows for list_widgets"}
+
+
+async def test_tool_call_log_lines_carry_run_correlation_and_usage(caplog):
+    """Two concurrent runs interleave; without these fields nothing separates them."""
+
+    def ping(user):
+        """Ping."""
+        return {"ok": True}
+
+    toolset = SpecToolset(
+        {"ping": ServiceSpec(service=ping, permission_classes=[AllowAny], atomic=False)}
+    )
+    tools = await toolset.get_tools(None)
+    ctx = ctx_for("u", run_id="run-abc", tool_call_id="call-xyz")
+
+    with caplog.at_level(logging.DEBUG, logger="rest_framework_pydantic_ai"):
+        await toolset.call_tool("ping", {}, ctx, tools["ping"])
+
+    record = next(r for r in caplog.records if "took" in r.getMessage())
+    assert record.run_id == "run-abc"
+    assert record.tool_call_id == "call-xyz"
+    assert record.run_step == 1
+    # Cumulative for the run, not attributable to this call -- present so a long
+    # autonomous run can be read back against where its budget stood.
+    assert record.run_requests == 0
+
+
+async def test_permission_denial_log_line_carries_run_correlation(caplog):
+    """The one failure with no other trace, so it is the one most worth keying."""
+
+    def peek(user):
+        """Peek."""
+        return {}
+
+    toolset = SpecToolset({"peek": ServiceSpec(service=peek, permission_classes=[DenyAll])})
+    tools = await toolset.get_tools(None)
+
+    with (
+        caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"),
+        pytest.raises(PermissionDenied),
+    ):
+        await toolset.call_tool("peek", {}, ctx_for("u", run_id="run-denied"), tools["peek"])
+
+    record = next(r for r in caplog.records if "Permission denied" in r.getMessage())
+    assert record.run_id == "run-denied"

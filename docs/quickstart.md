@@ -73,6 +73,13 @@ result = await agent.run(
 )
 ```
 
+!!! tip "No request in sight?"
+
+    `request.user` is the HTTP shape. A Celery task, a management command or a
+    scheduled job resolves the acting user itself and passes it the same way —
+    see [Running from a worker](background-runs.md), which also covers the one
+    setting a fan-out genuinely needs.
+
 For that request the model can call `list_orders` with
 `{"limit": 5, "ordering": "-created"}` and the toolset enforces permissions,
 runs the selector as `request.user`, hands `ordering` to the selector's

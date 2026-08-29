@@ -81,6 +81,14 @@ HttpRequestExtractor = Callable[[RunContext[Any]], HttpRequest | None]
 
 _ContextBuilder = Callable[..., Any]
 _ExceptionTranslator = Callable[[BaseException], "ExceptionHandler | None"]
+# The four result-shaping seams. ``Callable[..., X]`` rather than a written-out
+# signature because each is bound through a forwarding lambda that injects
+# ``ctx``, and a precise type would have to describe the *unbound* shape while
+# the call site uses the bound one.
+_PageShaper = Callable[..., "OutputPage"]
+_OutputRenderer = Callable[..., Any]
+_ExtrasBuilder = Callable[..., "dict[str, Any]"]
+_ResultBounder = Callable[..., Any]
 
 ExceptionHandler = Callable[[BaseException], Any]
 """Turns one exception into a tool result.
@@ -100,6 +108,54 @@ is a 403 in the log and here is an exception the run loop absorbs into a
 message. Timings go to ``DEBUG``, denials to ``WARNING``; named for the package
 so ``LOGGING`` can set the two independently.
 """
+
+
+def _run_extra(ctx: RunContext[Any]) -> dict[str, Any]:
+    """Correlation fields for one tool call's log lines.
+
+    A dispatch behind a DRF view lands in an access log beside a request id; the
+    same spec called by a model produced lines naming only the tool and the
+    toolset. One chat turn does not need more than that -- there is one run --
+    but the shape this package is otherwise undocumented for does: a worker
+    fanning several runs out concurrently interleaved their lines with nothing
+    to separate them by.
+
+    Passed through ``extra=`` rather than formatted into the message so a
+    structured handler can index the fields and a plain one stays readable. The
+    four names are pydantic-ai's own, and none of them collides with a
+    ``LogRecord`` attribute -- ``extra`` overwriting one of those raises.
+    """
+    return {
+        "run_id": ctx.run_id,
+        "conversation_id": ctx.conversation_id,
+        "run_step": ctx.run_step,
+        "tool_call_id": ctx.tool_call_id,
+    }
+
+
+def _usage_extra(ctx: RunContext[Any]) -> dict[str, Any]:
+    """The run's usage so far, as of this tool call.
+
+    **Cumulative for the run, not attributable to this call** -- a tool call
+    spends no tokens itself. What it is good for is the shape a chatbox does not
+    have: a long autonomous run where the interesting question is which tool call
+    the budget was standing at when the run went wrong, and that is answerable
+    only if the number is stamped on each line as it goes.
+
+    Enforcing a budget is deliberately not done here. ``UsageLimits`` belongs to
+    ``Agent.run``, which can stop the run; a toolset can only refuse the next
+    tool call, which is the wrong instrument and a second place for the limit to
+    live. ``ctx.usage_limits`` is readable from an
+    [`enforce_result_bytes`][rest_framework_pydantic_ai.SpecToolset.enforce_result_bytes]
+    override for a project that wants to taper its results as a run gets long.
+    """
+    usage = ctx.usage
+    return {
+        "run_input_tokens": usage.input_tokens,
+        "run_output_tokens": usage.output_tokens,
+        "run_requests": usage.requests,
+        "run_tool_calls": usage.tool_calls,
+    }
 
 
 def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
@@ -665,20 +721,28 @@ class SpecToolset(AbstractToolset[Any]):
             # model and a ``{"error": …}`` reaches the answer, but a denial
             # aborts the run and is absorbed by whatever drives it. Logged at
             # the boundary, then re-raised untouched.
-            logger.warning("Permission denied calling tool %r on toolset %r", name, self._id)
+            logger.warning(
+                "Permission denied calling tool %r on toolset %r",
+                name,
+                self._id,
+                extra=_run_extra(ctx),
+            )
             raise
         logger.debug(
             "Tool %r on toolset %r took %.1f ms",
             name,
             self._id,
             (time.perf_counter() - started) * 1000,
+            extra=_run_extra(ctx) | _usage_extra(ctx),
         )
         return result
 
-    # The two seams into the middle of a call. Deliberately not offered beside
-    # them: a generic "set arbitrary attributes on the synthetic request"
-    # parameter, which would make ambient-state-on-the-request the default
-    # posture for everyone. An override keeps the honest path the easy one.
+    # The front half of a call: argument intake through dispatch. Deliberately
+    # not offered beside these: a generic "set arbitrary attributes on the
+    # synthetic request" parameter, which would make ambient-state-on-the-request
+    # the default posture for everyone. An override keeps the honest path the
+    # easy one -- which is why the back half below is four more overrides rather
+    # than four more constructor knobs.
 
     def build_context(
         self,
@@ -738,10 +802,119 @@ class SpecToolset(AbstractToolset[Any]):
                 return handler
         return None
 
+    # The back half of a call: everything between the dispatch returning and the
+    # tool result going back to the model. These were module-level privates
+    # reached only from a module-level function, so a project wanting to change
+    # any one of them had to replace ``call_tool`` wholesale or nothing at all --
+    # the same gap 0.14.0 closed on the front half.
+
+    def shape_page(
+        self,
+        rows: Any,
+        *,
+        ctx: RunContext[Any],
+        page: int | None,
+        limit: int | None,
+        max_page_size: int | None,
+    ) -> OutputPage:
+        """Slice a list selector's rows into the page this call serves.
+
+        Called only for list selectors -- the specs that advertise pagination
+        arguments and return something sliceable. The default is drf-services'
+        shared ``paginate_output`` (which counts the rows and clamps both bounds)
+        followed by forcing evaluation, so nothing downstream holds a lazy
+        queryset.
+
+        **No sorting happens here, and an override should not add any.** Ordering
+        belongs to whatever the spec declared it on, which has already applied it
+        to the queryset by the time this runs; an ``order_by`` here would replace
+        that sort rather than compose with it.
+        """
+        del ctx  # unused by the default; present so an override has it
+        return _shape_list(rows, page=page, limit=limit, max_page_size=max_page_size)
+
+    def render_output(
+        self,
+        spec: Spec,
+        value: Any,
+        *,
+        ctx: RunContext[Any],
+        projection: AudienceProjection | None,
+        many: bool,
+        request: Any,
+        view: Any,
+        extras: dict[str, Any],
+    ) -> Any:
+        """Turn a dispatch result into the payload the model reads.
+
+        The default is drf-services' ``render_for_audience``: ``render_spec_output``
+        plus the serializer's audience markings, using the projection this toolset
+        resolved once at registration.
+
+        **This is the opt-out of projecting**, and the only one. Passing
+        ``projection=None`` is not it -- ``render_for_audience`` reads ``None`` as
+        "derive one from the spec", so the payload is projected anyway and a
+        serializer is instantiated per call to decide how. An override that wants
+        the unprojected payload calls ``render_spec_output`` directly.
+
+        Two cases want that. A **chaining pipeline** feeding one spec's output into
+        the next needs the handles the next step reads by, and drf-services says so
+        in ``render_for_audience``'s own docstring: project them away and the next
+        step has nothing to key on. And a serializer with a single ``ChoiceField``
+        whose display differs from its value is projected **without any marking
+        being declared** -- ``choice_labels`` is derived from the field itself --
+        so "we marked nothing, so nothing is projected" is not true, and an
+        override is how a project that means it says so.
+        """
+        del ctx  # unused by the default; present so an override has it
+        return _render_output(
+            spec,
+            value,
+            projection=projection,
+            many=many,
+            request=request,
+            view=view,
+            extras=extras,
+        )
+
+    def output_extras(
+        self, spec: Spec, value: Any, *, ctx: RunContext[Any], many: bool
+    ) -> dict[str, Any]:
+        """The resolved-data pool a spec's output-context provider may read.
+
+        Keyed the same way the HTTP path keys it, deliberately: ``result`` for a
+        service, ``instance`` for a selector, ``page`` for a list. A provider
+        written against one transport therefore reads the same names under the
+        other.
+
+        Note what is **not** here, because it is the question this seam attracts:
+        drf-services' ``DispatchResult.service_result`` -- the flags carrier an
+        upsert's ``created`` rides on. The HTTP path does not put it in this pool
+        either; it feeds a callable ``success_status`` and a ``response_finalizer``,
+        both of which are status-code machinery a toolset has no wire for. A spec
+        whose *model-visible* outcome depends on such a flag should put the flag in
+        its output serializer, where both transports can see it. An override here
+        is the escape hatch for a project that disagrees.
+        """
+        del ctx  # unused by the default; present so an override has it
+        return _output_extras(spec, value, many=many)
+
+    def enforce_result_bytes(
+        self, payload: Any, *, ctx: RunContext[Any], max_bytes: int | None, label: str
+    ) -> Any:
+        """Return ``payload``, or a model-readable refusal when it is over budget.
+
+        Measured on the envelope, because the envelope is what is sent. Override to
+        bound on something other than serialized length -- a row count, a per-run
+        running total read off ``ctx.usage`` -- or to shape the refusal differently.
+        """
+        del ctx  # unused by the default; present so an override has it
+        return _enforce_result_bytes(payload, max_bytes=max_bytes, label=label)
+
     def _call_spec(
         self, spec: Spec, user: Any, args: dict[str, Any], *, ctx: RunContext[Any], **kw: Any
     ) -> Any:
-        """Bind the two seams to this run, then run the shared pipeline.
+        """Bind the six seams to this run, then run the shared pipeline.
 
         Separate from the module-level function of the same name because that one
         has to stay usable without a toolset.
@@ -752,6 +925,12 @@ class SpecToolset(AbstractToolset[Any]):
             args,
             build_context=lambda *a, **kwargs: self.build_context(*a, ctx=ctx, **kwargs),
             translate_exception=lambda exc: self.translate_exception(exc, ctx=ctx),
+            shape_page=lambda *a, **kwargs: self.shape_page(*a, ctx=ctx, **kwargs),
+            render_output=lambda *a, **kwargs: self.render_output(*a, ctx=ctx, **kwargs),
+            output_extras=lambda *a, **kwargs: self.output_extras(*a, ctx=ctx, **kwargs),
+            enforce_result_bytes=lambda *a, **kwargs: self.enforce_result_bytes(
+                *a, ctx=ctx, **kwargs
+            ),
             **kw,
         )
 
@@ -1344,20 +1523,34 @@ def _call_spec(
     json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
     build_context: _ContextBuilder = build_offline_context,
     translate_exception: _ExceptionTranslator | None = None,
+    shape_page: _PageShaper | None = None,
+    render_output: _OutputRenderer | None = None,
+    output_extras: _ExtrasBuilder | None = None,
+    enforce_result_bytes: _ResultBounder | None = None,
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
 
     Synchronous on purpose — ``SpecToolset.call_tool`` runs it in a thread so
     the ORM stays off the event loop.
 
-    ``build_context`` and ``translate_exception`` are the two seams
+    The six keyword seams are what
     [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] threads its
-    overridable methods through; the defaults
-    keep this function usable on its own.
+    overridable methods through; the defaults keep this function usable on its
+    own. ``build_context`` and ``translate_exception`` cover the front half of a
+    call, and ``shape_page`` / ``render_output`` / ``output_extras`` /
+    ``enforce_result_bytes`` the back half.
+
+    They are ``None``-defaulted rather than bound to their module-level
+    implementations in the signature because those are defined below this
+    function, and a default expression is evaluated at ``def`` time.
 
     ``action`` becomes ``view.action`` on the synthetic view, so a permission
     class reading it sees the tool name rather than ``None``.
     """
+    shape: _PageShaper = shape_page or _shape_list
+    render: _OutputRenderer = render_output or _render_output
+    extras_for: _ExtrasBuilder = output_extras or _output_extras
+    bound: _ResultBounder = enforce_result_bytes or _enforce_result_bytes
     page_args = _pop_pagination(spec, args, registry=json_schema_registry)
     # Both channels pop before dispatch so their values never reach the spec as
     # inputs, where ``unknown_arguments`` (REJECT by default) would flag them.
@@ -1447,17 +1640,22 @@ def _call_spec(
         # plain-string ``order_by`` eagerly — so a ``filter_set`` whose
         # ``param_map`` names something that is not a column raises inside
         # ``dispatch_spec``, not at this line. An arm here would never fire.
-        page = _shape_list(value, page_args, max_page_size)
+        page = shape(
+            value,
+            page=page_args.page,
+            limit=page_args.limit,
+            max_page_size=max_page_size,
+        )
         value = page.items
     many = result.kind == "list"
-    rendered = render_for_audience(
+    rendered = render(
         spec,
         value,
         projection=projection,
         many=many,
         request=context.request,
         view=context.view,
-        extras=_output_extras(spec, value, many=many),
+        extras=extras_for(spec, value, many=many),
     )
     if page is not None:
         # **After the render, never before.** The projection lands on the rows;
@@ -1468,10 +1666,10 @@ def _call_spec(
     # Measured on the envelope, because the envelope is what is sent. It adds
     # three small scalars and the "there is more" signal the model needs in
     # order to act on a refusal that tells it to lower `limit`.
-    return _enforce_result_bytes(rendered, max_result_bytes, label=label)
+    return bound(rendered, max_bytes=max_result_bytes, label=label)
 
 
-def _enforce_result_bytes(payload: Any, max_bytes: int | None, *, label: str) -> Any:
+def _enforce_result_bytes(payload: Any, *, max_bytes: int | None, label: str) -> Any:
     """Return ``payload``, or a model-readable refusal when it is over budget.
 
     **Fails; never truncates.** A list cut at the byte ceiling is
@@ -1703,7 +1901,9 @@ def _refuse_unadvertised_ordering(value: Any) -> None:
         raise ModelRetry("This tool does not accept an `ordering` argument; omit it.")
 
 
-def _shape_list(value: Any, page_args: _PageArgs, max_page_size: int | None) -> OutputPage:
+def _shape_list(
+    value: Any, *, page: int | None, limit: int | None, max_page_size: int | None
+) -> OutputPage:
     """Paginate a list selector's queryset and force it to evaluate.
 
     The slicing itself is ``paginate_output``, drf-services' shared shaper, which
@@ -1722,13 +1922,46 @@ def _shape_list(value: Any, page_args: _PageArgs, max_page_size: int | None) -> 
     ``OutputPage`` is frozen, and here rather than at the call site because the
     guarantee belongs to whatever produces the page.
     """
-    page: OutputPage = paginate_output(
+    shaped: OutputPage = paginate_output(
         value,
-        page=page_args.page,
-        limit=page_args.limit,
+        page=page,
+        limit=limit,
         max_page_size=max_page_size,
     )
-    return replace(page, items=list(page.items))
+    return replace(shaped, items=list(shaped.items))
+
+
+def _render_output(
+    spec: Spec,
+    value: Any,
+    *,
+    projection: AudienceProjection | None,
+    many: bool,
+    request: Any,
+    view: Any,
+    extras: dict[str, Any],
+) -> Any:
+    """Render a dispatch result for the model to read.
+
+    The default is drf-services' ``render_for_audience`` -- ``render_spec_output``
+    plus the serializer's audience markings -- with the projection this toolset
+    built once at registration rather than derived per call.
+
+    **Passing ``projection=None`` is not an opt-out**: ``render_for_audience``
+    reads it as "derive one from the spec", which projects anyway and costs a
+    serializer instantiation. The way out is to render with ``render_spec_output``
+    instead, which is the whole reason this step is a seam -- see
+    [`SpecToolset.render_output`][rest_framework_pydantic_ai.SpecToolset.render_output].
+    """
+    return render_for_audience(
+        spec,
+        value,
+        projection=projection,
+        many=many,
+        request=request,
+        view=view,
+        extras=extras,
+    )
 
 
 def _output_extras(spec: Spec, value: Any, *, many: bool) -> dict[str, Any]:
