@@ -6,6 +6,63 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Removed
+
+- **`SpecToolset(ordering_fields=…)` and `tool_ordering_fields=` are gone**, along
+  with their `SpecCapability` counterparts. They were deprecated in 0.16.0
+  (2026-08-11), four minors ago; passing either now raises `TypeError` at
+  construction rather than being silently ignored, so a project still declaring
+  one finds out at the line that declares it.
+
+  **Migration — declare a django-filter `OrderingFilter` on the selector's
+  `filter_set`:**
+
+  ```python
+  # before
+  toolset = SpecToolset(specs, ordering_fields=["created_at", "total_cents"])
+
+
+  # after
+  class OrderFilterSet(django_filters.FilterSet):
+      ordering = django_filters.OrderingFilter(
+          fields=(("created_at", "created"), ("total_cents", "total")),
+      )
+
+      class Meta:
+          model = Order
+          fields = ["status"]
+  ```
+
+  The names change shape as well as place: `ordering_fields` values were raw ORM
+  paths, because the toolset applied them with `queryset.order_by` itself, while
+  a FilterSet declares `(orm_path, public_name)` pairs and maps them through its
+  own `param_map`. The public halves are what the model is shown, so they are the
+  one thing the migration asks you to choose. A list selector with no
+  `filter_set` can instead declare an `ordering` parameter on the selector
+  callable, which is reflected into the tool schema like any other argument.
+
+  **Why the knob went rather than being narrowed to the no-`filter_set` case:**
+  a Django model carries its own `Meta.ordering` default, the HTTP path already
+  declares ordering through a `filter_set`, and `django-filter`'s
+  `OrderingFilter` does more than a list of ORM paths can — public names,
+  labels, annotation aliases, and its own validation. One vocabulary now serves
+  HTTP and every agent transport alike, which is what stops a schema and its
+  dispatch from disagreeing about what a sort argument means.
+
+  Removed with it: the two-vocabulary construction refusal (there is no second
+  vocabulary left to clash with), the `ordering` enum the toolset wrote into a
+  list tool's input schema, and the `FieldError` arm that turned the toolset's
+  own `queryset.order_by` into a `ModelRetry`. That last one **never covered a
+  `filter_set`-declared sort** and its removal does not change that path: Django
+  validates a plain-string `order_by` eagerly, so a `param_map` target that is
+  not a column raises inside `dispatch_spec`, above where the arm sat. The
+  failure table in `docs/quickstart.md` claimed otherwise and has been corrected.
+
+  Unaffected: everything a `filter_set` owns. An `OrderingFilter` is still found
+  under whatever name it was declared, its choices still reach the model as the
+  labelled options drf-services reflects, and its value is still routed through
+  `filter_data` so it reaches the FilterSet and not the selector's kwargs.
+
 ## [0.20.0] — 2026-08-28
 
 ### Added

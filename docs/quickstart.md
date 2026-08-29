@@ -235,30 +235,41 @@ toolset contributes nothing and takes nothing away.
 One vocabulary, one declaration site, and the same ordering your HTTP views
 already serve.
 
-### `ordering_fields` (deprecated)
+The filter's name is yours to pick — an `OrderingFilter` declared as `sorting`
+is found and used the same way. What the schema advertises is what the model may
+send, under whatever it is called.
 
-!!! warning "Deprecated"
-    `ordering_fields` / `tool_ordering_fields` emit a `DeprecationWarning`.
-    Declare an `OrderingFilter` on the selector's `filter_set` instead.
+### A list selector with no `filter_set`
 
-They remain for the one case with no other route — a list selector with **no**
-`filter_set`:
+A selector that takes its own sort argument works too: declare it on the
+callable and it is reflected into the tool schema like any other parameter, and
+handed to the callable to apply.
 
 ```python
-toolset = SpecToolset(specs, ordering_fields=["created_at", "total_cents"])
+def list_orders(user, ordering: str = "-created_at"):
+    """List the acting user's orders."""
+    return Order.objects.filter(customer=user).order_by(ordering)
 ```
 
-That advertises an `ordering` enum of each name and its `-` prefixed form, and
-the toolset applies the chosen value with `queryset.order_by`. The values are
-therefore raw **ORM paths**, not public names — which is precisely why the two
-cannot be mixed: a FilterSet's `OrderingFilter` speaks public names it maps
-itself, several of which resolve to annotation aliases. Declaring
-`ordering_fields` for a tool whose `filter_set` already advertises `ordering`
-raises at construction rather than letting one vocabulary quietly overwrite the
-other.
+Prefer the `FilterSet` where there is one: it validates the value against a
+published set of choices before anything reaches the ORM, while a bare parameter
+is only as safe as what the selector does with it.
 
-To migrate, move the names onto an `OrderingFilter` as `(orm_path, public_name)`
-pairs and drop the `ordering_fields` argument.
+### Migrating from `ordering_fields`
+
+`SpecToolset(specs, ordering_fields=[...])` and its per-tool
+`tool_ordering_fields` form were deprecated in 0.16.0 and have now been removed;
+passing either raises `TypeError` at construction. Move the names onto an
+`OrderingFilter` as `(orm_path, public_name)` pairs — the FilterSet at the top of
+this section is exactly `ordering_fields=["created_at", "total_cents"]`
+rewritten — and drop the argument.
+
+The vocabularies are not the same, and that is the point of the move: the knob's
+values were raw **ORM paths**, because the toolset applied them with
+`queryset.order_by` itself, while a FilterSet's choices are public names it maps
+through its own `param_map`. Picking public names is the migration's one
+decision — they are what the model sees, so give them the words a reader would
+use.
 
 ## Read-shaping query params
 
@@ -431,10 +442,11 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | `ServiceError` (business rule) | `{"error": "..."}` — model-readable content |
 | Unresolved instance | `{"error": "not found"}` |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
-| Non-integer `page` / `limit`, or an `ordering` outside the declared enum | `ModelRetry` — naming the values that are accepted |
+| Non-integer `page` / `limit` | `ModelRetry` — naming what is accepted |
+| An `ordering` sent to a list tool that advertises no sort at all | `ModelRetry` — saying the tool has none, rather than letting it fall through as an unknown key |
 | A `limit` over `max_page_size`, or a `page` past the last one | Clamped, not refused — the envelope reports the `page` and `totalPages` actually served, so the clamp is visible rather than silent |
 | An `ordering` outside a `filter_set`'s `OrderingFilter` choices | `ModelRetry` — the FilterSet rejects it, which arrives as the `ValidationError` row above |
-| An ordering name that isn't a real column (a declared `ordering_fields` entry, or a FilterSet `param_map` target) | `ModelRetry` — an author's error, not the model's; it can't be checked at construction without a queryset |
+| A FilterSet `param_map` target that isn't a real column | Django's `FieldError` propagates — an author's error the model cannot correct by picking a different sort, and one that can't be checked at construction without a queryset |
 | Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run — see the caveat below |
 
 !!! warning "A tool-failure policy changes the last row"

@@ -9,7 +9,7 @@ from typing import Any
 import django_filters
 import pytest
 from django.contrib.auth.models import User
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.test import RequestFactory
 from pydantic_ai import Agent, ModelRetry
@@ -50,7 +50,6 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _derive_instructions,
     _input_schema,
     _is_list_selector,
-    _ordering_values,
     _output_extras,
     _PageArgs,
     _pop_query_params,
@@ -269,7 +268,8 @@ async def test_list_selector_tool_advertises_pagination_args():
     tools = await toolset.get_tools(None)
     props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
     assert {"page", "limit"} <= set(props)
-    # ``ordering`` is opt-in: nothing declared, nothing advertised.
+    # ``ordering`` comes from the spec, never from the toolset: this one
+    # declares no sort of its own, so none is advertised.
     assert "ordering" not in props
 
 
@@ -354,14 +354,16 @@ def test_list_selector_renders_owned_widgets():
 
 
 @pytest.mark.django_db
-def test_list_selector_orders_and_limits():
+def test_list_selector_limits_the_page():
+    """A sort is the spec's to declare, so this fixture — which declares none —
+    is about the slice alone. Ordering *through* pagination is asserted against
+    the filter-owned specs further down, where a sort actually exists."""
     user = User.objects.create(username="u")
     for name, price in [("a", 3), ("b", 1), ("c", 2)]:
         Widget.objects.create(name=name, price=price, owner=user)
-    result = _dispatch(
-        list_spec(), user, {"ordering": "price", "limit": 2}, ordering_fields=["price"]
-    )
-    assert [w["name"] for w in _rows(result)] == ["b", "c"]
+    result = _dispatch(list_spec(), user, {"limit": 2})
+    assert len(_rows(result)) == 2
+    assert (result["page"], result["totalPages"], result["hasNext"]) == (1, 2, True)
 
 
 @pytest.mark.django_db
@@ -369,28 +371,9 @@ def test_list_selector_second_page():
     user = User.objects.create(username="u")
     for name, price in [("a", 1), ("b", 2), ("c", 3)]:
         Widget.objects.create(name=name, price=price, owner=user)
-    result = _dispatch(
-        list_spec(),
-        user,
-        {"ordering": "price", "page": 2, "limit": 2},
-        ordering_fields=["price"],
-    )
-    assert [w["name"] for w in _rows(result)] == ["c"]
-
-
-@pytest.mark.django_db
-def test_a_declared_field_that_is_not_a_column_becomes_a_retry():
-    """The remaining way to reach a ``FieldError`` — and it is the author's fault.
-
-    Enum validation stops a model from naming an arbitrary column, so what is
-    left is ``ordering_fields=["nope"]``: a declaration that cannot be checked
-    at construction, because knowing whether a name is a real column means
-    asking a queryset that does not exist yet.
-    """
-    user = User.objects.create(username="u")
-    Widget.objects.create(name="a", price=1, owner=user)
-    with pytest.raises(ModelRetry, match="invalid ordering"):
-        _dispatch(list_spec(), user, {"ordering": "nope"}, ordering_fields=["nope"])
+    result = _dispatch(list_spec(), user, {"page": 2, "limit": 2})
+    assert len(_rows(result)) == 1
+    assert (result["page"], result["totalPages"], result["hasNext"]) == (2, 2, False)
 
 
 @pytest.mark.django_db
@@ -498,14 +481,6 @@ def test_denied_permission_raises():
 # --- pure helpers ------------------------------------------------------------
 
 
-def test_ordering_values_pairs_each_field_with_its_descending_form():
-    # The same construction the MCP transport uses, so one registry exposed over
-    # both surfaces advertises one vocabulary.
-    assert _ordering_values([]) == []
-    assert _ordering_values(["name"]) == ["name", "-name"]
-    assert _ordering_values(["name", "price"]) == ["name", "-name", "price", "-price"]
-
-
 def test_shape_list_returns_a_page_rather_than_a_bare_slice():
     """The defect this closes, at the helper that had it.
 
@@ -513,7 +488,7 @@ def test_shape_list_returns_a_page_rather_than_a_bare_slice():
     answered with a bare slice: no total, no clamp, and nothing in the payload
     saying more rows existed.
     """
-    page = _shape_list([1, 2, 3, 4, 5], _PageArgs(page=2, limit=2, ordering=None), None)
+    page = _shape_list([1, 2, 3, 4, 5], _PageArgs(page=2, limit=2), None)
     assert page.items == [3, 4]
     assert (page.page, page.limit, page.total) == (2, 2, 5)
     assert page.total_pages == 3
@@ -523,7 +498,7 @@ def test_shape_list_returns_a_page_rather_than_a_bare_slice():
 def test_shape_list_bounds_a_limitless_call_to_one_default_page():
     """An omitted ``limit`` used to mean *everything*, unbounded and unremarked."""
     rows = list(range(DEFAULT_PAGE_SIZE + 1))
-    page = _shape_list(rows, _PageArgs(page=None, limit=None, ordering=None), None)
+    page = _shape_list(rows, _PageArgs(page=None, limit=None), None)
     assert page.items == rows[:DEFAULT_PAGE_SIZE]
     assert page.total == DEFAULT_PAGE_SIZE + 1
     assert page.has_next is True
@@ -532,7 +507,7 @@ def test_shape_list_bounds_a_limitless_call_to_one_default_page():
 def test_shape_list_clamps_the_limit_to_max_page_size():
     """The clamp moved out of ``_pop_pagination`` and onto the slice, so the
     ``totalPages`` reported is computed from the limit actually applied."""
-    page = _shape_list([1, 2, 3, 4], _PageArgs(page=None, limit=3, ordering=None), 2)
+    page = _shape_list([1, 2, 3, 4], _PageArgs(page=None, limit=3), 2)
     assert page.items == [1, 2]
     assert page.limit == 2
     assert page.total_pages == 2
@@ -581,11 +556,6 @@ def test_bool_page_is_model_retry():
     # ``True`` is an ``int`` subclass but never a valid count.
     with pytest.raises(ModelRetry, match="positive integer"):
         _dispatch(list_spec(), object(), {"page": True})
-
-
-def test_non_string_order_is_model_retry():
-    with pytest.raises(ModelRetry, match="ordering"):
-        _dispatch(list_spec(), object(), {"ordering": ["price"]}, ordering_fields=["price"])
 
 
 # --- unknown-arguments knob --------------------------------------------------
@@ -1473,51 +1443,11 @@ def test_a_whitespace_only_description_counts_as_none():
         SpecToolset({"list_widgets": list_spec()}, descriptions={"list_widgets": "   "})
 
 
-# ----- ordering: the deprecated ordering_fields vocabulary -----
+# ----- ordering: a tool that advertises none accepts none -----
 #
-# Unchanged behaviour, for the one case that still has no other route: a list
-# selector with no ``filter_set``. Every construction that declares fields now
-# also carries a ``DeprecationWarning``.
-
-
-async def test_declared_ordering_fields_become_an_enum():
-    """An enum, not a free string — the only shape that says what may be sorted."""
-    with pytest.deprecated_call():
-        toolset = SpecToolset({"list_widgets": list_spec()}, ordering_fields=["name", "price"])
-    tools = await toolset.get_tools(None)
-    props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
-    assert props["ordering"]["enum"] == ["name", "-name", "price", "-price"]
-
-
-async def test_per_tool_ordering_fields_replace_the_toolset_wide_set():
-    """Replace, not merge: the sort keys for two collections have nothing to do
-    with each other, unlike a query param, which is usually cross-cutting."""
-    with pytest.deprecated_call():
-        toolset = SpecToolset(
-            {"list_widgets": list_spec(), "other": list_spec()},
-            ordering_fields=["name"],
-            tool_ordering_fields={"other": ["price"]},
-        )
-    tools = await toolset.get_tools(None)
-    assert tools["list_widgets"].tool_def.parameters_json_schema["properties"]["ordering"][
-        "enum"
-    ] == ["name", "-name"]
-    assert tools["other"].tool_def.parameters_json_schema["properties"]["ordering"]["enum"] == [
-        "price",
-        "-price",
-    ]
-
-
-@pytest.mark.django_db
-def test_a_value_outside_the_enum_is_a_retry_naming_the_options():
-    """Deliberately unlike the MCP transport, which silently ignores it.
-
-    Silently returning unsorted rows to something that asked for newest-first is
-    the worst outcome available: the model cannot tell, and neither can the user
-    reading its answer.
-    """
-    with pytest.raises(ModelRetry, match="`name`, `-name`"):
-        _dispatch(list_spec(), object(), {"ordering": "price"}, ordering_fields=["name"])
+# The toolset contributes no sort argument of its own. A list selector that
+# declares nothing therefore has none, and a model that sends one is told so
+# rather than having the value fall through to the spec.
 
 
 @pytest.mark.django_db
@@ -1526,31 +1456,37 @@ def test_ordering_on_a_tool_that_declares_none_says_so():
         _dispatch(list_spec(), object(), {"ordering": "name"})
 
 
-async def test_the_ordering_instruction_appears_only_when_some_tool_declares_fields():
+@pytest.mark.django_db
+def test_a_non_string_ordering_is_refused_the_same_way():
+    """The tool schema is advisory and the args validator is a no-op, so a value
+    of any shape reaches the pop untyped. Nothing here inspects it: the tool
+    advertises no sort, so what it *is* cannot matter."""
+    with pytest.raises(ModelRetry, match="does not accept an `ordering` argument"):
+        _dispatch(list_spec(), object(), {"ordering": ["price"]})
+
+
+async def test_the_ordering_instruction_is_absent_when_no_tool_advertises_a_sort():
+    """Advice a model cannot act on is not free — it is prompt budget spent
+    teaching it about an argument that will be rejected."""
     without = await SpecToolset({"list_widgets": list_spec()}).get_instructions(None)
     assert "accept `ordering`" not in without
-
-    with pytest.deprecated_call():
-        toolset = SpecToolset({"list_widgets": list_spec()}, ordering_fields=["name"])
-    assert "accept `ordering`" in await toolset.get_instructions(None)
 
 
 # ----- ordering: the filter_set owns it -----
 #
-# The defect these pin: a FilterSet carrying an ``OrderingFilter`` advertises
-# ``ordering`` to the model all on its own — ``OrderingFilter`` subclasses
-# ``ChoiceFilter``, which drf-services maps to an enum — with nothing declared on
-# the toolset. The toolset used to strip that argument out of every list call and
-# answer "this tool does not accept an `ordering` argument", so the schema and the
-# dispatch contradicted each other and the value never reached the FilterSet.
+# The one vocabulary, and the whole of it. A FilterSet carrying an
+# ``OrderingFilter`` advertises its sort to the model on its own —
+# ``OrderingFilter`` subclasses ``ChoiceFilter``, which drf-services maps to a
+# labelled set of options — and validates and applies the value itself. The
+# toolset contributes nothing and takes nothing away.
 
 
 class _OrderedWidgetFilterSet(django_filters.FilterSet):
     """Public sort names that are *not* the ORM paths they resolve to.
 
     ``cost`` / ``title`` map to ``price`` / ``name`` through the filter's own
-    ``param_map`` — the reason a second ``ordering_fields`` vocabulary of raw ORM
-    paths cannot be substituted for this one.
+    ``param_map``, which is why raw ORM paths are not interchangeable with these
+    and why the filter has to be the one applying them.
     """
 
     min_price = django_filters.NumberFilter(field_name="price", lookup_expr="gte")
@@ -1574,9 +1510,9 @@ def _ordered_list_spec():
 class _SortingWidgetFilterSet(django_filters.FilterSet):
     """The same sort, declared under a name that is not ``ordering``.
 
-    Nothing requires the name. The deprecation warning suggests ``ordering``,
-    and a project following it to the letter was fine, but the name is the
-    project's to choose and django-filter has no opinion about it.
+    Nothing requires the name. The docs suggest ``ordering``, and a project
+    following that to the letter is fine, but the name is the project's to
+    choose and django-filter has no opinion about it.
     """
 
     sorting = django_filters.OrderingFilter(fields=(("price", "cost"), ("name", "title")))
@@ -1603,7 +1539,7 @@ def _three_widgets(user):
 
 
 def test_the_sort_argument_is_found_under_whatever_name_it_was_declared():
-    """The name is the project's to choose, and nothing required ``ordering``.
+    """The name is the project's to choose, and nothing requires ``ordering``.
 
     This used to test the literal string, so a FilterSet declaring ``sorting``
     read as "owns no ordering" -- which dropped the usage instruction and, more
@@ -1688,10 +1624,10 @@ def test_the_instruction_names_every_live_sort_argument():
 def test_filter_owned_ordering_actually_orders_the_rows():
     """The test that would have caught the original defect.
 
-    No ``ordering_fields`` anywhere: the FilterSet advertises ``ordering``, so the
-    value has to reach it and the rows have to come back sorted. Asserting the
-    order rather than "no error" is the point — the failure being guarded against
-    is a tool that answers cheerfully with rows in the wrong order.
+    The FilterSet advertises ``ordering``, so the value has to reach it and the
+    rows have to come back sorted. Asserting the order rather than "no error" is
+    the point — the failure being guarded against is a tool that answers
+    cheerfully with rows in the wrong order.
     """
     user = User.objects.create(username="u")
     _three_widgets(user)
@@ -1729,10 +1665,10 @@ def test_filter_owned_tool_still_works_with_no_ordering_supplied():
 
 @pytest.mark.django_db
 def test_an_ordering_outside_the_filters_choices_is_a_retry():
-    """The FilterSet validates it — including against the ORM path a declared
-    ``ordering_fields`` would have used, which is not one of its public choices.
-    drf-services raises that as a DRF ``ValidationError``, which is already the
-    ``ModelRetry`` arm; the toolset adds no second validation of its own.
+    """The FilterSet validates it — including against the raw ORM path behind one
+    of its own public choices, which is not itself a choice. drf-services raises
+    that as a DRF ``ValidationError``, which is already the ``ModelRetry`` arm;
+    the toolset adds no second validation of its own.
     """
     user = User.objects.create(username="u")
     _three_widgets(user)
@@ -1744,8 +1680,8 @@ async def test_the_advertised_ordering_enum_is_the_filters_own_vocabulary():
     """drf-services 0.47 publishes a labelled ``ChoiceFilter`` as ``oneOf`` const
     options rather than a bare ``enum``, so the filter's *labels* travel to the
     model beside its values. ``OrderingFilter`` is a ``ChoiceFilter``, so this is
-    the shape a filter-owned sort now takes. What matters here is unchanged: the
-    vocabulary is the filter's public one, never the toolset's ORM paths.
+    the shape a filter-owned sort takes. The vocabulary reaching the model is the
+    filter's public one, and it is the only one there is.
     """
     toolset = SpecToolset({"list_widgets": _ordered_list_spec()})
     tools = await toolset.get_tools(None)
@@ -1768,69 +1704,83 @@ def test_spec_owns_ordering_reads_the_reflected_schema():
     assert _spec_ordering_argument(create_spec()) is None
 
 
-def test_declaring_ordering_fields_beside_a_filter_that_owns_ordering_is_refused():
-    """Not resolved by preferring one — that *is* the defect, one level up."""
-    with pytest.raises(ValueError, match="declare ordering twice"):
-        SpecToolset({"list_widgets": _ordered_list_spec()}, ordering_fields=["price"])
-
-
-def test_the_refusal_names_the_tool_both_channels_and_the_fix():
-    with pytest.raises(ValueError) as excinfo:
-        SpecToolset(
-            {"plain": list_spec(), "list_widgets": _ordered_list_spec()},
-            tool_ordering_fields={"list_widgets": ["price"]},
-        )
-    message = str(excinfo.value)
-    assert "'list_widgets'" in message and "'plain'" not in message
-    assert "ordering_fields / tool_ordering_fields" in message
-    assert "filter_set" in message
-    assert "Drop ordering_fields" in message
-
-
-def test_ordering_fields_are_deprecated_in_favour_of_the_filter():
-    with pytest.warns(DeprecationWarning, match="OrderingFilter") as record:
-        SpecToolset({"list_widgets": list_spec()}, ordering_fields=["price"])
-    assert "'list_widgets'" in str(record[0].message)
-
-
-def test_tool_ordering_fields_are_deprecated_too():
-    with pytest.warns(DeprecationWarning, match="OrderingFilter"):
-        SpecToolset({"list_widgets": list_spec()}, tool_ordering_fields={"list_widgets": ["price"]})
-
-
-def test_declaring_nothing_warns_nothing():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        SpecToolset({"list_widgets": list_spec()}, tool_ordering_fields={"list_widgets": []})
-
-
-def test_the_schema_builder_never_overwrites_the_filters_enum():
-    """Belt to the constructor's braces, at the one line that could overwrite it.
-
-    The merge that builds ``properties`` puts the toolset's ``extra`` over the
-    reflected schema, so a value written here under a name the filter already
-    advertised replaces the filter's vocabulary with ORM paths the FilterSet
-    would then reject.
+def test_the_filters_vocabulary_survives_the_schema_merge_untouched():
+    """``_input_schema`` merges the transport's ``extra`` *over* the reflected
+    properties, so anything it wrote under a name the filter already advertised
+    would silently replace the filter's public choices. It writes ``page`` and
+    ``limit`` and nothing else, and this is the assertion that says so at the
+    property that would notice.
     """
-    props = _input_schema(_ordered_list_spec(), ordering_fields=["price"])["properties"]
+    props = _input_schema(_ordered_list_spec())["properties"]
     assert [option["const"] for option in props["ordering"]["oneOf"]] == [
         "cost",
         "-cost",
         "title",
         "-title",
     ]
-    # The overwrite this guards against would have written an ``enum`` key of ORM
-    # paths under the same property name, so its absence is the assertion.
-    assert "enum" not in props["ordering"]
+    assert {"page", "limit"} <= set(props)
 
 
 async def test_the_ordering_instruction_is_emitted_for_a_filter_owned_tool():
-    """Gated on ``tool_ordering_fields`` alone, this tool — the one whose
-    ``ordering`` is enum-valued and needs exactly one value picked from it — got
-    no ordering guidance at all.
-    """
+    """The tool whose sort is a set of labelled options — the one that most needs
+    to be told exactly one of them is picked, not a comma-separated list."""
     instructions = await SpecToolset({"list_widgets": _ordered_list_spec()}).get_instructions(None)
     assert "accept `ordering`" in instructions
+
+
+@pytest.mark.django_db
+def test_filter_owned_ordering_survives_pagination():
+    """Sort and slice are owned by different layers — the FilterSet orders the
+    lazy queryset, ``paginate_output`` slices it afterwards — so the pair has to
+    be asserted together. Sorted by ``cost`` the rows are b, c, a; the second
+    page of two is therefore the *largest*, which no unsorted result produces
+    reliably.
+    """
+    user = User.objects.create(username="u")
+    _three_widgets(user)
+    result = _dispatch(_ordered_list_spec(), user, {"ordering": "cost", "page": 2, "limit": 2})
+    assert [w["name"] for w in _rows(result)] == ["a"]
+    assert (result["page"], result["totalPages"], result["hasNext"]) == (2, 2, False)
+
+
+class _BogusTargetFilterSet(django_filters.FilterSet):
+    """A sort whose public choice maps to something that is not a column.
+
+    An author's error that cannot be caught at construction: knowing whether a
+    ``param_map`` target is real means asking a queryset that does not exist yet.
+    """
+
+    ordering = django_filters.OrderingFilter(fields=(("nope", "broken"),))
+
+    class Meta:
+        model = Widget
+        fields = []
+
+
+@pytest.mark.django_db
+def test_a_sort_target_that_is_not_a_column_raises_rather_than_retrying():
+    """Pinned because it is easy to assume the opposite, and the toolset used to
+    look like it handled this.
+
+    The removed ``ordering_fields`` knob applied its own ``queryset.order_by``
+    inside the pagination step, and a ``FieldError`` arm there turned that into a
+    ``ModelRetry``. A ``filter_set``-declared sort never reached that arm: Django
+    validates a plain-string ``order_by`` eagerly, so the FilterSet raises inside
+    ``dispatch_spec``, above it. The arm went with the knob it served, and this
+    path is exactly as it was — which is arguably right, since the model cannot
+    correct a mis-declared ``param_map`` by choosing a different sort.
+    """
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=list_widgets,
+        output_serializer=WidgetSerializer,
+        filter_set=_BogusTargetFilterSet,
+        permission_classes=[AllowAny],
+    )
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    with pytest.raises(FieldError, match="Cannot resolve keyword 'nope'"):
+        _dispatch(spec, user, {"ordering": "broken"})
 
 
 # The guard on the strip this change narrows. drf-services spreads the *entire*
