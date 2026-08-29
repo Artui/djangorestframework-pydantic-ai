@@ -244,24 +244,22 @@ def test_the_migration_escape_hatch_is_reachable_from_the_capability():
 async def test_a_bound_forwards_all_the_way_to_what_the_model_is_told():
     """One end-to-end forwarding case, on the arguments the model actually sees.
 
-    ``max_page_size`` and ``ordering_fields`` both change the advertised schema,
-    so this asserts the value survived the hop rather than that an attribute was
-    assigned somewhere. ``ordering_fields`` is deprecated in favour of a
-    ``filter_set``'s own ``OrderingFilter``, and its warning has to survive the
-    hop too — a deprecation a consumer only hears when they attach the toolset
-    directly is one the consumers composing through a capability never hear.
+    ``max_page_size`` and ``query_params`` both change the advertised schema —
+    one narrows a property the toolset contributes, the other adds one — so this
+    asserts the values survived the hop rather than that an attribute was
+    assigned somewhere. A bound a consumer only gets when they attach the toolset
+    directly is one the consumers composing through a capability never get.
     """
-    with pytest.deprecated_call():
-        cap = SpecCapability(
-            {"list": list_spec()},
-            max_page_size=50,
-            ordering_fields=["name", "created_at"],
-        )
+    cap = SpecCapability(
+        {"list": list_spec()},
+        max_page_size=50,
+        query_params=[QueryParam("query", description="field selection")],
+    )
     tools = await cap.get_toolset().get_tools(None)
     schema = tools["list"].tool_def.parameters_json_schema["properties"]
 
     assert schema["limit"]["maximum"] == 50
-    assert set(schema["ordering"]["enum"]) == {"name", "-name", "created_at", "-created_at"}
+    assert schema["query"]["description"] == "field selection"
 
 
 # --- agent-run integration ---------------------------------------------------
