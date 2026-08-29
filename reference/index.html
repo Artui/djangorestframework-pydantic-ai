@@ -1509,48 +1509,6 @@ with no description anywhere gets an <code>UndescribedToolWarning</code>.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>ordering_fields</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="str">str</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p><strong>Deprecated</strong> second ordering vocabulary, kept for a
-list selector with no <code>filter_set</code> and therefore no other route. It
-declares what such a tool may sort by, advertised as an enum on an
-<code>ordering</code> argument and validated against it; the values are raw
-ORM paths, because the toolset applies them with
-<code>queryset.order_by</code>. Nothing declared means no <code>ordering</code>
-argument at all. Declaring it for a tool whose spec already
-advertises <code>ordering</code> raises: public filter choices and ORM paths
-are two vocabularies for one argument name, and quietly preferring
-either is how a schema and its dispatch come to disagree.</p>
-              </div>
-            </td>
-            <td>
-                  <code>()</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>tool_ordering_fields</code>
-            </td>
-            <td>
-                  <code><span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <span title="collections.abc.Sequence">Sequence</span>[<span title="str">str</span>]] | None</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p><code>ordering_fields</code> per tool. Per-tool <em>replaces</em>
-the toolset-wide set rather than merging with it.</p>
-              </div>
-            </td>
-            <td>
-                  <code>None</code>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
                 <code>http_request</code>
             </td>
             <td>
@@ -1666,9 +1624,8 @@ extending the shared default:
             <td>
               <div class="doc-md-description">
                 <p>A tool name is outside <code>^[a-zA-Z0-9_-]{1,64}$</code>, a per-tool
-mapping names a tool this toolset does not expose, one name is
-registered on both parameter channels, or a tool declares ordering
-through both <code>ordering_fields</code> and its <code>filter_set</code>.</p>
+mapping names a tool this toolset does not expose, or one name is
+registered on both parameter channels.</p>
               </div>
             </td>
           </tr>

@@ -468,10 +468,21 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#ordering_fields-deprecated" class="md-nav__link">
+  <a href="#a-list-selector-with-no-filter_set" class="md-nav__link">
     <span class="md-ellipsis">
       
-        ordering_fields (deprecated)
+        A list selector with no filter_set
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migrating-from-ordering_fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating from ordering_fields
       
     </span>
   </a>
@@ -804,10 +815,21 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#ordering_fields-deprecated" class="md-nav__link">
+  <a href="#a-list-selector-with-no-filter_set" class="md-nav__link">
     <span class="md-ellipsis">
       
-        ordering_fields (deprecated)
+        A list selector with no filter_set
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#migrating-from-ordering_fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migrating from ordering_fields
       
     </span>
   </a>
@@ -1092,26 +1114,33 @@ the FilterSet as filter data: it validates the choice, applies its own
 toolset contributes nothing and takes nothing away.</p>
 <p>One vocabulary, one declaration site, and the same ordering your HTTP views
 already serve.</p>
-<h3 id="ordering_fields-deprecated"><code>ordering_fields</code> (deprecated)<a class="headerlink" href="#ordering_fields-deprecated" title="Permanent link">&para;</a></h3>
-<div class="admonition warning">
-<p class="admonition-title">Deprecated</p>
-<p><code>ordering_fields</code> / <code>tool_ordering_fields</code> emit a <code>DeprecationWarning</code>.
-Declare an <code>OrderingFilter</code> on the selector's <code>filter_set</code> instead.</p>
-</div>
-<p>They remain for the one case with no other route — a list selector with <strong>no</strong>
-<code>filter_set</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">ordering_fields</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;created_at&quot;</span><span class="p">,</span> <span class="s2">&quot;total_cents&quot;</span><span class="p">])</span>
+<p>The filter's name is yours to pick — an <code>OrderingFilter</code> declared as <code>sorting</code>
+is found and used the same way. What the schema advertises is what the model may
+send, under whatever it is called.</p>
+<h3 id="a-list-selector-with-no-filter_set">A list selector with no <code>filter_set</code><a class="headerlink" href="#a-list-selector-with-no-filter_set" title="Permanent link">&para;</a></h3>
+<p>A selector that takes its own sort argument works too: declare it on the
+callable and it is reflected into the tool schema like any other parameter, and
+handed to the callable to apply.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">list_orders</span><span class="p">(</span><span class="n">user</span><span class="p">,</span> <span class="n">ordering</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;-created_at&quot;</span><span class="p">):</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;List the acting user&#39;s orders.&quot;&quot;&quot;</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    <span class="k">return</span> <span class="n">Order</span><span class="o">.</span><span class="n">objects</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">customer</span><span class="o">=</span><span class="n">user</span><span class="p">)</span><span class="o">.</span><span class="n">order_by</span><span class="p">(</span><span class="n">ordering</span><span class="p">)</span>
 </span></code></pre></div>
-<p>That advertises an <code>ordering</code> enum of each name and its <code>-</code> prefixed form, and
-the toolset applies the chosen value with <code>queryset.order_by</code>. The values are
-therefore raw <strong>ORM paths</strong>, not public names — which is precisely why the two
-cannot be mixed: a FilterSet's <code>OrderingFilter</code> speaks public names it maps
-itself, several of which resolve to annotation aliases. Declaring
-<code>ordering_fields</code> for a tool whose <code>filter_set</code> already advertises <code>ordering</code>
-raises at construction rather than letting one vocabulary quietly overwrite the
-other.</p>
-<p>To migrate, move the names onto an <code>OrderingFilter</code> as <code>(orm_path, public_name)</code>
-pairs and drop the <code>ordering_fields</code> argument.</p>
+<p>Prefer the <code>FilterSet</code> where there is one: it validates the value against a
+published set of choices before anything reaches the ORM, while a bare parameter
+is only as safe as what the selector does with it.</p>
+<h3 id="migrating-from-ordering_fields">Migrating from <code>ordering_fields</code><a class="headerlink" href="#migrating-from-ordering_fields" title="Permanent link">&para;</a></h3>
+<p><code>SpecToolset(specs, ordering_fields=[...])</code> and its per-tool
+<code>tool_ordering_fields</code> form were deprecated in 0.16.0 and have now been removed;
+passing either raises <code>TypeError</code> at construction. Move the names onto an
+<code>OrderingFilter</code> as <code>(orm_path, public_name)</code> pairs — the FilterSet at the top of
+this section is exactly <code>ordering_fields=["created_at", "total_cents"]</code>
+rewritten — and drop the argument.</p>
+<p>The vocabularies are not the same, and that is the point of the move: the knob's
+values were raw <strong>ORM paths</strong>, because the toolset applied them with
+<code>queryset.order_by</code> itself, while a FilterSet's choices are public names it maps
+through its own <code>param_map</code>. Picking public names is the migration's one
+decision — they are what the model sees, so give them the words a reader would
+use.</p>
 <h2 id="read-shaping-query-params">Read-shaping query params<a class="headerlink" href="#read-shaping-query-params" title="Permanent link">&para;</a></h2>
 <p><code>page</code> / <code>limit</code> are built in for list selectors and <code>ordering</code> comes from the
 <code>filter_set</code>, but you can register your own request-level params with
@@ -1300,8 +1329,12 @@ Requires <code>djangorestframework-services&gt;=0.29.1</code>.</p>
 <td><code>ModelRetry</code> naming the unknown key</td>
 </tr>
 <tr>
-<td>Non-integer <code>page</code> / <code>limit</code>, or an <code>ordering</code> outside the declared enum</td>
-<td><code>ModelRetry</code> — naming the values that are accepted</td>
+<td>Non-integer <code>page</code> / <code>limit</code></td>
+<td><code>ModelRetry</code> — naming what is accepted</td>
+</tr>
+<tr>
+<td>An <code>ordering</code> sent to a list tool that advertises no sort at all</td>
+<td><code>ModelRetry</code> — saying the tool has none, rather than letting it fall through as an unknown key</td>
 </tr>
 <tr>
 <td>A <code>limit</code> over <code>max_page_size</code>, or a <code>page</code> past the last one</td>
@@ -1312,8 +1345,8 @@ Requires <code>djangorestframework-services&gt;=0.29.1</code>.</p>
 <td><code>ModelRetry</code> — the FilterSet rejects it, which arrives as the <code>ValidationError</code> row above</td>
 </tr>
 <tr>
-<td>An ordering name that isn't a real column (a declared <code>ordering_fields</code> entry, or a FilterSet <code>param_map</code> target)</td>
-<td><code>ModelRetry</code> — an author's error, not the model's; it can't be checked at construction without a queryset</td>
+<td>A FilterSet <code>param_map</code> target that isn't a real column</td>
+<td>Django's <code>FieldError</code> propagates — an author's error the model cannot correct by picking a different sort, and one that can't be checked at construction without a queryset</td>
 </tr>
 <tr>
 <td>Denied <code>permission_classes</code> (class-level <code>has_permission</code> <strong>or</strong> object-level <code>has_object_permission</code>)</td>
