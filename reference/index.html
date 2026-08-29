@@ -1451,6 +1451,52 @@ pagination.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
+                <code>thread_sensitive</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Whether every dispatch shares one thread. <code>True</code>
+(the default, and asgiref's) is what keeps Django's thread-local
+database connections coherent, and is why it is not flipped for you.</p>
+<p><strong>The cost is that concurrent tool calls serialise, process-wide.</strong>
+asgiref's <code>single_thread_executor</code> is a <em>class</em> attribute, so it is
+one thread shared by every toolset instance and every concurrent run
+in the process -- not one per toolset. Pydantic-AI genuinely runs
+function tools in parallel within a segment, so four 0.30s calls
+under one model step take ~1.2s rather than ~0.3s. That is invisible
+in a chat turn calling one tool and severe in a fan-out.</p>
+<p>Set <code>False</code> only when you know the dispatched work is safe off the
+main thread -- typically because each call opens and closes its own
+connection, or you pass an <code>executor</code> you control.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>executor</code>
+            </td>
+            <td>
+                  <code><span title="concurrent.futures.ThreadPoolExecutor">ThreadPoolExecutor</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A <code>ThreadPoolExecutor</code> to run dispatch on, instead of
+asgiref's shared single thread. Only consulted when
+<code>thread_sensitive</code> is <code>False</code>, which is asgiref's own rule.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                 <code>dispatch_timeout</code>
             </td>
             <td>
