@@ -6,6 +6,77 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The back half of a tool call is overridable.** 0.14.0 made argument intake
+  through dispatch a seam and stopped there; everything after the dispatch
+  returned stayed module-level privates reached from a module-level function, so
+  a project wanting to change one of them had to replace `call_tool` wholesale or
+  nothing at all. Four more protected methods, all receiving the live
+  `RunContext` for the same reason the first two do:
+
+  - `shape_page(rows, *, ctx, page, limit, max_page_size)` — the list slice.
+  - `render_output(spec, value, *, ctx, projection, many, request, view, extras)`
+    — the render.
+  - `output_extras(spec, value, *, ctx, many)` — the resolved-data pool a spec's
+    output-context provider reads.
+  - `enforce_result_bytes(payload, *, ctx, max_bytes, label)` — the result bound.
+
+  **`render_output` is the opt-out of projecting, and the only one.** Passing
+  `projection=None` is not it: `render_for_audience` reads `None` as *derive one
+  from the spec*, so the payload is projected anyway and a serializer is
+  instantiated per call to decide how. An override renders with
+  `render_spec_output` instead. Two cases want that — a pipeline feeding one
+  spec's output into the next needs the handles the next step reads by, and a
+  serializer with a single `ChoiceField` whose display differs from its value is
+  projected **with no marking declared at all**, since `choice_labels` is derived
+  from the field itself.
+
+- **`rest_framework_pydantic_ai.testing`** — `tool_calling_model` and
+  `instruction_capturing_model`, the two `FunctionModel` doubles this package's
+  own suite uses to drive a toolset through a real `Agent` run loop. They lived
+  in a test file, which is to say outside the wheel, so every consumer wanting
+  the same coverage re-derived them. Asserting on `call_tool` answers *does the
+  tool work*; only a run answers whether tools execute in-process, whether a
+  `ModelRetry` is fed back, and whether the toolset's instructions reached the
+  model.
+
+- **Run correlation and usage on the tool-call log lines.** Both sites now pass
+  `run_id`, `conversation_id`, `run_step` and `tool_call_id` through `extra=`,
+  and the timing line adds the run's cumulative `run_input_tokens` /
+  `run_output_tokens` / `run_requests` / `run_tool_calls`. One chat turn does not
+  need this — there is one run. Several runs fanned out from a worker interleave
+  their lines with nothing to separate them by.
+
+  Only the two sites inside `call_tool` gained it; the dispatch-timeout and
+  result-bound warnings are module-level helpers reachable with no `RunContext`,
+  and threading one in would have meant inventing a parameter for it.
+
+  **Enforcing a usage budget stays `Agent.run`'s job.** `UsageLimits` belongs
+  there, where the run can be stopped; a toolset can only refuse the next tool
+  call, which is the wrong instrument and a second place for the limit to live.
+
+### Documentation
+
+- **[Running from a worker](https://artui.github.io/djangorestframework-pydantic-ai/background-runs/)**
+  — the shape every other page omitted. Every worked example was HTTP-shaped down
+  to `deps=AgentDeps(user=request.user)`, while a Celery task, a management
+  command or a scheduled job is the larger surface for a lot of projects.
+
+  **It does not describe a mode, and says so.** The same toolset runs either way;
+  a spec dispatched from a worker takes the path it takes behind a view, because
+  that path was never an HTTP one. Two things actually differ — there is no
+  request, and there is more load — and the page is organised as the consequences
+  of those: where the acting user comes from when nothing authenticated it, that
+  nobody is anonymous by accident, `thread_sensitive=` / `executor=` with the
+  connection accounting spelled out, reading the logs when nobody was watching,
+  the result bounds, the six seams, and testing the run rather than the tool.
+
+  Declaring "headless" a supported *mode* was considered and rejected: it would
+  make compatibility promises about a distinction that does not exist in the
+  code.
+
+
 ## [0.22.0] — 2026-08-29
 
 ### Added
