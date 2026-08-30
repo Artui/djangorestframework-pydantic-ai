@@ -123,7 +123,10 @@ traceless — the run loop absorbs it into a message) on the
 Concurrent runs interleave, and without these the lines are indistinguishable.
 The usage fields are cumulative for the run rather than attributable to the call
 — a tool call spends no tokens itself — which is exactly what makes them useful
-here: they say where the budget stood when a long run went wrong.
+here: they say where the budget stood when a long run went wrong. They ride on
+the timing line; the `run_id` / `conversation_id` / `run_step` / `tool_call_id`
+four are on every line the package emits, including the two `WARNING`s a
+misbehaving call produces (a dispatch timeout, a result over its byte ceiling).
 
 ```python title="settings.py"
 LOGGING = {
@@ -138,6 +141,13 @@ LOGGING = {
 [`UsageLimits`](https://ai.pydantic.dev/agents/#usage-limits) there. A toolset
 can only refuse the *next* tool call, which is the wrong instrument and a second
 place for the limit to live.
+
+The limits are still *readable* from a tool call, though, and one thing is worth
+doing with them: `ctx.usage_limits` reaches an
+[`enforce_result_bytes`](reference.md#rest_framework_pydantic_ai.SpecToolset.enforce_result_bytes)
+override, so a project can taper how much a call is allowed to return as the run
+consumes its budget. That is shaping a result, not enforcing a limit — the run
+still stops where `Agent.run` says it does.
 
 ## Bounding what comes back
 

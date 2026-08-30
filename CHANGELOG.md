@@ -6,6 +6,73 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **The `output_extras` seam can reach the whole `DispatchResult`.** Its own
+  docstring named drf-services' `DispatchResult.service_result` — the flags
+  carrier an upsert's `created` rides on — explained why the default pool
+  withholds it, and closed with "an override here is the escape hatch for a
+  project that disagrees". The escape hatch did not work. `_call_spec` read three
+  fields off the dispatch result (`kind`, `value`, `kind` again) and let the
+  carrier go, so `output_extras` and `render_output` both received only `value`
+  and no override could reach the flags from anywhere.
+
+  The loss was conditional, which is why it survived: with no
+  `output_selector_spec` the service's own return *is* `value`. It is exactly the
+  upsert that re-fetches its row for rendering that then cannot answer
+  created-vs-updated. `instance` (the pre-mutation target, resolved once — so an
+  override reading it cannot get a different answer by resolving a second time)
+  and `data` (the validated input) were dropped on the same floor; handing over
+  the carrier rather than the one field closes all three.
+
+  **The parameter is passed only to an override that declares it.** `output_extras`
+  is public and shipped in 0.23.0 without it, so a subclass carrying that
+  signature would have started raising `TypeError` on the next tool call — a
+  break with no warning anywhere, surfacing as a failed run. The signature is
+  read once at construction and the call widened only where it fits; declaring
+  `dispatch_result`, or a `**kwargs`, is what opts in.
+
+  Applying `spec.response_finalizer` or resolving a callable `spec.success_status`
+  stays declined. Both are status-code machinery, and a toolset has no wire to
+  put a status code on; supplying the carrier lets a project that needs the flag
+  put it where its own output-context provider will read it.
+
+- **Run correlation on the two remaining log sites.** 0.23.0 stamped `run_id` /
+  `conversation_id` / `run_step` / `tool_call_id` on the permission denial and
+  the timing line, and said the dispatch-timeout and result-bound warnings were
+  module-level helpers with no `RunContext` to derive them from. Both are
+  reachable from somewhere that has one — `_with_deadline` has a single call site
+  inside `call_tool`, and the result bound is now called through
+  `SpecToolset.enforce_result_bytes`, which already receives `ctx` — so both take
+  the fields as an optional argument instead.
+
+  These are the two lines that fire when a run *misbehaves*, which is when an
+  uncorrelated line is worth least: several runs fanned out from a worker time
+  out and overflow their ceilings in exactly the same words.
+
+### Changed
+
+- **The derived instructions block is built once per toolset.** Pydantic-AI asks
+  for instructions on every model step, and the derivation walks each list spec
+  through `spec_to_json_schema` to find what that spec calls its sort — a pure
+  function of four attributes the constructor assigns and nothing reassigns.
+  Memoised as a `cached_property`, so it is still never built at all for a
+  toolset given an `instructions=` override.
+
+  **Not a throughput fix, and not offered as one.** The measured cost is roughly
+  24 microseconds per spec, linear — about 1.3 ms per model step at fifty tools,
+  against round trips measured in seconds. The reason is that an answer settled
+  at construction should not be recomputed per step.
+
+### Documentation
+
+- **[Running from a worker](https://artui.github.io/djangorestframework-pydantic-ai/background-runs/)**
+  now names the one thing worth doing with `ctx.usage_limits` from inside a tool
+  call. Enforcing the budget stays `Agent.run`'s job — the page already said so
+  and still does — but the limits are readable from an `enforce_result_bytes`
+  override, which is how a project tapers how much a call may return as a long
+  run consumes its budget. Shaping a result, not enforcing a limit.
+
 ## [0.23.0] — 2026-08-29
 
 ### Added

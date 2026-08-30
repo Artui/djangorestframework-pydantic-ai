@@ -26,6 +26,7 @@ import warnings
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from functools import cached_property
 from types import MappingProxyType
 from typing import Any, cast
 
@@ -44,6 +45,7 @@ from rest_framework_services import (
     UNSET,
     AdditionalInputRequired,
     AudienceProjection,
+    DispatchResult,
     FieldAudience,
     JsonSchemaRegistry,
     OfflineContract,
@@ -507,6 +509,13 @@ class SpecToolset(AbstractToolset[Any]):
         self._dispatch_timeout = dispatch_timeout
         self._thread_sensitive = thread_sensitive
         self._executor = executor
+        # Resolved once, here, because it is a fact about the *class* rather than
+        # about a call: whether this instance's ``output_extras`` declares the
+        # ``dispatch_result`` carrier. Signature introspection per tool call would
+        # be a real cost for an answer that cannot change.
+        self._output_extras_takes_carrier: bool = _declares_dispatch_result(
+            type(self).output_extras
+        )
         overrides: Mapping[str, int | None] = tool_max_result_bytes or {}
         for tool_name in overrides:
             if tool_name not in self._specs:
@@ -663,6 +672,31 @@ class SpecToolset(AbstractToolset[Any]):
         """
         if self._instructions_override is not None:
             return self._instructions_override
+        return self._derived_instructions
+
+    @cached_property
+    def _derived_instructions(self) -> str:
+        """The conventions block, built once and kept.
+
+        A pure function of four attributes ``__init__`` assigns and nothing
+        reassigns -- the specs, the merged query-param declarations, the
+        projections and the schema registry -- so recomputing it is recomputing
+        the same string. Pydantic-AI asks for instructions on **every model
+        step**, and the derivation walks each list spec through
+        ``spec_to_json_schema`` to find what that spec calls its sort.
+
+        This is tidiness, not a fix: the measured cost is tens of microseconds
+        per spec, against model round trips measured in seconds. What earns the
+        memo is that a step should not pay for an answer that was settled at
+        construction.
+
+        ``cached_property`` rather than computing it in ``__init__`` so a toolset
+        given an ``instructions=`` override never derives the block it replaces.
+        The consequence is the ordinary one for a memo: a subclass that mutates
+        ``_specs`` after the first ``get_instructions`` is describing tools the
+        block will not mention. Nothing in this package mutates it, and the
+        public ``specs`` property is read-only precisely so nothing outside can.
+        """
         return _derive_instructions(
             self._specs,
             self._tool_query_params,
@@ -715,6 +749,7 @@ class SpecToolset(AbstractToolset[Any]):
                 ),
                 self._dispatch_timeout,
                 label=name,
+                extra=_run_extra(ctx),
             )
         except PermissionDenied:
             # The one failure with no other trace: a ``ModelRetry`` reaches the
@@ -878,7 +913,13 @@ class SpecToolset(AbstractToolset[Any]):
         )
 
     def output_extras(
-        self, spec: Spec, value: Any, *, ctx: RunContext[Any], many: bool
+        self,
+        spec: Spec,
+        value: Any,
+        *,
+        ctx: RunContext[Any],
+        many: bool,
+        dispatch_result: DispatchResult | None = None,
     ) -> dict[str, Any]:
         """The resolved-data pool a spec's output-context provider may read.
 
@@ -887,16 +928,37 @@ class SpecToolset(AbstractToolset[Any]):
         written against one transport therefore reads the same names under the
         other.
 
-        Note what is **not** here, because it is the question this seam attracts:
-        drf-services' ``DispatchResult.service_result`` -- the flags carrier an
-        upsert's ``created`` rides on. The HTTP path does not put it in this pool
-        either; it feeds a callable ``success_status`` and a ``response_finalizer``,
-        both of which are status-code machinery a toolset has no wire for. A spec
-        whose *model-visible* outcome depends on such a flag should put the flag in
-        its output serializer, where both transports can see it. An override here
-        is the escape hatch for a project that disagrees.
+        Note what the **default pool** leaves out, because it is the question this
+        seam attracts: drf-services'
+        [`DispatchResult.service_result`][rest_framework_services.types.dispatch_result.DispatchResult]
+        -- the flags carrier an upsert's ``created`` rides on. The HTTP path does
+        not put it in this pool either; it feeds a callable ``success_status`` and
+        a ``response_finalizer``, both of which are status-code machinery a
+        toolset has no wire for, and applying either here would be inventing one.
+        A spec whose *model-visible* outcome depends on such a flag should put the
+        flag in its output serializer, where both transports can see it.
+
+        **``dispatch_result`` is the escape hatch for a project that disagrees**,
+        and it carries the whole result rather than the one field: ``instance``
+        (the pre-mutation target, resolved once, so an override reading it cannot
+        get a different answer by resolving again) and ``data`` (the validated
+        input) were dropped on the same floor. The loss it repairs is conditional
+        -- with no ``output_selector_spec`` the service's return *is* ``value``,
+        and only a re-fetch replacing ``value`` puts the flags out of reach -- but
+        the upsert that wants ``created`` is exactly the spec that re-fetches.
+
+        Args:
+            dispatch_result: The dispatch's full
+                [`DispatchResult`][rest_framework_services.types.dispatch_result.DispatchResult].
+                Keyword-only **with a default**, and passed only to an override
+                that declares it: this method is public and was published without
+                it, so a subclass carrying the 0.23.0 signature is called the way
+                it was written rather than raising ``TypeError`` on an argument it
+                never asked for. Declare the parameter, or a ``**kwargs``, to
+                receive it. ``None`` only when something other than this toolset
+                called the method.
         """
-        del ctx  # unused by the default; present so an override has it
+        del ctx, dispatch_result  # unused by the default; present so an override has them
         return _output_extras(spec, value, many=many)
 
     def enforce_result_bytes(
@@ -906,10 +968,44 @@ class SpecToolset(AbstractToolset[Any]):
 
         Measured on the envelope, because the envelope is what is sent. Override to
         bound on something other than serialized length -- a row count, a per-run
-        running total read off ``ctx.usage`` -- or to shape the refusal differently.
+        running total read off ``ctx.usage``, a taper against ``ctx.usage_limits``
+        as a run gets long -- or to shape the refusal differently.
+
+        ``ctx`` is not merely passed through to an override here: the default
+        reads this run's correlation fields off it and stamps them on the
+        ``WARNING`` a fired bound emits, which is the one line saying why a
+        result the model expected came back as a refusal.
         """
-        del ctx  # unused by the default; present so an override has it
-        return _enforce_result_bytes(payload, max_bytes=max_bytes, label=label)
+        return _enforce_result_bytes(
+            payload, max_bytes=max_bytes, label=label, extra=_run_extra(ctx)
+        )
+
+    def _extras_for(
+        self,
+        spec: Spec,
+        value: Any,
+        *,
+        ctx: RunContext[Any],
+        many: bool,
+        dispatch_result: DispatchResult,
+    ) -> dict[str, Any]:
+        """Call ``output_extras``, dropping the carrier an older override cannot take.
+
+        The alternative was to widen the call unconditionally and let a subclass
+        written against 0.23.0 raise ``TypeError`` on the next tool call -- a
+        break with no compile-time warning, surfacing as a failed run. The
+        signature is read once at construction (see ``__init__``), so this costs a
+        boolean per call.
+
+        A ``**kwargs`` override counts as declaring it: forwarding is the other
+        way a subclass stays compatible with a widening seam, and one that does
+        should be handed everything.
+        """
+        if self._output_extras_takes_carrier:
+            return self.output_extras(
+                spec, value, ctx=ctx, many=many, dispatch_result=dispatch_result
+            )
+        return self.output_extras(spec, value, ctx=ctx, many=many)
 
     def _call_spec(
         self, spec: Spec, user: Any, args: dict[str, Any], *, ctx: RunContext[Any], **kw: Any
@@ -918,6 +1014,10 @@ class SpecToolset(AbstractToolset[Any]):
 
         Separate from the module-level function of the same name because that one
         has to stay usable without a toolset.
+
+        Five bind straight through to the public method; ``output_extras`` binds
+        to ``_extras_for``, which decides whether this class's override can be
+        handed the ``DispatchResult``.
         """
         return _call_spec(
             spec,
@@ -927,7 +1027,7 @@ class SpecToolset(AbstractToolset[Any]):
             translate_exception=lambda exc: self.translate_exception(exc, ctx=ctx),
             shape_page=lambda *a, **kwargs: self.shape_page(*a, ctx=ctx, **kwargs),
             render_output=lambda *a, **kwargs: self.render_output(*a, ctx=ctx, **kwargs),
-            output_extras=lambda *a, **kwargs: self.output_extras(*a, ctx=ctx, **kwargs),
+            output_extras=lambda *a, **kwargs: self._extras_for(*a, ctx=ctx, **kwargs),
             enforce_result_bytes=lambda *a, **kwargs: self.enforce_result_bytes(
                 *a, ctx=ctx, **kwargs
             ),
@@ -1135,7 +1235,31 @@ def _validate_no_param_channel_overlap(
             )
 
 
-async def _with_deadline(awaitable: Any, seconds: float | None, *, label: str) -> Any:
+def _declares_dispatch_result(method: Callable[..., Any]) -> bool:
+    """Whether an ``output_extras`` implementation can be handed the carrier.
+
+    ``output_extras`` shipped in 0.23.0 without a ``dispatch_result`` parameter,
+    so a subclass overriding it wrote that signature down; widening the call
+    unconditionally would turn every such subclass into a ``TypeError`` on the
+    next tool call. Asked of the *class*, once, at construction.
+
+    A ``**kwargs`` override answers ``True``: forwarding is the other way a
+    subclass stays compatible with a seam that grows, and one written that way is
+    already passing whatever it receives to ``super()``.
+    """
+    parameters = inspect.signature(method).parameters
+    if "dispatch_result" in parameters:
+        return True
+    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+
+
+async def _with_deadline(
+    awaitable: Any,
+    seconds: float | None,
+    *,
+    label: str,
+    extra: Mapping[str, Any] | None = None,
+) -> Any:
     """Await ``awaitable``, answering the model instead of hanging past ``seconds``.
 
     ``None`` awaits without a deadline, so the resolved bound goes straight in.
@@ -1148,6 +1272,12 @@ async def _with_deadline(awaitable: Any, seconds: float | None, *, label: str) -
     That answer is an ``{"error": …}`` rather than an exception, for the same
     reason the byte ceiling's is: the model can respond to it by asking for less,
     and killing the run denies it the chance.
+
+    ``extra`` is the caller's log correlation, threaded in rather than derived:
+    this is a module-level helper with no ``RunContext``, and its one call site
+    inside ``call_tool`` has one. A timeout is a run misbehaving, which is
+    precisely when a line that cannot be tied back to its run is worth least --
+    concurrent runs interleave, and every one of them times out the same way.
     """
     if seconds is None:
         return await awaitable
@@ -1156,7 +1286,7 @@ async def _with_deadline(awaitable: Any, seconds: float | None, *, label: str) -
     except (TimeoutError, asyncio.TimeoutError):
         # The operator hears about it too: a tool that intermittently answers
         # "took too long" and logs nothing is indistinguishable from a bug.
-        logger.warning("Tool %r exceeded its %.1fs dispatch timeout", label, seconds)
+        logger.warning("Tool %r exceeded its %.1fs dispatch timeout", label, seconds, extra=extra)
         return {
             "error": (
                 f"This call took longer than the {seconds:g}s limit and was "
@@ -1544,6 +1674,12 @@ def _call_spec(
     implementations in the signature because those are defined below this
     function, and a default expression is evaluated at ``def`` time.
 
+    ``output_extras`` is called with the whole ``DispatchResult`` as
+    ``dispatch_result=``. A caller supplying its own must accept that keyword;
+    ``SpecToolset`` binds a seam that drops it for an override predating it,
+    which is a courtesy this function does not repeat -- a caller passing a seam
+    here wrote both halves in the same breath.
+
     ``action`` becomes ``view.action`` on the synthetic view, so a permission
     class reading it sees the tool name rather than ``None``.
     """
@@ -1655,7 +1791,14 @@ def _call_spec(
         many=many,
         request=context.request,
         view=context.view,
-        extras=extras_for(spec, value, many=many),
+        # **The carrier, not the three fields read above.** ``result.kind`` and
+        # ``result.value`` were all this function ever took off the dispatch, so
+        # ``service_result`` (an upsert's ``created``), ``instance`` (the
+        # pre-mutation target) and ``data`` (the validated input) reached no seam
+        # at all -- and ``output_extras`` documents itself as the escape hatch for
+        # exactly the first of those. Handing over the whole result closes the
+        # three together and costs nothing: it is already in scope.
+        extras=extras_for(spec, value, many=many, dispatch_result=result),
     )
     if page is not None:
         # **After the render, never before.** The projection lands on the rows;
@@ -1669,7 +1812,13 @@ def _call_spec(
     return bound(rendered, max_bytes=max_result_bytes, label=label)
 
 
-def _enforce_result_bytes(payload: Any, *, max_bytes: int | None, label: str) -> Any:
+def _enforce_result_bytes(
+    payload: Any,
+    *,
+    max_bytes: int | None,
+    label: str,
+    extra: Mapping[str, Any] | None = None,
+) -> Any:
     """Return ``payload``, or a model-readable refusal when it is over budget.
 
     **Fails; never truncates.** A list cut at the byte ceiling is
@@ -1681,6 +1830,12 @@ def _enforce_result_bytes(payload: Any, *, max_bytes: int | None, label: str) ->
     retry budget is finite and a run should not die because a model spent it on
     progressively smaller queries. Also logged at ``WARNING``, since a bound that
     fires invisibly reads to an operator as "the tool is broken".
+
+    ``extra`` carries the caller's log correlation. Defaulted rather than
+    required because this function is also the standalone bound in ``_call_spec``,
+    which has no ``RunContext`` to derive one from;
+    [`SpecToolset.enforce_result_bytes`][rest_framework_pydantic_ai.SpecToolset.enforce_result_bytes]
+    always supplies it.
     """
     if max_bytes is None:
         return payload
@@ -1692,6 +1847,7 @@ def _enforce_result_bytes(payload: Any, *, max_bytes: int | None, label: str) ->
         label,
         size,
         max_bytes,
+        extra=extra,
     )
     return {
         "error": (
@@ -1964,8 +2120,18 @@ def _render_output(
     )
 
 
-def _output_extras(spec: Spec, value: Any, *, many: bool) -> dict[str, Any]:
-    """The resolved-data keyword a spec's output-context provider may declare."""
+def _output_extras(
+    spec: Spec, value: Any, *, many: bool, dispatch_result: DispatchResult | None = None
+) -> dict[str, Any]:
+    """The resolved-data keyword a spec's output-context provider may declare.
+
+    ``dispatch_result`` is accepted and ignored: the pool is keyed the way the
+    HTTP path keys it, and a key the HTTP path does not supply would be handed to
+    a provider that never declared it. It is in the signature so this function
+    keeps satisfying the seam's contract, and so an override calling ``super()``
+    can forward what it was given rather than filtering the call.
+    """
+    del dispatch_result  # see above: deliberately not in the default pool
     if many:
         return {"page": value}
     if isinstance(spec, ServiceSpec):
