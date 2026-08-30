@@ -47,6 +47,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Floored at `djangorestframework-services>=0.49`.** A tool definition is built
+  from `spec_to_json_schema` per spec, so a serializer that nests itself took the
+  whole toolset down at construction — before any tool could be called. 0.49
+  bounds that recursion. Nothing below the floor imports a 0.49 symbol; the floor
+  buys the crash being out of reach.
+
 - **The `output_extras` seam can reach the whole `DispatchResult`.** Its own
   docstring named drf-services' `DispatchResult.service_result` — the flags
   carrier an upsert's `created` rides on — explained why the default pool

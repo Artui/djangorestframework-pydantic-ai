@@ -51,7 +51,12 @@ dependencies = [
     # object (0.44) — below that, a toolset configured with one request shares
     # that object across every call, so two concurrent runs overwrite each
     # other's ``GET``.
-    "djangorestframework-services>=0.48",
+    # 0.49 is where a self-referential serializer stopped crashing schema
+    # generation, and this toolset cannot route around it: a tool definition is
+    # built from ``spec_to_json_schema`` per spec, so a serializer that nests
+    # itself takes the toolset down at construction rather than at the call that
+    # used it. Nothing below the floor imports a 0.49 symbol.
+    "djangorestframework-services>=0.49",
     "pydantic-ai-slim>=2,<3",
 ]
 
