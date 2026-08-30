@@ -509,13 +509,6 @@ class SpecToolset(AbstractToolset[Any]):
         self._dispatch_timeout = dispatch_timeout
         self._thread_sensitive = thread_sensitive
         self._executor = executor
-        # Resolved once, here, because it is a fact about the *class* rather than
-        # about a call: whether this instance's ``output_extras`` declares the
-        # ``dispatch_result`` carrier. Signature introspection per tool call would
-        # be a real cost for an answer that cannot change.
-        self._output_extras_takes_carrier: bool = _declares_dispatch_result(
-            type(self).output_extras
-        )
         overrides: Mapping[str, int | None] = tool_max_result_bytes or {}
         for tool_name in overrides:
             if tool_name not in self._specs:
@@ -950,13 +943,15 @@ class SpecToolset(AbstractToolset[Any]):
         Args:
             dispatch_result: The dispatch's full
                 [`DispatchResult`][rest_framework_services.types.dispatch_result.DispatchResult].
-                Keyword-only **with a default**, and passed only to an override
-                that declares it: this method is public and was published without
-                it, so a subclass carrying the 0.23.0 signature is called the way
-                it was written rather than raising ``TypeError`` on an argument it
-                never asked for. Declare the parameter, or a ``**kwargs``, to
-                receive it. ``None`` only when something other than this toolset
-                called the method.
+                Keyword-only, and **always supplied by this toolset** -- an
+                override that does not accept it raises ``TypeError`` on the next
+                tool call. That break is deliberate: the parameter is the only
+                honest signature for a seam that is handed the carrier, and a
+                failure the author sees on the first call is worth more than a
+                gate that quietly stops receiving what it asked for. Declare
+                ``dispatch_result``, or a ``**kwargs``, to take it. The default is
+                ``None`` only so the method stays callable by something other than
+                this toolset -- a test asserting the default pool, say.
         """
         del ctx, dispatch_result  # unused by the default; present so an override has them
         return _output_extras(spec, value, many=many)
@@ -980,33 +975,6 @@ class SpecToolset(AbstractToolset[Any]):
             payload, max_bytes=max_bytes, label=label, extra=_run_extra(ctx)
         )
 
-    def _extras_for(
-        self,
-        spec: Spec,
-        value: Any,
-        *,
-        ctx: RunContext[Any],
-        many: bool,
-        dispatch_result: DispatchResult,
-    ) -> dict[str, Any]:
-        """Call ``output_extras``, dropping the carrier an older override cannot take.
-
-        The alternative was to widen the call unconditionally and let a subclass
-        written against 0.23.0 raise ``TypeError`` on the next tool call -- a
-        break with no compile-time warning, surfacing as a failed run. The
-        signature is read once at construction (see ``__init__``), so this costs a
-        boolean per call.
-
-        A ``**kwargs`` override counts as declaring it: forwarding is the other
-        way a subclass stays compatible with a widening seam, and one that does
-        should be handed everything.
-        """
-        if self._output_extras_takes_carrier:
-            return self.output_extras(
-                spec, value, ctx=ctx, many=many, dispatch_result=dispatch_result
-            )
-        return self.output_extras(spec, value, ctx=ctx, many=many)
-
     def _call_spec(
         self, spec: Spec, user: Any, args: dict[str, Any], *, ctx: RunContext[Any], **kw: Any
     ) -> Any:
@@ -1014,10 +982,6 @@ class SpecToolset(AbstractToolset[Any]):
 
         Separate from the module-level function of the same name because that one
         has to stay usable without a toolset.
-
-        Five bind straight through to the public method; ``output_extras`` binds
-        to ``_extras_for``, which decides whether this class's override can be
-        handed the ``DispatchResult``.
         """
         return _call_spec(
             spec,
@@ -1027,7 +991,7 @@ class SpecToolset(AbstractToolset[Any]):
             translate_exception=lambda exc: self.translate_exception(exc, ctx=ctx),
             shape_page=lambda *a, **kwargs: self.shape_page(*a, ctx=ctx, **kwargs),
             render_output=lambda *a, **kwargs: self.render_output(*a, ctx=ctx, **kwargs),
-            output_extras=lambda *a, **kwargs: self._extras_for(*a, ctx=ctx, **kwargs),
+            output_extras=lambda *a, **kwargs: self.output_extras(*a, ctx=ctx, **kwargs),
             enforce_result_bytes=lambda *a, **kwargs: self.enforce_result_bytes(
                 *a, ctx=ctx, **kwargs
             ),
@@ -1233,24 +1197,6 @@ def _validate_no_param_channel_overlap(
                 f"name(s) {clash} are registered as both a QueryParam and a UrlKwarg on "
                 f"tool {tool_name!r}; a value cannot route to two channels."
             )
-
-
-def _declares_dispatch_result(method: Callable[..., Any]) -> bool:
-    """Whether an ``output_extras`` implementation can be handed the carrier.
-
-    ``output_extras`` shipped in 0.23.0 without a ``dispatch_result`` parameter,
-    so a subclass overriding it wrote that signature down; widening the call
-    unconditionally would turn every such subclass into a ``TypeError`` on the
-    next tool call. Asked of the *class*, once, at construction.
-
-    A ``**kwargs`` override answers ``True``: forwarding is the other way a
-    subclass stays compatible with a seam that grows, and one written that way is
-    already passing whatever it receives to ``super()``.
-    """
-    parameters = inspect.signature(method).parameters
-    if "dispatch_result" in parameters:
-        return True
-    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
 
 
 async def _with_deadline(
@@ -1675,10 +1621,9 @@ def _call_spec(
     function, and a default expression is evaluated at ``def`` time.
 
     ``output_extras`` is called with the whole ``DispatchResult`` as
-    ``dispatch_result=``. A caller supplying its own must accept that keyword;
-    ``SpecToolset`` binds a seam that drops it for an override predating it,
-    which is a courtesy this function does not repeat -- a caller passing a seam
-    here wrote both halves in the same breath.
+    ``dispatch_result=``, unconditionally and by every route --
+    [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] binds its public
+    method here untouched. A seam supplied by a caller must accept that keyword.
 
     ``action`` becomes ``view.action`` on the synthetic view, so a permission
     class reading it sees the tool name rather than ``None``.

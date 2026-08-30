@@ -6,6 +6,45 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **A subclass overriding `output_extras` with the 0.23.0 signature now raises
+  `TypeError`.** The method gained a keyword-only `dispatch_result` parameter
+  (see below) and it is passed on every tool call, so an override written as
+  `def output_extras(self, spec, value, *, ctx, many)` fails on the first call
+  with `got an unexpected keyword argument 'dispatch_result'`. The fix is one
+  line: name `dispatch_result` in the signature, or take a `**kwargs` and forward
+  it to `super()`.
+
+  **The compatible alternative was built first, and then deleted.** It read the
+  class's `output_extras` signature once at construction and widened the call
+  only where it fitted, so an override predating the carrier kept being called
+  the way it was written. Two things decided against keeping it.
+
+  The first is arithmetic. `output_extras` became a seam in 0.23.0, published one
+  day before this change; the number of subclasses that have overridden a
+  one-day-old method on a `0.x` package is as close to zero as a population gets.
+  The compatibility was being bought for nobody, and the price was signature
+  introspection in a package that had none of it — a maintenance surface that
+  outlives the transition it was for, since nothing ever tells you the day it
+  stopped being needed.
+
+  The second is that the shim was not compatible so much as quiet. The answer
+  resolved in `__init__`, off the *class*. Assign an `output_extras` onto an
+  **instance** after construction — a test double, a toolset patched per tenant
+  at runtime — and the flag never sees it: the override is then called without
+  the carrier it declared, with nothing raised, nothing warned and nothing
+  logged. What reaches the output-context provider is a pool missing exactly what
+  the override was written to add, and the first sign of it is a wrong answer
+  further downstream. A gate that silently does not run is the worst of the
+  outcomes on offer here, which is the thing the shim manufactured while
+  appearing to prevent one. A `TypeError` on the first tool call is loud,
+  immediate, names the argument, and is repaired in one line by the person who
+  wrote the override — the only person who can.
+
+  What the shim protected against is real but small and self-announcing; what it
+  introduced is small and silent. That is the trade, and it goes the other way.
+
 ### Added
 
 - **The `output_extras` seam can reach the whole `DispatchResult`.** Its own
@@ -25,12 +64,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and `data` (the validated input) were dropped on the same floor; handing over
   the carrier rather than the one field closes all three.
 
-  **The parameter is passed only to an override that declares it.** `output_extras`
-  is public and shipped in 0.23.0 without it, so a subclass carrying that
-  signature would have started raising `TypeError` on the next tool call — a
-  break with no warning anywhere, surfacing as a failed run. The signature is
-  read once at construction and the call widened only where it fits; declaring
-  `dispatch_result`, or a `**kwargs`, is what opts in.
+  **The parameter is passed unconditionally**, which widens a signature
+  published in 0.23.0 — see the breaking note above for the one-line fix, and for
+  why a loud break was preferred to the shim that would have avoided it.
+  Declaring `dispatch_result`, or a `**kwargs`, is all an override needs.
 
   Applying `spec.response_finalizer` or resolving a callable `spec.success_status`
   stays declined. Both are status-code machinery, and a toolset has no wire to
