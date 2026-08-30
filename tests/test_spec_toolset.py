@@ -3233,8 +3233,13 @@ async def test_output_extras_override_reaches_the_resolved_data_pool():
     seen = {}
 
     class Extra(SpecToolset):
-        def output_extras(self, spec, value, *, ctx, many):
-            pool = super().output_extras(spec, value, ctx=ctx, many=many)
+        # ``dispatch_result`` is declared and forwarded but unread: this test is
+        # about the keys the *default* pool carries, and the carrier is not one
+        # of them. Declaring it is the whole of what the seam asks of an override.
+        def output_extras(self, spec, value, *, ctx, many, dispatch_result=None):
+            pool = super().output_extras(
+                spec, value, ctx=ctx, many=many, dispatch_result=dispatch_result
+            )
             seen["default_keys"] = sorted(pool)
             return pool
 
@@ -3323,8 +3328,9 @@ async def test_permission_denial_log_line_carries_run_correlation(caplog):
 # deliberately withholds, and offers an override as the escape hatch. The
 # override could not reach it either: ``_call_spec`` read three fields off the
 # dispatch result and let the carrier go. These cover the carrier arriving, the
-# two log sites that had no run correlation, and the derived instructions being
-# built once rather than per model step.
+# break an override written against the older signature now takes, the two log
+# sites that had no run correlation, and the derived instructions being built
+# once rather than per model step.
 
 
 def upsert_widget(data, user):
@@ -3395,15 +3401,24 @@ async def test_output_extras_reaches_the_dispatch_result_carrier():
 
 
 @pytest.mark.django_db(transaction=True)
-async def test_an_override_predating_the_carrier_is_still_called():
-    """The 0.23.0 signature is the published one; adding to it may not break it."""
+async def test_an_override_predating_the_carrier_breaks_loudly():
+    """The 0.23.0 signature raises, and taking that break is the whole point.
+
+    The alternative -- read the override's signature at construction and widen
+    the call only where it fits -- reads as kindness and is not. The answer is
+    resolved in ``__init__``, so an ``output_extras`` assigned onto an *instance*
+    afterwards is never seen: the override simply stops being handed the carrier,
+    with nothing raised and nothing logged. This assertion is the shape of the
+    trade -- ``TypeError`` on the first tool call, naming the argument, fixable in
+    one line by whoever wrote the override.
+    """
     from asgiref.sync import sync_to_async
 
-    seen: dict[str, Any] = {}
+    called: list[str] = []
 
     class Legacy(SpecToolset):
         def output_extras(self, spec, value, *, ctx, many):
-            seen["keys"] = sorted(super().output_extras(spec, value, ctx=ctx, many=many))
+            called.append("yes")
             return {"page": value}
 
     user = await sync_to_async(User.objects.create)(username="u")
@@ -3411,15 +3426,16 @@ async def test_an_override_predating_the_carrier_is_still_called():
     toolset = Legacy({"list_widgets": list_spec()})
     tools = await toolset.get_tools(None)
 
-    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+    with pytest.raises(TypeError, match="dispatch_result"):
+        await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
 
-    assert seen["keys"] == ["page"]
-    assert [w["name"] for w in _rows(result)] == ["a"]
+    # Not "called with less than the seam promised it" -- not called at all.
+    assert called == []
 
 
 @pytest.mark.django_db(transaction=True)
 async def test_a_forwarding_override_receives_the_carrier_through_kwargs():
-    """``**kwargs`` is the other way an override stays forward-compatible."""
+    """``**kwargs`` is the other one-line way to take a seam that grew."""
     from asgiref.sync import sync_to_async
 
     seen: dict[str, Any] = {}
