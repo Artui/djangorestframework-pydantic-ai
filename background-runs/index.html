@@ -875,7 +875,10 @@ traceless — the run loop absorbs it into a message) on the
 <p>Concurrent runs interleave, and without these the lines are indistinguishable.
 The usage fields are cumulative for the run rather than attributable to the call
 — a tool call spends no tokens itself — which is exactly what makes them useful
-here: they say where the budget stood when a long run went wrong.</p>
+here: they say where the budget stood when a long run went wrong. They ride on
+the timing line; the <code>run_id</code> / <code>conversation_id</code> / <code>run_step</code> / <code>tool_call_id</code>
+four are on every line the package emits, including the two <code>WARNING</code>s a
+misbehaving call produces (a dispatch timeout, a result over its byte ceiling).</p>
 <div class="language-python highlight"><span class="filename">settings.py</span><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">LOGGING</span> <span class="o">=</span> <span class="p">{</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="s2">&quot;loggers&quot;</span><span class="p">:</span> <span class="p">{</span>
@@ -887,6 +890,12 @@ here: they say where the budget stood when a long run went wrong.</p>
 <a href="https://ai.pydantic.dev/agents/#usage-limits"><code>UsageLimits</code></a> there. A toolset
 can only refuse the <em>next</em> tool call, which is the wrong instrument and a second
 place for the limit to live.</p>
+<p>The limits are still <em>readable</em> from a tool call, though, and one thing is worth
+doing with them: <code>ctx.usage_limits</code> reaches an
+<a href="../reference/#rest_framework_pydantic_ai.SpecToolset.enforce_result_bytes"><code>enforce_result_bytes</code></a>
+override, so a project can taper how much a call is allowed to return as the run
+consumes its budget. That is shaping a result, not enforcing a limit — the run
+still stops where <code>Agent.run</code> says it does.</p>
 <h2 id="bounding-what-comes-back">Bounding what comes back<a class="headerlink" href="#bounding-what-comes-back" title="Permanent link">&para;</a></h2>
 <p>A model reading a 40,000-row selector is a cost and latency problem before it is
 a correctness one, and in a fan-out it is multiplied by every concurrent run.</p>

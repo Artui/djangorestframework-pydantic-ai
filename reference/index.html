@@ -2265,8 +2265,13 @@ override is how a project that means it says so.</p>
 
 <a href="#rest_framework_pydantic_ai.SpecToolset.output_extras" class="headerlink" title="Permanent link">&para;</a></h3>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">output_extras</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">spec</span><span class="p">:</span> <span class="n">Spec</span><span class="p">,</span> <span class="n">value</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span> <span class="n">many</span><span class="p">:</span> <span class="nb">bool</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">spec</span><span class="p">:</span> <span class="n">Spec</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">value</span><span class="p">:</span> <span class="n">Any</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ctx</span><span class="p">:</span> <span class="n">RunContext</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">many</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">dispatch_result</span><span class="p">:</span> <span class="n">DispatchResult</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -2276,14 +2281,64 @@ override is how a project that means it says so.</p>
 service, <code>instance</code> for a selector, <code>page</code> for a list. A provider
 written against one transport therefore reads the same names under the
 other.</p>
-<p>Note what is <strong>not</strong> here, because it is the question this seam attracts:
-drf-services' <code>DispatchResult.service_result</code> -- the flags carrier an
-upsert's <code>created</code> rides on. The HTTP path does not put it in this pool
-either; it feeds a callable <code>success_status</code> and a <code>response_finalizer</code>,
-both of which are status-code machinery a toolset has no wire for. A spec
-whose <em>model-visible</em> outcome depends on such a flag should put the flag in
-its output serializer, where both transports can see it. An override here
-is the escape hatch for a project that disagrees.</p>
+<p>Note what the <strong>default pool</strong> leaves out, because it is the question this
+seam attracts: drf-services'
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.types.dispatch_result.DispatchResult"><code>DispatchResult.service_result</code></a>
+-- the flags carrier an upsert's <code>created</code> rides on. The HTTP path does
+not put it in this pool either; it feeds a callable <code>success_status</code> and
+a <code>response_finalizer</code>, both of which are status-code machinery a
+toolset has no wire for, and applying either here would be inventing one.
+A spec whose <em>model-visible</em> outcome depends on such a flag should put the
+flag in its output serializer, where both transports can see it.</p>
+<p><strong><code>dispatch_result</code> is the escape hatch for a project that disagrees</strong>,
+and it carries the whole result rather than the one field: <code>instance</code>
+(the pre-mutation target, resolved once, so an override reading it cannot
+get a different answer by resolving again) and <code>data</code> (the validated
+input) were dropped on the same floor. The loss it repairs is conditional
+-- with no <code>output_selector_spec</code> the service's return <em>is</em> <code>value</code>,
+and only a re-fetch replacing <code>value</code> puts the flags out of reach -- but
+the upsert that wants <code>created</code> is exactly the spec that re-fetches.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>dispatch_result</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="rest_framework_services.DispatchResult" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.types.dispatch_result.DispatchResult">DispatchResult</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The dispatch's full
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.types.dispatch_result.DispatchResult"><code>DispatchResult</code></a>.
+Keyword-only, and <strong>always supplied by this toolset</strong> -- an
+override that does not accept it raises <code>TypeError</code> on the next
+tool call. That break is deliberate: the parameter is the only
+honest signature for a seam that is handed the carrier, and a
+failure the author sees on the first call is worth more than a
+gate that quietly stops receiving what it asked for. Declare
+<code>dispatch_result</code>, or a <code>**kwargs</code>, to take it. The default is
+<code>None</code> only so the method stays callable by something other than
+this toolset -- a test asserting the default pool, say.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
@@ -2308,7 +2363,12 @@ is the escape hatch for a project that disagrees.</p>
         <p>Return <code>payload</code>, or a model-readable refusal when it is over budget.</p>
 <p>Measured on the envelope, because the envelope is what is sent. Override to
 bound on something other than serialized length -- a row count, a per-run
-running total read off <code>ctx.usage</code> -- or to shape the refusal differently.</p>
+running total read off <code>ctx.usage</code>, a taper against <code>ctx.usage_limits</code>
+as a run gets long -- or to shape the refusal differently.</p>
+<p><code>ctx</code> is not merely passed through to an override here: the default
+reads this run's correlation fields off it and stamps them on the
+<code>WARNING</code> a fired bound emits, which is the one line saying why a
+result the model expected came back as a refusal.</p>
 
 
     </div>
