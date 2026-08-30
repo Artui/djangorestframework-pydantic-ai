@@ -39,7 +39,7 @@ from rest_framework_services import (
 )
 from typing_extensions import TypedDict, Unpack
 
-from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset, UrlKwarg
+from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset, UrlKwarg, spec_toolset
 from rest_framework_pydantic_ai.spec_toolset import (
     _BASE_INSTRUCTIONS,
     _HANDLE_DESCRIPTION,
@@ -3315,3 +3315,196 @@ async def test_permission_denial_log_line_carries_run_correlation(caplog):
 
     record = next(r for r in caplog.records if "Permission denied" in r.getMessage())
     assert record.run_id == "run-denied"
+
+
+# --- the dispatch carrier and the two remaining log sites ---------------------
+#
+# ``output_extras`` documents ``DispatchResult.service_result`` as the thing it
+# deliberately withholds, and offers an override as the escape hatch. The
+# override could not reach it either: ``_call_spec`` read three fields off the
+# dispatch result and let the carrier go. These cover the carrier arriving, the
+# two log sites that had no run correlation, and the derived instructions being
+# built once rather than per model step.
+
+
+def upsert_widget(data, user):
+    """Create or update a widget, reporting which of the two happened."""
+    widget, created = Widget.objects.update_or_create(
+        name=data["name"], owner=user, defaults={"price": data["price"]}
+    )
+    # The shape an upsert has in practice: a small DTO carrying the row *and*
+    # the flag, which is exactly what an ``output_selector_spec`` re-fetch then
+    # replaces in ``DispatchResult.value``.
+    return SimpleNamespace(widget=widget, created=created)
+
+
+def widget_from_upsert(result):
+    """Re-fetch the upserted row, the way an ``output_selector_spec`` does."""
+    return Widget.objects.filter(pk=result.widget.pk)
+
+
+def upsert_spec(**kwargs):
+    kwargs.setdefault("permission_classes", [AllowAny])
+    return ServiceSpec(
+        service=upsert_widget,
+        input_serializer=WidgetInputSerializer,
+        output_selector_spec=SelectorSpec(
+            kind=SelectorKind.RETRIEVE,
+            selector=widget_from_upsert,
+            output_serializer=WidgetSerializer,
+        ),
+        **kwargs,
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_output_extras_reaches_the_dispatch_result_carrier():
+    """created-vs-updated is unanswerable from ``value`` once a re-fetch ran.
+
+    The docstring on ``output_extras`` names ``service_result`` as the thing the
+    default withholds and offers an override as the escape hatch. With an
+    ``output_selector_spec`` present, ``value`` is the re-fetched row and the
+    service's own return -- the flags carrier -- is reachable nowhere else.
+    """
+    from asgiref.sync import sync_to_async
+
+    seen: dict[str, Any] = {}
+
+    class Upsert(SpecToolset):
+        def output_extras(self, spec, value, *, ctx, many, dispatch_result=None):
+            seen["created"] = dispatch_result.service_result.created
+            seen["value_is_the_refetched_row"] = isinstance(value, Widget)
+            seen["data"] = dict(dispatch_result.data)
+            return super().output_extras(
+                spec, value, ctx=ctx, many=many, dispatch_result=dispatch_result
+            )
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    toolset = Upsert({"upsert": upsert_spec()})
+    tools = await toolset.get_tools(None)
+
+    await toolset.call_tool("upsert", {"name": "a", "price": 1}, ctx_for(user), tools["upsert"])
+    assert seen == {
+        "created": True,
+        "value_is_the_refetched_row": True,
+        "data": {"name": "a", "price": 1},
+    }
+
+    await toolset.call_tool("upsert", {"name": "a", "price": 2}, ctx_for(user), tools["upsert"])
+    assert seen["created"] is False
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_an_override_predating_the_carrier_is_still_called():
+    """The 0.23.0 signature is the published one; adding to it may not break it."""
+    from asgiref.sync import sync_to_async
+
+    seen: dict[str, Any] = {}
+
+    class Legacy(SpecToolset):
+        def output_extras(self, spec, value, *, ctx, many):
+            seen["keys"] = sorted(super().output_extras(spec, value, ctx=ctx, many=many))
+            return {"page": value}
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    toolset = Legacy({"list_widgets": list_spec()})
+    tools = await toolset.get_tools(None)
+
+    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert seen["keys"] == ["page"]
+    assert [w["name"] for w in _rows(result)] == ["a"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_forwarding_override_receives_the_carrier_through_kwargs():
+    """``**kwargs`` is the other way an override stays forward-compatible."""
+    from asgiref.sync import sync_to_async
+
+    seen: dict[str, Any] = {}
+
+    class Forwarding(SpecToolset):
+        def output_extras(self, spec, value, *, ctx, many, **kwargs):
+            seen["carrier_kind"] = kwargs["dispatch_result"].kind
+            return super().output_extras(spec, value, ctx=ctx, many=many, **kwargs)
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    toolset = Forwarding({"list_widgets": list_spec()})
+    tools = await toolset.get_tools(None)
+
+    await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
+    assert seen["carrier_kind"] == "list"
+
+
+async def test_dispatch_timeout_log_line_carries_run_correlation(caplog):
+    """A tool that intermittently times out is the one worth correlating."""
+
+    def crawl(user):
+        """Takes longer than the deadline."""
+        time.sleep(0.2)
+        return {}
+
+    toolset = SpecToolset(
+        {"crawl": ServiceSpec(service=crawl, permission_classes=[AllowAny], atomic=False)},
+        dispatch_timeout=0.01,
+    )
+    tools = await toolset.get_tools(None)
+
+    with caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"):
+        result = await toolset.call_tool(
+            "crawl", {}, ctx_for("u", run_id="run-slow", tool_call_id="call-slow"), tools["crawl"]
+        )
+
+    assert "was abandoned" in result["error"]
+    record = next(r for r in caplog.records if "exceeded its" in r.getMessage())
+    assert record.run_id == "run-slow"
+    assert record.tool_call_id == "call-slow"
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_result_bound_log_line_carries_run_correlation(caplog):
+    """A bound that fires invisibly reads to an operator as a broken tool."""
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="u")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+    toolset = SpecToolset({"list_widgets": list_spec()}, max_result_bytes=1)
+    tools = await toolset.get_tools(None)
+
+    with caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"):
+        await toolset.call_tool(
+            "list_widgets", {}, ctx_for(user, run_id="run-fat"), tools["list_widgets"]
+        )
+
+    record = next(r for r in caplog.records if "Result bound exceeded" in r.getMessage())
+    assert record.run_id == "run-fat"
+
+
+async def test_derived_instructions_are_built_once_per_toolset(monkeypatch):
+    """A pure function of constructor state should not run per model step."""
+    calls: list[int] = []
+    derive = spec_toolset._derive_instructions
+
+    def counting(*args: Any, **kwargs: Any) -> str:
+        calls.append(1)
+        return derive(*args, **kwargs)
+
+    monkeypatch.setattr(spec_toolset, "_derive_instructions", counting)
+    toolset = SpecToolset({"list_widgets": list_spec()})
+
+    first = await toolset.get_instructions(None)
+    second = await toolset.get_instructions(None)
+
+    assert first == second
+    assert len(calls) == 1
+
+
+async def test_an_instructions_override_never_derives_at_all():
+    """The memo is lazy, so an override pays nothing for the block it replaces."""
+    toolset = SpecToolset({"list_widgets": list_spec()}, instructions="just do it")
+
+    assert await toolset.get_instructions(None) == "just do it"
+    assert "_derived_instructions" not in toolset.__dict__
