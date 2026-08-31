@@ -6,6 +6,448 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-08-30
+
+### Changed — BREAKING
+
+- **A subclass overriding `output_extras` with the 0.23.0 signature now raises
+  `TypeError`.** The method gained a keyword-only `dispatch_result` parameter
+  (see below) and it is passed on every tool call, so an override written as
+  `def output_extras(self, spec, value, *, ctx, many)` fails on the first call
+  with `got an unexpected keyword argument 'dispatch_result'`. The fix is one
+  line: name `dispatch_result` in the signature, or take a `**kwargs` and forward
+  it to `super()`.
+
+  **The compatible alternative was built first, and then deleted.** It read the
+  class's `output_extras` signature once at construction and widened the call
+  only where it fitted, so an override predating the carrier kept being called
+  the way it was written. Two things decided against keeping it.
+
+  The first is arithmetic. `output_extras` became a seam in 0.23.0, published one
+  day before this change; the number of subclasses that have overridden a
+  one-day-old method on a `0.x` package is as close to zero as a population gets.
+  The compatibility was being bought for nobody, and the price was signature
+  introspection in a package that had none of it — a maintenance surface that
+  outlives the transition it was for, since nothing ever tells you the day it
+  stopped being needed.
+
+  The second is that the shim was not compatible so much as quiet. The answer
+  resolved in `__init__`, off the *class*. Assign an `output_extras` onto an
+  **instance** after construction — a test double, a toolset patched per tenant
+  at runtime — and the flag never sees it: the override is then called without
+  the carrier it declared, with nothing raised, nothing warned and nothing
+  logged. What reaches the output-context provider is a pool missing exactly what
+  the override was written to add, and the first sign of it is a wrong answer
+  further downstream. A gate that silently does not run is the worst of the
+  outcomes on offer here, which is the thing the shim manufactured while
+  appearing to prevent one. A `TypeError` on the first tool call is loud,
+  immediate, names the argument, and is repaired in one line by the person who
+  wrote the override — the only person who can.
+
+  What the shim protected against is real but small and self-announcing; what it
+  introduced is small and silent. That is the trade, and it goes the other way.
+
+### Added
+
+- **Floored at `djangorestframework-services>=0.49`.** A tool definition is built
+  from `spec_to_json_schema` per spec, so a serializer that nests itself took the
+  whole toolset down at construction — before any tool could be called. 0.49
+  bounds that recursion. Nothing below the floor imports a 0.49 symbol; the floor
+  buys the crash being out of reach.
+
+- **The `output_extras` seam can reach the whole `DispatchResult`.** Its own
+  docstring named drf-services' `DispatchResult.service_result` — the flags
+  carrier an upsert's `created` rides on — explained why the default pool
+  withholds it, and closed with "an override here is the escape hatch for a
+  project that disagrees". The escape hatch did not work. `_call_spec` read three
+  fields off the dispatch result (`kind`, `value`, `kind` again) and let the
+  carrier go, so `output_extras` and `render_output` both received only `value`
+  and no override could reach the flags from anywhere.
+
+  The loss was conditional, which is why it survived: with no
+  `output_selector_spec` the service's own return *is* `value`. It is exactly the
+  upsert that re-fetches its row for rendering that then cannot answer
+  created-vs-updated. `instance` (the pre-mutation target, resolved once — so an
+  override reading it cannot get a different answer by resolving a second time)
+  and `data` (the validated input) were dropped on the same floor; handing over
+  the carrier rather than the one field closes all three.
+
+  **The parameter is passed unconditionally**, which widens a signature
+  published in 0.23.0 — see the breaking note above for the one-line fix, and for
+  why a loud break was preferred to the shim that would have avoided it.
+  Declaring `dispatch_result`, or a `**kwargs`, is all an override needs.
+
+  Applying `spec.response_finalizer` or resolving a callable `spec.success_status`
+  stays declined. Both are status-code machinery, and a toolset has no wire to
+  put a status code on; supplying the carrier lets a project that needs the flag
+  put it where its own output-context provider will read it.
+
+- **Run correlation on the two remaining log sites.** 0.23.0 stamped `run_id` /
+  `conversation_id` / `run_step` / `tool_call_id` on the permission denial and
+  the timing line, and said the dispatch-timeout and result-bound warnings were
+  module-level helpers with no `RunContext` to derive them from. Both are
+  reachable from somewhere that has one — `_with_deadline` has a single call site
+  inside `call_tool`, and the result bound is now called through
+  `SpecToolset.enforce_result_bytes`, which already receives `ctx` — so both take
+  the fields as an optional argument instead.
+
+  These are the two lines that fire when a run *misbehaves*, which is when an
+  uncorrelated line is worth least: several runs fanned out from a worker time
+  out and overflow their ceilings in exactly the same words.
+
+### Changed
+
+- **The derived instructions block is built once per toolset.** Pydantic-AI asks
+  for instructions on every model step, and the derivation walks each list spec
+  through `spec_to_json_schema` to find what that spec calls its sort — a pure
+  function of four attributes the constructor assigns and nothing reassigns.
+  Memoised as a `cached_property`, so it is still never built at all for a
+  toolset given an `instructions=` override.
+
+  **Not a throughput fix, and not offered as one.** The measured cost is roughly
+  24 microseconds per spec, linear — about 1.3 ms per model step at fifty tools,
+  against round trips measured in seconds. The reason is that an answer settled
+  at construction should not be recomputed per step.
+
+### Documentation
+
+- **[Running from a worker](https://artui.github.io/djangorestframework-pydantic-ai/background-runs/)**
+  now names the one thing worth doing with `ctx.usage_limits` from inside a tool
+  call. Enforcing the budget stays `Agent.run`'s job — the page already said so
+  and still does — but the limits are readable from an `enforce_result_bytes`
+  override, which is how a project tapers how much a call may return as a long
+  run consumes its budget. Shaping a result, not enforcing a limit.
+
+## [0.23.0] — 2026-08-29
+
+### Added
+
+- **The back half of a tool call is overridable.** 0.14.0 made argument intake
+  through dispatch a seam and stopped there; everything after the dispatch
+  returned stayed module-level privates reached from a module-level function, so
+  a project wanting to change one of them had to replace `call_tool` wholesale or
+  nothing at all. Four more protected methods, all receiving the live
+  `RunContext` for the same reason the first two do:
+
+  - `shape_page(rows, *, ctx, page, limit, max_page_size)` — the list slice.
+  - `render_output(spec, value, *, ctx, projection, many, request, view, extras)`
+    — the render.
+  - `output_extras(spec, value, *, ctx, many)` — the resolved-data pool a spec's
+    output-context provider reads.
+  - `enforce_result_bytes(payload, *, ctx, max_bytes, label)` — the result bound.
+
+  **`render_output` is the opt-out of projecting, and the only one.** Passing
+  `projection=None` is not it: `render_for_audience` reads `None` as *derive one
+  from the spec*, so the payload is projected anyway and a serializer is
+  instantiated per call to decide how. An override renders with
+  `render_spec_output` instead. Two cases want that — a pipeline feeding one
+  spec's output into the next needs the handles the next step reads by, and a
+  serializer with a single `ChoiceField` whose display differs from its value is
+  projected **with no marking declared at all**, since `choice_labels` is derived
+  from the field itself.
+
+- **`rest_framework_pydantic_ai.testing`** — `tool_calling_model` and
+  `instruction_capturing_model`, the two `FunctionModel` doubles this package's
+  own suite uses to drive a toolset through a real `Agent` run loop. They lived
+  in a test file, which is to say outside the wheel, so every consumer wanting
+  the same coverage re-derived them. Asserting on `call_tool` answers *does the
+  tool work*; only a run answers whether tools execute in-process, whether a
+  `ModelRetry` is fed back, and whether the toolset's instructions reached the
+  model.
+
+- **Run correlation and usage on the tool-call log lines.** Both sites now pass
+  `run_id`, `conversation_id`, `run_step` and `tool_call_id` through `extra=`,
+  and the timing line adds the run's cumulative `run_input_tokens` /
+  `run_output_tokens` / `run_requests` / `run_tool_calls`. One chat turn does not
+  need this — there is one run. Several runs fanned out from a worker interleave
+  their lines with nothing to separate them by.
+
+  Only the two sites inside `call_tool` gained it; the dispatch-timeout and
+  result-bound warnings are module-level helpers reachable with no `RunContext`,
+  and threading one in would have meant inventing a parameter for it.
+
+  **Enforcing a usage budget stays `Agent.run`'s job.** `UsageLimits` belongs
+  there, where the run can be stopped; a toolset can only refuse the next tool
+  call, which is the wrong instrument and a second place for the limit to live.
+
+### Documentation
+
+- **[Running from a worker](https://artui.github.io/djangorestframework-pydantic-ai/background-runs/)**
+  — the shape every other page omitted. Every worked example was HTTP-shaped down
+  to `deps=AgentDeps(user=request.user)`, while a Celery task, a management
+  command or a scheduled job is the larger surface for a lot of projects.
+
+  **It does not describe a mode, and says so.** The same toolset runs either way;
+  a spec dispatched from a worker takes the path it takes behind a view, because
+  that path was never an HTTP one. Two things actually differ — there is no
+  request, and there is more load — and the page is organised as the consequences
+  of those: where the acting user comes from when nothing authenticated it, that
+  nobody is anonymous by accident, `thread_sensitive=` / `executor=` with the
+  connection accounting spelled out, reading the logs when nobody was watching,
+  the result bounds, the six seams, and testing the run rather than the tool.
+
+  Declaring "headless" a supported *mode* was considered and rejected: it would
+  make compatibility promises about a distinction that does not exist in the
+  code.
+
+
+## [0.22.0] — 2026-08-29
+
+### Added
+
+- **`thread_sensitive=` and `executor=` on `SpecToolset` and `SpecCapability`** —
+  the dispatch thread is now the caller's to choose.
+
+  Every tool call went through a bare `sync_to_async`, which defaults
+  `thread_sensitive=True`, and asgiref's `single_thread_executor` is a **class**
+  attribute — so it is one thread shared by every toolset instance and every
+  concurrent run in the process, not one per toolset. Pydantic-AI genuinely runs
+  function tools in parallel within a segment, so **four 0.30s calls under one
+  model step took ~1.2s rather than ~0.3s**, measured. That is invisible in a
+  chat turn calling one tool and severe in a fan-out, which is why it surfaced
+  from a consumer running background agents rather than from a chatbox.
+
+  **The default is unchanged and deliberately so**: `thread_sensitive=True` is
+  what keeps Django's thread-local database connections coherent, so this is a
+  knob for callers who know their dispatch is connection-safe, not a flip.
+  `executor=` is only consulted when `thread_sensitive` is `False`, which is
+  asgiref's own rule.
+
+
+## [0.21.0] — 2026-08-29
+
+### Removed
+
+- **`SpecToolset(ordering_fields=…)` and `tool_ordering_fields=` are gone**, along
+  with their `SpecCapability` counterparts. They were deprecated in 0.16.0
+  (2026-08-11), four minors ago; passing either now raises `TypeError` at
+  construction rather than being silently ignored, so a project still declaring
+  one finds out at the line that declares it.
+
+  **Migration — declare a django-filter `OrderingFilter` on the selector's
+  `filter_set`:**
+
+  ```python
+  # before
+  toolset = SpecToolset(specs, ordering_fields=["created_at", "total_cents"])
+
+
+  # after
+  class OrderFilterSet(django_filters.FilterSet):
+      ordering = django_filters.OrderingFilter(
+          fields=(("created_at", "created"), ("total_cents", "total")),
+      )
+
+      class Meta:
+          model = Order
+          fields = ["status"]
+  ```
+
+  The names change shape as well as place: `ordering_fields` values were raw ORM
+  paths, because the toolset applied them with `queryset.order_by` itself, while
+  a FilterSet declares `(orm_path, public_name)` pairs and maps them through its
+  own `param_map`. The public halves are what the model is shown, so they are the
+  one thing the migration asks you to choose. A list selector with no
+  `filter_set` can instead declare an `ordering` parameter on the selector
+  callable, which is reflected into the tool schema like any other argument.
+
+  **Why the knob went rather than being narrowed to the no-`filter_set` case:**
+  a Django model carries its own `Meta.ordering` default, the HTTP path already
+  declares ordering through a `filter_set`, and `django-filter`'s
+  `OrderingFilter` does more than a list of ORM paths can — public names,
+  labels, annotation aliases, and its own validation. One vocabulary now serves
+  HTTP and every agent transport alike, which is what stops a schema and its
+  dispatch from disagreeing about what a sort argument means.
+
+  Removed with it: the two-vocabulary construction refusal (there is no second
+  vocabulary left to clash with), the `ordering` enum the toolset wrote into a
+  list tool's input schema, and the `FieldError` arm that turned the toolset's
+  own `queryset.order_by` into a `ModelRetry`. That last one **never covered a
+  `filter_set`-declared sort** and its removal does not change that path: Django
+  validates a plain-string `order_by` eagerly, so a `param_map` target that is
+  not a column raises inside `dispatch_spec`, above where the arm sat. The
+  failure table in `docs/quickstart.md` claimed otherwise and has been corrected.
+
+  Unaffected: everything a `filter_set` owns. An `OrderingFilter` is still found
+  under whatever name it was declared, its choices still reach the model as the
+  labelled options drf-services reflects, and its value is still routed through
+  `filter_data` so it reaches the FilterSet and not the selector's kwargs.
+
+## [0.20.0] — 2026-08-28
+
+### Added
+
+- **Tool definitions carry a `return_schema`.** Generated from the same spec as
+  the payload and through the same projection, so a field marked hidden is
+  absent from both and a marked handle carries its description in both. A list
+  selector's is the pagination envelope, which is what makes the schema and the
+  result agree for the first time. A spec with no `output_serializer` gets
+  `None` — a guessed shape would be a claim the payload never has to honour.
+
+  It is **populated but not sent by default**. `include_return_schema` stays at
+  pydantic-ai's default, because a return schema costs context on every turn of
+  every run and only the consumer's model and serializers say whether that is
+  worth it. The opt-in is pydantic-ai's own, at either scope:
+  `SpecToolset(specs).include_return_schemas()`, or the
+  `IncludeToolReturnSchemas` capability.
+
+  **This corrects a claim this changelog made twice.** The 0.18.0 entries state
+  that a `ToolDefinition` carries no output schema, and cite it as the reason
+  the payload is the model's only view of a result. It was never true of the
+  pydantic-ai this package pins; the field was simply never populated. Both
+  entries now carry a correction in place, and `docs/agent-audience.md` opened
+  on the same claim and no longer does.
+
+- **`json_schema_registry=` on `SpecToolset` and `SpecCapability`**, a
+  `JsonSchemaRegistry` threaded into every schema this toolset generates —
+  input, return, and the reflected read behind the ordering predicate. Without
+  it a project's own serializer field or filter type reaches the model as `{}`,
+  "any value", at exactly the field it is most likely to get wrong. Build one
+  with `DEFAULT_JSON_SCHEMA_REGISTRY.extend(fields=…, filters=…,
+  python_types=…)`.
+
+- **The registry entry's `OfflineContract` is read, so this toolset finally has
+  the audience override the MCP transport always had.** drf-services 0.46
+  carries an `OfflineContract` on each `SpecRegistry` entry: the `url_kwargs`,
+  `query_params` and `field_audiences` a caller with **no HTTP request** has to
+  be told, because the URLconf and query string tell an HTTP one for free.
+
+  ```python
+  registry.register(
+      "list_orders",
+      specs.list_orders,
+      agent_contract=OfflineContract(url_kwargs=(UrlKwarg(name="tenant_pk"),)),
+  )
+
+  SpecToolset(registry)  # the tool takes tenant_pk, declared once
+  ```
+
+  **`field_audiences` had no equivalent here at all.** `audience_projection_for_spec`
+  took only the spec, while drf-mcp layered a per-tool override on top — so one
+  spec projected a **different field set depending on which transport served
+  it**, and a project that hid a field from its agents had not hidden it from
+  half of them. `FieldMarking`'s axis is audience, not protocol; an in-process
+  toolset and an MCP server are one audience, so this could never have been a
+  legitimate difference.
+
+  The two constructor channels still work and still win by name — the contract
+  is a default this mount may override, not a mandate — and a toolset with no
+  registry behind it is unaffected.
+
+### Changed
+
+- **A list tool's result shape changes: every list selector now returns one
+  page.** Where a tool used to answer with a bare array it now answers with the
+  pagination envelope drf-services publishes:
+
+  ```python
+  {"items": [...], "page": 1, "totalPages": 4, "hasNext": True}
+  ```
+
+  **This is the input contract being honoured, not a new claim.** `page` and
+  `limit` were merged into *every* list tool's parameter schema from the
+  beginning, and the shaper behind them sliced and returned a bare list — no
+  total, no clamp, and nothing in the payload saying rows had been left behind.
+  A model asking for a collection received 50 of 51 rows and answered as if that
+  were all of them. `hasNext` is the half that was missing.
+
+  Consequences worth stating plainly:
+
+  - **A list tool that used to return an unbounded result now returns at most
+    100 rows per page** (`DEFAULT_PAGE_SIZE`), because an omitted `limit` is now
+    a page size rather than "everything". It says so in the same payload, which
+    is what makes it strictly better than the silent truncation available
+    before.
+  - `max_page_size` lowers that default as well as capping an explicit `limit`,
+    and still advertises itself as JSON-Schema `maximum`.
+  - An out-of-range `page` clamps to the last page that exists and the envelope
+    reports the page actually served — a caller that asked for page 10 of 3 is
+    told which one it got.
+  - The byte ceiling is measured on the envelope, because the envelope is what
+    is sent.
+  - **Anything reading a list tool's result programmatically needs `["items"]`.**
+    A model reading it does not; the derived instructions now describe the
+    envelope and what `hasNext` means.
+
+  The shaper itself is drf-services' `paginate_output` / `OutputPage`, so the
+  MCP transport and this one now slice, count and clamp through one
+  implementation. What stays here is the coercion: a malformed `limit` is still
+  a `ModelRetry` naming the problem rather than a clamped value. That is the one
+  place the two transports legitimately differ — a public endpoint has to answer
+  *something*, an in-process toolset can hand the model its own mistake back —
+  and it is a policy about bad input, not about what a page is.
+
+- **Adopted drf-services 0.48's renamed audience symbols**: `AgentField` is
+  `FieldMarking`, `AGENT` is `MARKING`, `AgentProjection` is
+  `AudienceProjection`, `AgentContract` is `OfflineContract`,
+  `agent_projection_for_spec` is `audience_projection_for_spec`, and
+  `render_for_agent` is `render_for_audience`. The names moved where "agent"
+  described *which callers use it* rather than an audience a serializer author
+  declares. This package is an agent toolset, so its own names and its prose
+  still say agent where that is the truth.
+
+- **A `ChoiceFilter` with labels now reaches the model as labelled `const`
+  options rather than a bare `enum`** (drf-services 0.47). `OrderingFilter`
+  subclasses `ChoiceFilter`, so a FilterSet-derived `ordering` argument changes
+  shape in the tool schema; filters also gained `title` and `description`, and
+  serializer fields a `title` from an author-declared `label`. Nothing in the
+  dispatch path reads those, and the sort vocabulary is unchanged.
+
+- **Pass the registry, not `registry.specs()`.** The flattened mapping is what
+  the registry holds *minus the entries*, and the contract is on the entry. A
+  toolset built from `.specs()` silently has none of it. Both paths still work
+  and the docstring, the registry page and the migration note now say which one
+  to reach for.
+
+- **Floor raised to `djangorestframework-services>=0.48`.** 0.46 for
+  `OfflineContract` and for `audience_projection_for_spec(overrides=…)` — the
+  merge of a mount's overrides over the serializer's own markings, which now
+  lives upstream so both agent transports layer the shared declaration by the
+  same rule rather than each carrying a copy. 0.48 for `paginate_output` /
+  `OutputPage` and for the renamed audience symbols, which ship with no aliases
+  behind them and are imported at module level, so the floor is hard rather than
+  preferred.
+
+### Fixed
+
+- **A sort argument was only found when it was called `ordering`.** The
+  deprecation on `ordering_fields` tells consumers to declare a django-filter
+  `OrderingFilter` instead — and nothing requires that filter to be *named*
+  `ordering`. A project whose filter is called `sorting` followed the migration
+  correctly and lost two things:
+
+  - the **usage instruction** was dropped, so the tool advertised a large enum
+    with no guidance on how to send it;
+  - the value was **never popped** out of the callable's kwarg pool, so a
+    selector declaring `**kwargs` received a read-shaping argument it never
+    asked for — precisely the hazard `_pop_filter_ordering` exists to prevent,
+    arriving through the door it was watching.
+
+  The sort itself always worked: `filter_data` stayed defaulted to `params` and
+  the FilterSet reads `params` either way. That is why it went unnoticed.
+
+  The argument is now discovered rather than assumed, by asking the FilterSet
+  which of its filters defines `get_ordering_value` — the method `OrderingFilter`
+  declares and nothing else in the hierarchy does. Duck-typed, so django-filter
+  stays an optional extra this package never imports, and a project's own
+  `OrderingFilter` subclass is found too. It falls back to the literal
+  `ordering`, which covers a selector whose *callable* declares the parameter and
+  the deprecated knob this package advertises under that name itself.
+
+  The instruction text is parameterised in the same change: it hard-coded
+  `ordering` in its prose, so moving only the predicate would have produced an
+  instruction naming an argument that does not exist — worse than none, since the
+  model is told to send something that will be rejected. A toolset mixing both
+  names now names both.
+
+  **Note for anyone sweeping the family:** `djangorestframework-mcp-server` has a
+  character-for-character identical predicate and it is **correct there**. It is
+  collision detection — drf-mcp advertises the deprecated knob under the literal
+  name `ordering` and checks whether a FilterSet already claimed it — and its
+  dispatch read is gated on `ordering_fields`, so on the FilterSet path it never
+  pops. The same expression is a bug in one repo and right in the other, because
+  the two own the name differently. Do not align them.
+
 ## [0.19.0] — 2026-08-26
 
 ### Upgrade notes
@@ -140,6 +582,12 @@ that spells out every keyword must accept `action` as well.
   parameter schema and no output schema, so the payload is the model's *only*
   view of a result: a label that lives only in a schema would never reach it.
 
+  *Correction, kept in place because it was the stated reason for a design
+  choice: that was never true. `ToolDefinition.return_schema` exists in the
+  pydantic-ai this release already pinned; the toolset simply did not populate
+  it. It does as of the entry under `[Unreleased]`, and the projection now
+  reaches both halves.*
+
   The projection is resolved once per spec at construction, beside the tool
   definitions, rather than paid on every call.
 
@@ -153,6 +601,11 @@ that spells out every keyword must accept `action` as well.
 - **Floor raised to `djangorestframework-services>=0.43`** for the audience API.
   That release also fixes output-schema generation, which this package does not
   consume — `ToolDefinition` has no output schema — so nothing here changes shape.
+
+  *Correction: the second clause was wrong on both counts. `ToolDefinition` has
+  carried `return_schema` throughout; this package did not consume drf-services'
+  output-schema generation because it never asked for it, not because there was
+  nowhere to put the answer. See `[Unreleased]`.*
 
 ### Fixed
 
@@ -949,7 +1402,12 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.23.0...v0.24.0
+[0.23.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.22.0...v0.23.0
+[0.22.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.21.0...v0.22.0
+[0.21.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.20.0...v0.21.0
+[0.20.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.17.0...v0.18.0

@@ -82,4 +82,5 @@ nav:
   - Shared spec registry: spec-registry.md
   - Polymorphic actions: polymorphic-actions.md
   - Hide plumbing from the model: agent-audience.md
+  - Running from a worker: background-runs.md
   - Reference: reference.md

@@ -38,18 +38,25 @@ classifiers = [
 dependencies = [
     "django>=4.2",
     "djangorestframework>=3.14",
-    # 0.44 floor: ``build_offline_context`` wraps a shallow *copy* of the
-    # ``http_request=`` it is given instead of writing to the caller's own
-    # object. Below it, a toolset configured with one request shares that object
-    # across every call, so two concurrent runs overwrite each other's ``GET``
-    # (a serializer shaped by another run's arguments, with no error) and the
-    # caller's ``method`` / ``GET`` / ``user`` stay overwritten afterwards. The
-    # band below also carries per-field agent audiences (0.43),
-    # ``dispatch_spec(filter_data=…)`` on the read path (0.36),
-    # ``preconditions`` (0.34), ``AdditionalInputRequired`` (0.32),
-    # consumer-owned spec ``metadata`` (0.31) and the ``progress`` pool seed
-    # (0.30).
-    "djangorestframework-services>=0.44",
+    # 0.48 floor: ``paginate_output`` / ``OutputPage``, the shared shaper every
+    # list-selector result is now wrapped in, and the renamed audience symbols
+    # (``FieldMarking`` / ``MARKING`` / ``AudienceProjection`` /
+    # ``OfflineContract`` / ``audience_projection_for_spec`` /
+    # ``render_for_audience``) — imported at module level, with no aliases left
+    # behind, so this is a hard floor rather than a preference. The band below
+    # carries the entry ``OfflineContract`` and
+    # ``audience_projection_for_spec(overrides=…)`` (0.46) and
+    # ``build_offline_context`` wrapping a shallow *copy* of the
+    # ``http_request=`` it is given rather than writing to the caller's own
+    # object (0.44) — below that, a toolset configured with one request shares
+    # that object across every call, so two concurrent runs overwrite each
+    # other's ``GET``.
+    # 0.49 is where a self-referential serializer stopped crashing schema
+    # generation, and this toolset cannot route around it: a tool definition is
+    # built from ``spec_to_json_schema`` per spec, so a serializer that nests
+    # itself takes the toolset down at construction rather than at the call that
+    # used it. Nothing below the floor imports a 0.49 symbol.
+    "djangorestframework-services>=0.49",
     "pydantic-ai-slim>=2,<3",
 ]
 
@@ -159,7 +166,7 @@ root = ["./rest_framework_pydantic_ai"]
 # rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.19.0"
+current_version = "0.24.0"
 allow_dirty = false
 commit = false
 tag = false

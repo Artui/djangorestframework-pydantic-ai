@@ -50,10 +50,11 @@ toolset = SpecToolset(
 ```
 
 Each key is the tool name. The description comes from the selector/service
-docstring, the parameter schema from the spec's input serializer, and the
-`readOnlyHint` annotation from the spec kind (selectors read, services mutate).
-List selectors additionally accept `page` and `limit` tool args, plus `ordering`
-where the selector's [`filter_set` declares one](#ordering).
+docstring, the parameter schema from the spec's input serializer, the
+`return_schema` from its output serializer, and the `readOnlyHint` annotation
+from the spec kind (selectors read, services mutate). List selectors
+additionally accept `page` and `limit` tool args, plus `ordering` where the
+selector's [`filter_set` declares one](#ordering).
 
 ## 3. Run an agent
 
@@ -72,11 +73,66 @@ result = await agent.run(
 )
 ```
 
+!!! tip "No request in sight?"
+
+    `request.user` is the HTTP shape. A Celery task, a management command or a
+    scheduled job resolves the acting user itself and passes it the same way —
+    see [Running from a worker](background-runs.md), which also covers the one
+    setting a fan-out genuinely needs.
+
 For that request the model can call `list_orders` with
 `{"limit": 5, "ordering": "-created"}` and the toolset enforces permissions,
 runs the selector as `request.user`, hands `ordering` to the selector's
 [`filter_set`](#ordering), slices the result, and renders it through
 `OrderSerializer`.
+
+## Every list result is a page
+
+A list selector answers with the pagination envelope, never a bare array:
+
+```python
+{
+    "items": [{"id": 12, "total": "48.00"}, ...],
+    "page": 1,
+    "totalPages": 4,
+    "hasNext": True,
+}
+```
+
+`limit` defaults to 100 rows and `page` to 1, so a tool that used to return an
+entire table now returns its first hundred rows **and says so**. That is the
+point: `page` and `limit` were advertised on every list tool from the start
+while the payload was a bare slice, so a model asking for a collection received
+50 of 51 rows with nothing in the answer telling it more existed. `hasNext` is
+what was missing — the model can ask for `page: 2`, or narrow the request with a
+filter, instead of answering from a page it took for the whole set.
+
+`max_page_size` lowers the default and advertises itself as JSON-Schema
+`maximum` on `limit`:
+
+```python
+toolset = SpecToolset(specs, max_page_size=25)
+```
+
+The same envelope is what the tool's `return_schema` describes, generated from
+the same spec — so the schema and the payload cannot disagree about it.
+
+## The output schema
+
+Each tool definition carries a `return_schema` derived from the spec's output
+serializer, projected the same way the payload is: a field marked
+[hidden](agent-audience.md) is absent from both, and a marked handle carries its
+description in both.
+
+It is populated but **not sent** by default, because a return schema costs
+context on every turn of every run and only your model and your serializers say
+whether that trade is worth it. Pydantic-AI owns the opt-in, at either scope:
+
+```python
+agent = Agent(model, toolsets=[SpecToolset(specs).include_return_schemas()])
+```
+
+A spec with no `output_serializer` gets `None` rather than a guessed shape.
 
 ## Custom identity
 
@@ -174,10 +230,11 @@ class OrderFilterSet(django_filters.FilterSet):
         fields = ["status"]
 ```
 
-drf-services reflects that filter into the tool's input schema as an enum of its
-public choices (`created`, `-created`, `total`, `-total`) — `OrderingFilter`
-subclasses `ChoiceFilter`, which the schema generator maps to an enum — so the
-model is told exactly what it may sort by. At call time the value is handed to
+drf-services reflects that filter into the tool's input schema as its public
+choices (`created`, `-created`, `total`, `-total`) — `OrderingFilter` subclasses
+`ChoiceFilter`, which the schema generator maps to a set of `const` options
+carrying the filter's own labels — so the model is told exactly what it may sort
+by, in the words the FilterSet uses. At call time the value is handed to
 the FilterSet as filter data: it validates the choice, applies its own
 `param_map`, and a value outside the enum comes back as a `ModelRetry`. The
 toolset contributes nothing and takes nothing away.
@@ -185,30 +242,41 @@ toolset contributes nothing and takes nothing away.
 One vocabulary, one declaration site, and the same ordering your HTTP views
 already serve.
 
-### `ordering_fields` (deprecated)
+The filter's name is yours to pick — an `OrderingFilter` declared as `sorting`
+is found and used the same way. What the schema advertises is what the model may
+send, under whatever it is called.
 
-!!! warning "Deprecated"
-    `ordering_fields` / `tool_ordering_fields` emit a `DeprecationWarning`.
-    Declare an `OrderingFilter` on the selector's `filter_set` instead.
+### A list selector with no `filter_set`
 
-They remain for the one case with no other route — a list selector with **no**
-`filter_set`:
+A selector that takes its own sort argument works too: declare it on the
+callable and it is reflected into the tool schema like any other parameter, and
+handed to the callable to apply.
 
 ```python
-toolset = SpecToolset(specs, ordering_fields=["created_at", "total_cents"])
+def list_orders(user, ordering: str = "-created_at"):
+    """List the acting user's orders."""
+    return Order.objects.filter(customer=user).order_by(ordering)
 ```
 
-That advertises an `ordering` enum of each name and its `-` prefixed form, and
-the toolset applies the chosen value with `queryset.order_by`. The values are
-therefore raw **ORM paths**, not public names — which is precisely why the two
-cannot be mixed: a FilterSet's `OrderingFilter` speaks public names it maps
-itself, several of which resolve to annotation aliases. Declaring
-`ordering_fields` for a tool whose `filter_set` already advertises `ordering`
-raises at construction rather than letting one vocabulary quietly overwrite the
-other.
+Prefer the `FilterSet` where there is one: it validates the value against a
+published set of choices before anything reaches the ORM, while a bare parameter
+is only as safe as what the selector does with it.
 
-To migrate, move the names onto an `OrderingFilter` as `(orm_path, public_name)`
-pairs and drop the `ordering_fields` argument.
+### Migrating from `ordering_fields`
+
+`SpecToolset(specs, ordering_fields=[...])` and its per-tool
+`tool_ordering_fields` form were deprecated in 0.16.0 and have now been removed;
+passing either raises `TypeError` at construction. Move the names onto an
+`OrderingFilter` as `(orm_path, public_name)` pairs — the FilterSet at the top of
+this section is exactly `ordering_fields=["created_at", "total_cents"]`
+rewritten — and drop the argument.
+
+The vocabularies are not the same, and that is the point of the move: the knob's
+values were raw **ORM paths**, because the toolset applied them with
+`queryset.order_by` itself, while a FilterSet's choices are public names it maps
+through its own `param_map`. Picking public names is the migration's one
+decision — they are what the model sees, so give them the words a reader would
+use.
 
 ## Read-shaping query params
 
@@ -381,9 +449,11 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | `ServiceError` (business rule) | `{"error": "..."}` — model-readable content |
 | Unresolved instance | `{"error": "not found"}` |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
-| Non-integer `page` / `limit`, or an `ordering` outside the declared enum | `ModelRetry` — naming the values that are accepted |
+| Non-integer `page` / `limit` | `ModelRetry` — naming what is accepted |
+| An `ordering` sent to a list tool that advertises no sort at all | `ModelRetry` — saying the tool has none, rather than letting it fall through as an unknown key |
+| A `limit` over `max_page_size`, or a `page` past the last one | Clamped, not refused — the envelope reports the `page` and `totalPages` actually served, so the clamp is visible rather than silent |
 | An `ordering` outside a `filter_set`'s `OrderingFilter` choices | `ModelRetry` — the FilterSet rejects it, which arrives as the `ValidationError` row above |
-| An ordering name that isn't a real column (a declared `ordering_fields` entry, or a FilterSet `param_map` target) | `ModelRetry` — an author's error, not the model's; it can't be checked at construction without a queryset |
+| A FilterSet `param_map` target that isn't a real column | Django's `FieldError` propagates — an author's error the model cannot correct by picking a different sort, and one that can't be checked at construction without a queryset |
 | Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run — see the caveat below |
 
 !!! warning "A tool-failure policy changes the last row"

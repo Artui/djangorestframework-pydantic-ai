@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from django.http import HttpRequest
 from pydantic_ai.capabilities import AbstractCapability
-from rest_framework_services import UnknownArguments
+from rest_framework_services import (
+    DEFAULT_JSON_SCHEMA_REGISTRY,
+    JsonSchemaRegistry,
+    UnknownArguments,
+)
 
 from rest_framework_pydantic_ai.spec_toolset import (
     ExceptionHandler,
@@ -99,11 +104,12 @@ class SpecCapability(AbstractCapability[Any]):
         dispatch_timeout: float | None = None,
         require_permissions: bool = True,
         descriptions: Mapping[str, str] | None = None,
-        ordering_fields: Sequence[str] = (),
-        tool_ordering_fields: Mapping[str, Sequence[str]] | None = None,
         http_request: HttpRequest | None = None,
         get_http_request: HttpRequestExtractor | None = None,
         exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
+        json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+        thread_sensitive: bool = True,
+        executor: ThreadPoolExecutor | None = None,
     ) -> None:
         toolset = SpecToolset(
             specs,
@@ -124,11 +130,12 @@ class SpecCapability(AbstractCapability[Any]):
             dispatch_timeout=dispatch_timeout,
             require_permissions=require_permissions,
             descriptions=descriptions,
-            ordering_fields=ordering_fields,
-            tool_ordering_fields=tool_ordering_fields,
             http_request=http_request,
             get_http_request=get_http_request,
             exception_map=exception_map,
+            json_schema_registry=json_schema_registry,
+            thread_sensitive=thread_sensitive,
+            executor=executor,
         )
         self._configure(toolset, defer_loading=defer_loading, description=description)
 
