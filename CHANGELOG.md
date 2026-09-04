@@ -621,15 +621,11 @@ that spells out every keyword must accept `action` as well.
   `--refresh`, so the gate measures what it claims to. A stale listing was
   dangerous in both directions: it can invent a broken floor, or hide a real one.
 
-### Fixed
-
 - **The reST literal-block marker no longer reaches the page.** Sphinx reads a
   trailing `::` as "an indented literal block follows" and prints one colon;
   Markdown has no such rule, so the second colon rendered verbatim. The indented
   block was already coming out as a code block either way, so this drops the
   stray character and nothing else.
-
-### Fixed
 
 - **Docstring cross-references now render as links instead of raw markup.** The
   docstrings carried Sphinx roles — ``:class:`~rest_framework_pydantic_ai.SpecToolset` ``
