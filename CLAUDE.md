@@ -132,7 +132,7 @@ Change a rule here and change the config with it, or they drift apart again.
 | Django | 4.2 | 6.1 |
 | DRF | 3.14 | latest |
 | drf-services | 0.48 | latest |
-| Pydantic-AI | 2.0 (`pydantic-ai-slim`) | latest (`<3`) |
+| Pydantic-AI | 2.16 (`pydantic-ai-slim`) | latest (`<3`) |
 
 Both ends of every row are measured, not asserted. The `floor` job in
 `tests.yml` resolves each declared dependency at the bottom of its window on

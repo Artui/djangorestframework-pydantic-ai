@@ -12,6 +12,14 @@ the off-HTTP context, enforce ``spec.permission_classes`` — ``dispatch_spec``
 deliberately does not, so a naive adapter would skip authorization — then
 dispatch and render. The failure-kind mapping onto the model loop lives in the
 same function's arms, and is tabulated for callers in ``docs/quickstart.md``.
+
+**Every failure this toolset decides is terminal is *raised*, never returned.**
+Pydantic-AI marks an ordinary return ``outcome="success"``, so a refusal handed
+back as a value is a failure only the model's reader can see: everything
+downstream -- a transport streaming the result, a log, a client rendering the
+call -- gets a successful call carrying prose. ``ToolFailed`` says the same
+sentence to the model and marks the return ``outcome="failed"``, which is the
+one field that makes the failure legible to anything that is not an LLM.
 """
 
 from __future__ import annotations
@@ -33,7 +41,7 @@ from typing import Any, cast
 from asgiref.sync import sync_to_async
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
-from pydantic_ai import ModelRetry, RunContext
+from pydantic_ai import ModelRetry, RunContext, ToolFailed
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_core import SchemaValidator, core_schema
@@ -95,10 +103,17 @@ _ResultBounder = Callable[..., Any]
 ExceptionHandler = Callable[[BaseException], Any]
 """Turns one exception into a tool result.
 
-Return the value the tool should return — ``{"error": …}`` for something the
-model should report and stop on — or raise ``ModelRetry`` to
-hand it back for another attempt. Raising anything else aborts the run, which is
-the right answer for a genuine bug.
+Three answers, and the choice is about what the model should do next. Raise
+``ToolFailed`` for something it should report and stop on — that is what the
+built-in arms do, and it marks the tool return ``outcome="failed"`` so a
+transport can say so too. Raise ``ModelRetry`` to hand the call back for another
+attempt. Or **return** a value, which becomes the tool's result verbatim and is
+marked ``outcome="success"``: the escape hatch for an exception that is not
+really a failure — a "nothing matched" a caller would rather express as an empty
+payload than as a refusal.
+
+Raising anything else aborts the run, which is the right answer for a genuine
+bug.
 """
 
 logger = logging.getLogger("rest_framework_pydantic_ai")
@@ -378,7 +393,7 @@ class SpecToolset(AbstractToolset[Any]):
         max_result_bytes: Ceiling on a rendered result, measured on the encoded
             payload because what is being protected is the model's context
             window. Over it the call **fails** with a model-readable
-            ``{"error": …}`` — never truncates, because a partial payload looks
+            ``ToolFailed`` — never truncates, because a partial payload looks
             complete.
         tool_max_result_bytes: ``max_result_bytes`` per tool. An explicit
             ``None`` opts that tool out; an absent key inherits the default.
@@ -652,7 +667,7 @@ class SpecToolset(AbstractToolset[Any]):
         The per-tool descriptions and parameter schemas say what each tool *is*,
         but not how the family behaves: that list tools accept ``page`` /
         ``limit`` / ``ordering``, that a business failure comes back as a readable
-        ``{"error": …}`` result (a final answer, not a reason to retry) while a
+        failed result (a final answer, not a reason to retry) while a
         bad argument comes back as a retry request, and that a permission error
         is final. Pydantic-AI appends the block to the system prompt each turn,
         for a toolset attached directly *or* wrapped by a capability.
@@ -746,9 +761,9 @@ class SpecToolset(AbstractToolset[Any]):
             )
         except PermissionDenied:
             # The one failure with no other trace: a ``ModelRetry`` reaches the
-            # model and a ``{"error": …}`` reaches the answer, but a denial
-            # aborts the run and is absorbed by whatever drives it. Logged at
-            # the boundary, then re-raised untouched.
+            # model and a ``ToolFailed`` reaches the answer as a failed result,
+            # but a denial aborts the run and is absorbed by whatever drives it.
+            # Logged at the boundary, then re-raised untouched.
             logger.warning(
                 "Permission denied calling tool %r on toolset %r",
                 name,
@@ -959,12 +974,18 @@ class SpecToolset(AbstractToolset[Any]):
     def enforce_result_bytes(
         self, payload: Any, *, ctx: RunContext[Any], max_bytes: int | None, label: str
     ) -> Any:
-        """Return ``payload``, or a model-readable refusal when it is over budget.
+        """Return ``payload``, or raise a model-readable refusal when it is over budget.
 
         Measured on the envelope, because the envelope is what is sent. Override to
         bound on something other than serialized length -- a row count, a per-run
         running total read off ``ctx.usage``, a taper against ``ctx.usage_limits``
         as a run gets long -- or to shape the refusal differently.
+
+        **The default raises ``ToolFailed``**; an override is free to return a
+        value instead, and that value becomes the tool's result marked
+        ``outcome="success"``. Delegating to ``super()`` and inspecting what comes
+        back is the one shape that changed -- the refusal used to be a returned
+        ``{"error": …}`` and is now an exception.
 
         ``ctx`` is not merely passed through to an override here: the default
         reads this run's correlation fields off it and stamps them on the
@@ -1215,9 +1236,18 @@ async def _with_deadline(
     socket read, so the query runs to completion regardless; what the deadline
     buys is a terminal answer rather than a run that never returns.
 
-    That answer is an ``{"error": …}`` rather than an exception, for the same
-    reason the byte ceiling's is: the model can respond to it by asking for less,
-    and killing the run denies it the chance.
+    That answer is a ``ToolFailed`` rather than an ordinary exception, for the
+    same reason the byte ceiling's is: the model can respond to it by asking for
+    less, and killing the run denies it the chance. It is not a ``ModelRetry``
+    either -- a retry budget is finite, and a run should not die because a model
+    spent it on progressively narrower queries against a slow table.
+
+    **A returned ``{"error": …}`` had those two properties as well, and lost a
+    third.** Pydantic-AI marks a returned value ``outcome="success"``, so an
+    abandoned call was indistinguishable on the wire from one that answered --
+    the deadline fired, the operator's log line was written, and the client drew
+    a completed call. The exception says the same sentence to the model and says
+    "failed" to everything downstream of it.
 
     ``extra`` is the caller's log correlation, threaded in rather than derived:
     this is a module-level helper with no ``RunContext``, and its one call site
@@ -1229,17 +1259,15 @@ async def _with_deadline(
         return await awaitable
     try:
         return await asyncio.wait_for(awaitable, timeout=seconds)
-    except (TimeoutError, asyncio.TimeoutError):
+    except (TimeoutError, asyncio.TimeoutError) as exc:
         # The operator hears about it too: a tool that intermittently answers
         # "took too long" and logs nothing is indistinguishable from a bug.
         logger.warning("Tool %r exceeded its %.1fs dispatch timeout", label, seconds, extra=extra)
-        return {
-            "error": (
-                f"This call took longer than the {seconds:g}s limit and was "
-                "abandoned. Narrow the request — add or tighten a filter, or "
-                "lower `limit` — and call again."
-            )
-        }
+        raise ToolFailed(
+            f"This call took longer than the {seconds:g}s limit and was "
+            "abandoned. Narrow the request — add or tighten a filter, or "
+            "lower `limit` — and call again."
+        ) from exc
 
 
 def _default_get_progress(ctx: RunContext[Any]) -> ProgressReporter | None:
@@ -1271,9 +1299,9 @@ def _default_get_user(ctx: RunContext[Any]) -> Any:
 # The conventions block ``SpecToolset.get_instructions`` teaches the model.
 _BASE_INSTRUCTIONS = (
     "The following tools call Django REST Framework services and selectors.\n"
-    "- A successful call returns the tool's data. A business-rule failure returns a JSON "
-    'object like {"error": "..."} — that is a final answer explaining why the operation '
-    "could not complete; read it and report it, do not retry the same call.\n"
+    "- A successful call returns the tool's data. A business-rule failure comes back as a "
+    "failed call whose content is a sentence explaining why — that is a final answer, not a "
+    "reason to retry; read it and report it, do not call the same tool the same way again.\n"
     "- An invalid or missing argument comes back as a retry request naming the problem; "
     "correct the argument and call again.\n"
     "- A permission error is final: the current user may not perform that call — do not "
@@ -1705,11 +1733,27 @@ def _call_spec(
             # ordinary argument on the next call.
             raise ModelRetry(_missing_input_prompt(exc)) from exc
         if isinstance(exc, ServiceError):
-            return {"error": str(exc)}
+            # **Raised, not returned, and the message is unchanged.** A business
+            # rule that refused — a conflict, a state the operation cannot run
+            # against — is ``ToolFailed``'s own description: the call is done, it
+            # failed definitively, and the model should adapt rather than repeat
+            # it. Returning a value instead made the failure *unreadable one hop
+            # out*: pydantic-ai marks an ordinary return ``outcome="success"``,
+            # so a transport streaming the result had nothing but the payload's
+            # wording to tell a refusal from a row, and every one of them
+            # rendered as a completed call. ``ToolFailed`` carries the same
+            # sentence to the model, spends no retry budget, and prepends no
+            # correction instructions — the three properties the returned dict
+            # was chosen for — while marking the return ``outcome="failed"``.
+            raise ToolFailed(str(exc)) from exc
         raise
 
     if result.kind == "not_found":
-        return {"error": "not found"}
+        # "a missing resource" is the first case ``ToolFailed`` names, and the
+        # wording the model reads is the one it read before. Raised here rather
+        # than in the ``except`` arm because drf-services reports an unresolved
+        # target as a *result kind*, not an exception.
+        raise ToolFailed("not found")
 
     value = result.value
     # ``page_args`` is non-None exactly for list selectors — the only specs that
@@ -1764,17 +1808,25 @@ def _enforce_result_bytes(
     label: str,
     extra: Mapping[str, Any] | None = None,
 ) -> Any:
-    """Return ``payload``, or a model-readable refusal when it is over budget.
+    """Return ``payload``, or raise a model-readable refusal when it is over budget.
 
     **Fails; never truncates.** A list cut at the byte ceiling is
     indistinguishable from a list that had that many rows, so a model would
     answer confidently from data it does not know is missing.
 
-    Returned as an ``{"error": …}`` result rather than raised as
-    ``ModelRetry``: the model should narrow the request and it *can*, but a
-    retry budget is finite and a run should not die because a model spent it on
-    progressively smaller queries. Also logged at ``WARNING``, since a bound that
-    fires invisibly reads to an operator as "the tool is broken".
+    Raised as ``ToolFailed`` rather than as ``ModelRetry``: the model should
+    narrow the request and it *can*, but a retry budget is finite and a run
+    should not die because a model spent it on progressively smaller queries.
+    Also logged at ``WARNING``, since a bound that fires invisibly reads to an
+    operator as "the tool is broken".
+
+    **The refusal used to be a returned ``{"error": …}``, which understated it
+    by exactly one field.** The dispatch did succeed; the result was refused,
+    and no data reached the model. Pydantic-AI marks a returned value
+    ``outcome="success"``, so a caller one hop out saw a completed call carrying
+    a payload it had no way to read as a refusal. ``failed`` is the truthful
+    marking for a call that produced nothing usable, and it costs the model
+    nothing: the sentence it reads is unchanged.
 
     ``extra`` carries the caller's log correlation. Defaulted rather than
     required because this function is also the standalone bound in ``_call_spec``,
@@ -1794,14 +1846,12 @@ def _enforce_result_bytes(
         max_bytes,
         extra=extra,
     )
-    return {
-        "error": (
-            f"This result was {size} bytes, over the {max_bytes} byte ceiling. "
-            "Narrow the request — add or tighten a filter, lower `limit`, or "
-            "select fewer fields — and call again. The result was not "
-            "truncated: a partial payload would look complete."
-        )
-    }
+    raise ToolFailed(
+        f"This result was {size} bytes, over the {max_bytes} byte ceiling. "
+        "Narrow the request — add or tighten a filter, lower `limit`, or "
+        "select fewer fields — and call again. The result was not "
+        "truncated: a partial payload would look complete."
+    )
 
 
 def _missing_input_prompt(exc: AdditionalInputRequired) -> str:

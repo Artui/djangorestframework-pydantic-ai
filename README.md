@@ -61,7 +61,8 @@ reading a collection can tell whether it saw all of it.
 Failures map onto the model loop so the agent self-corrects: invalid input, a bad
 `page` / `limit` / `order` value, and unexpected (hallucinated) arguments come
 back as `ModelRetry`; a business error or missing row becomes a readable
-`{"error": ...}`; a denied permission raises `PermissionDenied`, which aborts
+`ToolFailed`, which the model sees as a failed call rather than a successful one
+carrying prose; a denied permission raises `PermissionDenied`, which aborts
 the run under a plain `pydantic_ai.Agent`. A host that installs a tool-failure
 policy — `django-pydantic-agent`'s `build_agent` does by default — turns that
 denial into a failed-tool result instead, so the run continues; the call is

@@ -15,7 +15,8 @@ from django.contrib.auth.models import User
 from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.test import RequestFactory
-from pydantic_ai import Agent, ModelRetry
+from pydantic_ai import Agent, ModelRetry, ToolFailed
+from pydantic_ai.messages import ToolReturnPart
 from pydantic_ai.usage import RunUsage
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
@@ -214,7 +215,12 @@ async def test_instructions_carry_the_error_contract():
     instr = await SpecToolset({"go": create_spec()}).get_instructions(None)
     assert instr is not None
     assert _BASE_INSTRUCTIONS in instr
-    assert '{"error"' in instr
+    # The block has to describe the shape the toolset actually produces. It named
+    # an ``{"error": …}`` payload while every terminal arm raised ``ToolFailed``,
+    # which is an instruction telling the model to look for a key that is never
+    # sent -- so the wording is asserted here rather than only in the constant.
+    assert '{"error"' not in instr
+    assert "comes back as a failed call" in instr
     assert "unknown arguments are rejected" in instr
 
 
@@ -410,10 +416,17 @@ def test_retrieve_selector_found():
 
 
 @pytest.mark.django_db
-def test_retrieve_selector_not_found_is_error_payload():
+def test_retrieve_selector_not_found_fails_the_call():
+    """An unresolved target is ``ToolFailed``, carrying the wording unchanged.
+
+    The message is what the model reads and it has not moved; what moved is that
+    the tool return is now marked ``outcome="failed"`` instead of ``"success"``
+    -- see ``test_a_business_failure_marks_the_tool_return_failed``, which reads
+    that marking off a real run."""
     user = User.objects.create(username="u")
-    result = _dispatch(retrieve_spec(), user, {"pk": 999})
-    assert result == {"error": "not found"}
+    with pytest.raises(ToolFailed) as caught:
+        _dispatch(retrieve_spec(), user, {"pk": 999})
+    assert caught.value.message == "not found"
 
 
 # --- service dispatch --------------------------------------------------------
@@ -434,9 +447,10 @@ def test_create_service_validation_error_is_model_retry():
         _dispatch(create_spec(), user, {"name": "z", "price": -1})
 
 
-def test_service_error_is_returned_as_payload():
-    result = _dispatch(ServiceSpec(service=boom, atomic=False), object(), {})
-    assert result == {"error": "nope"}
+def test_service_error_fails_the_call_with_its_own_message():
+    with pytest.raises(ToolFailed) as caught:
+        _dispatch(ServiceSpec(service=boom, atomic=False), object(), {})
+    assert caught.value.message == "nope"
 
 
 def test_service_validation_error_is_model_retry():
@@ -489,8 +503,8 @@ def test_it_is_not_swallowed_by_the_generic_service_error_arm() -> None:
     subclasses ``ServiceError``, so a handler for the parent catches it first
     unless the specific arm precedes it — which would report a request for input
     as a terminal failure."""
-    result = _dispatch(ServiceSpec(service=boom, atomic=False), object(), {})
-    assert result == {"error": "nope"}, "the generic arm must still work"
+    with pytest.raises(ToolFailed, match="nope"):
+        _dispatch(ServiceSpec(service=boom, atomic=False), object(), {})
     with pytest.raises(ModelRetry):
         _dispatch(ServiceSpec(service=needs_confirmation, atomic=False), object(), {})
 
@@ -906,6 +920,117 @@ async def test_agent_run_recovers_from_model_retry():
     result = await agent.run("go", deps=AgentDeps(user="alice"))
     assert result.output == "done"
     assert calls == ["bad", "good"]
+
+
+# ----- the outcome a terminal failure is marked with -----
+#
+# The assertions that only a real run can make. ``pytest.raises(ToolFailed)``
+# above proves the arm raises; it says nothing about what pydantic-ai does with
+# the exception, and the whole point of raising rather than returning is the
+# ``outcome`` it produces on the resulting ``ToolReturnPart``. That field is what
+# a transport forwards, so a test asserting only the message would keep passing
+# if the marking regressed to ``"success"`` -- which is the exact defect this
+# replaced.
+
+
+def _tool_return(result: Any) -> ToolReturnPart:
+    """The one tool return in a finished run's messages."""
+    returns = [
+        part
+        for message in result.all_messages()
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    ]
+    assert len(returns) == 1, f"expected exactly one tool return, got {len(returns)}"
+    return returns[0]
+
+
+async def _run_one_tool(
+    spec: Any,
+    *,
+    name: str = "t",
+    user: Any = "alice",
+    args: dict[str, Any] | None = None,
+    **toolset_kwargs: Any,
+) -> Any:
+    """One agent run whose model calls ``name`` once and then answers."""
+    toolset = SpecToolset({name: spec}, **toolset_kwargs)
+    agent = Agent(tool_calling_model(name, args), deps_type=AgentDeps, toolsets=[toolset])
+    return await agent.run("go", deps=AgentDeps(user=user))
+
+
+async def test_a_business_failure_marks_the_tool_return_failed():
+    """The defect in one assertion: a ``ServiceError`` used to reach the wire as
+    a *successful* call whose payload happened to read like a refusal."""
+    result = await _run_one_tool(
+        ServiceSpec(service=boom, permission_classes=[AllowAny], atomic=False)
+    )
+    part = _tool_return(result)
+    assert part.outcome == "failed"
+    # The message the model reads is unchanged by the marking.
+    assert part.content == "nope"
+    # And the run survived it, which is what separates ``ToolFailed`` from an
+    # ordinary exception: the model got to answer.
+    assert result.output == "done"
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_an_unresolved_target_marks_the_tool_return_failed():
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="alice")
+    result = await _run_one_tool(retrieve_spec(), user=user, args={"pk": 999})
+    part = _tool_return(result)
+    assert part.outcome == "failed"
+    assert part.content == "not found"
+
+
+async def test_a_dispatch_past_its_deadline_marks_the_tool_return_failed():
+    def crawl(user):
+        """Takes longer than the deadline."""
+        time.sleep(0.2)
+        return {}
+
+    result = await _run_one_tool(
+        ServiceSpec(service=crawl, permission_classes=[AllowAny], atomic=False),
+        name="crawl",
+        dispatch_timeout=0.01,
+    )
+    part = _tool_return(result)
+    assert part.outcome == "failed"
+    assert "was abandoned" in str(part.content)
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_result_over_the_ceiling_marks_the_tool_return_failed():
+    """The dispatch succeeded and the *result* was refused. ``failed`` is still
+    the truthful marking: nothing usable reached the model."""
+    from asgiref.sync import sync_to_async
+
+    user = await sync_to_async(User.objects.create)(username="alice")
+    await sync_to_async(Widget.objects.create)(name="a", price=1, owner=user)
+
+    result = await _run_one_tool(list_spec(), name="list_widgets", user=user, max_result_bytes=20)
+    part = _tool_return(result)
+    assert part.outcome == "failed"
+    assert "byte ceiling" in str(part.content)
+
+
+async def test_an_exception_map_handler_that_returns_a_value_still_succeeds():
+    """The consumer seam is unchanged, and so is its marking.
+
+    ``exception_map`` is documented as returning *the tool's result*, and a
+    returned value is what pydantic-ai marks ``"success"``. A project using the
+    seam to turn an exception into an ordinary answer -- a "nothing matched" it
+    would rather express as an empty payload than as a refusal -- keeps getting
+    a successful call, not a failed one wearing its payload."""
+    result = await _run_one_tool(
+        ServiceSpec(service=boom, permission_classes=[AllowAny], atomic=False),
+        exception_map={ServiceError: lambda exc: {"matches": []}},
+    )
+    part = _tool_return(result)
+    assert part.outcome == "success"
+    assert part.content == {"matches": []}
 
 
 # --- filter_set needs no QueryParam ------------------------------------------
@@ -2017,10 +2142,11 @@ async def test_an_over_budget_result_fails_rather_than_truncating():
 
     toolset = SpecToolset({"list_widgets": list_spec()}, max_result_bytes=20)
     tools = await toolset.get_tools(None)
-    result = await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+    with pytest.raises(ToolFailed) as caught:
+        await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
 
-    assert "over the 20 byte ceiling" in result["error"]
-    assert "not truncated" in result["error"]
+    assert "over the 20 byte ceiling" in caught.value.message
+    assert "not truncated" in caught.value.message
 
 
 @pytest.mark.django_db(transaction=True)
@@ -2101,8 +2227,9 @@ async def test_a_call_past_its_deadline_answers_instead_of_hanging():
     async def _slow():
         await asyncio.sleep(1)
 
-    result = await _with_deadline(_slow(), 0.01, label="list_widgets")
-    assert "longer than the 0.01s limit" in result["error"]
+    with pytest.raises(ToolFailed) as caught:
+        await _with_deadline(_slow(), 0.01, label="list_widgets")
+    assert "longer than the 0.01s limit" in caught.value.message
 
 
 async def test_no_deadline_awaits_normally():
@@ -2809,9 +2936,10 @@ def test_the_byte_ceiling_is_measured_on_the_envelope():
     user = User.objects.create(username="u")
     Widget.objects.create(name="a", price=1, owner=user)
 
-    result = _dispatch(list_spec(), user, {}, max_result_bytes=40)
+    with pytest.raises(ToolFailed) as caught:
+        _dispatch(list_spec(), user, {}, max_result_bytes=40)
 
-    assert "error" in result and "40 byte ceiling" in result["error"]
+    assert "40 byte ceiling" in caught.value.message
 
 
 async def test_the_pagination_instruction_teaches_the_envelope():
@@ -3469,12 +3597,14 @@ async def test_dispatch_timeout_log_line_carries_run_correlation(caplog):
     )
     tools = await toolset.get_tools(None)
 
-    with caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"):
-        result = await toolset.call_tool(
+    with (
+        caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"),
+        pytest.raises(ToolFailed, match="was abandoned"),
+    ):
+        await toolset.call_tool(
             "crawl", {}, ctx_for("u", run_id="run-slow", tool_call_id="call-slow"), tools["crawl"]
         )
 
-    assert "was abandoned" in result["error"]
     record = next(r for r in caplog.records if "exceeded its" in r.getMessage())
     assert record.run_id == "run-slow"
     assert record.tool_call_id == "call-slow"
@@ -3490,7 +3620,10 @@ async def test_result_bound_log_line_carries_run_correlation(caplog):
     toolset = SpecToolset({"list_widgets": list_spec()}, max_result_bytes=1)
     tools = await toolset.get_tools(None)
 
-    with caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"):
+    with (
+        caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"),
+        pytest.raises(ToolFailed),
+    ):
         await toolset.call_tool(
             "list_widgets", {}, ctx_for(user, run_id="run-fat"), tools["list_widgets"]
         )
