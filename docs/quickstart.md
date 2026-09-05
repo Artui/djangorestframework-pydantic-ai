@@ -458,18 +458,47 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | A FilterSet `param_map` target that isn't a real column | Django's `FieldError` propagates — an author's error the model cannot correct by picking a different sort, and one that can't be checked at construction without a queryset |
 | Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run — see the caveat below |
 
-!!! warning "A tool-failure policy changes the last row"
+!!! warning "A tool-failure policy does *not* change the last row"
     "Aborts the run" is what a plain `pydantic_ai.Agent` does: nothing catches
-    the exception, so it propagates out of `agent.run`. A host that installs a
-    tool-failure policy catches it and hands the model a failed-tool result
-    instead, and the run keeps going — free to try the next row in the same
-    turn. `django-pydantic-agent`'s `build_agent` installs one **by default**
-    (`ToolFailureConfig(enabled=True)`), so that is the behaviour you get under
-    it and under `django-ag-ui` unless you opt out.
+    the exception, so it propagates out of `agent.run`. A tool-failure policy
+    normally converts an escaping exception into a failed-tool result and lets
+    the run continue — but `django-pydantic-agent`'s exempts an authorization
+    refusal from exactly that, by default, and `django-ag-ui` inherits the
+    exemption. So a denial aborts the run under those hosts too.
+
+    That exemption is deliberate and worth knowing rather than working around:
+    converting a denial would leave the run alive with the model free to try the
+    next row, and a refusal a model can tell apart from a missing row turns a
+    permission boundary into an existence oracle over rows the acting user
+    cannot read — inside one turn, spending no retry budget.
 
     The denial itself is unaffected on every host: nothing is dispatched and no
-    data is rendered. What changes is whether the run survives it, so do not
-    rely on a `PermissionDenied` escaping as your only stop signal.
+    data is rendered.
+
+!!! danger "Your own exception has to *be* a `ServiceError`"
+    Every row above is matched by type. A service that raises its own error
+    class gets none of this unless that class derives from drf-services'
+    `ServiceError`:
+
+    ```python
+    from rest_framework_services import ServiceError
+
+
+    class BookingError(ServiceError):  # not Exception
+        """Something the booking rules refuse."""
+    ```
+
+    Deriving from `Exception` is the ordinary thing to reach for, and the
+    failure is silent in a way worth spelling out, because it is not confined to
+    the agent. The same exception escapes the DRF view as a **500 for what is
+    plainly a 409**, escapes MCP as a protocol error, and aborts an agent run
+    rather than settling the call as failed. Nothing warns — not at
+    declaration, not at mount, not at dispatch.
+
+    Two separate projects made this exact mistake and neither test suite could
+    see it, because every write test asserted a path that succeeds. If a project
+    genuinely cannot change its exception's base class, `exception_map=` is the
+    other door: it takes the type and returns what the model should be told.
 
 ### Why the failed rows raise instead of returning
 

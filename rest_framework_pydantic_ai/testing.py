@@ -28,11 +28,11 @@ result = await agent.run("go", deps=AgentDeps(user=user))
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 
 def tool_calling_model(
@@ -63,18 +63,93 @@ def tool_calling_model(
     **before** a tool return, because a retried call's message history carries
     both and the tool-return arm would end the run on the failed attempt.
     """
+
+    def model_fn(messages: Any, info: Any) -> ModelResponse:
+        return _next_response(messages, tool_name, args, retry_args, final_text)
+
+    return FunctionModel(model_fn)
+
+
+def _next_response(
+    messages: Any,
+    tool_name: str,
+    args: Mapping[str, Any] | None,
+    retry_args: Mapping[str, Any] | None,
+    final_text: str,
+) -> ModelResponse:
+    """What the double answers next, given the run so far.
+
+    Shared by the streamed and non-streamed doubles rather than copied into
+    each, because the branch order below is the part that is easy to get wrong
+    and a second copy of it is a second chance to.
+    """
     first: dict[str, Any] = dict(args or {})
     second: dict[str, Any] = dict(retry_args) if retry_args is not None else dict(first)
 
-    def model_fn(messages: Any, info: Any) -> ModelResponse:
-        last = messages[-1]
-        if any(part.part_kind == "retry-prompt" for part in last.parts):
-            return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=second)])
-        if any(part.part_kind == "tool-return" for part in last.parts):
-            return ModelResponse(parts=[TextPart(final_text)])
-        return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=first)])
+    last = messages[-1]
+    if any(part.part_kind == "retry-prompt" for part in last.parts):
+        return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=second)])
+    if any(part.part_kind == "tool-return" for part in last.parts):
+        return ModelResponse(parts=[TextPart(final_text)])
+    return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=first)])
 
-    return FunctionModel(model_fn)
+
+def streaming_tool_calling_model(
+    tool_name: str,
+    args: Mapping[str, Any] | None = None,
+    *,
+    retry_args: Mapping[str, Any] | None = None,
+    final_text: str = "done",
+) -> FunctionModel:
+    """`tool_calling_model`, for a transport that streams.
+
+    The arguments and the behaviour are that function's; the difference is that
+    this one supplies ``stream_function`` as well, and it exists because a
+    ``FunctionModel`` built with ``function=`` alone cannot serve a streamed
+    request at all -- it raises ``FunctionModel must receive a
+    `stream_function` to support streamed requests``.
+
+    That matters more than a missing convenience. AG-UI *always* streams, so a
+    consumer reaching for the double next door to test what its browser
+    receives gets a run that dies before the toolset is touched -- and the
+    transport redacts the reason, so what reaches the client is "The run
+    failed", naming nothing. The one release whose entire subject is what a
+    consumer sees downstream of a tool call could not be tested downstream of a
+    tool call.
+
+    Both functions are supplied, which ``FunctionModel`` allows: the same double
+    then serves a streamed run and a non-streamed one, so a test does not have to
+    know which the transport under it chose.
+
+    ```python
+    from rest_framework_pydantic_ai.testing import streaming_tool_calling_model
+
+    # An AG-UI endpoint, driven end to end.
+    agent = Agent(streaming_tool_calling_model("refund_order", {"reference": "ENC-1"}))
+    ```
+    """
+
+    def model_fn(messages: Any, info: Any) -> ModelResponse:
+        return _next_response(messages, tool_name, args, retry_args, final_text)
+
+    async def stream_fn(messages: Any, info: Any) -> AsyncIterator[Any]:
+        # Unpacked rather than iterated, because `_next_response` answers with
+        # exactly one part and a loop here would carry an arm no run can reach.
+        # If that ever stops being true this raises rather than silently
+        # streaming the first of several.
+        (part,) = _next_response(messages, tool_name, args, retry_args, final_text).parts
+        if isinstance(part, ToolCallPart):
+            # One chunk for the whole call. A model streams arguments a token at
+            # a time and a client reassembles them; this has them already, and
+            # one delta is a valid stream a reassembling client handles the same
+            # way.
+            yield {0: DeltaToolCall(name=part.tool_name, json_args=part.args_as_json_str())}
+        elif isinstance(part, TextPart):
+            yield part.content
+        else:  # pragma: no cover - `_next_response` emits only these two.
+            raise AssertionError(f"the double produced an unstreamable part: {part!r}")
+
+    return FunctionModel(model_fn, stream_function=stream_fn)
 
 
 def instruction_capturing_model(
@@ -109,4 +184,8 @@ def instruction_capturing_model(
     return FunctionModel(model_fn)
 
 
-__all__ = ["instruction_capturing_model", "tool_calling_model"]
+__all__ = [
+    "instruction_capturing_model",
+    "streaming_tool_calling_model",
+    "tool_calling_model",
+]

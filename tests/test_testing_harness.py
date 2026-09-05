@@ -19,7 +19,11 @@ from rest_framework.permissions import AllowAny
 from rest_framework_services import ServiceSpec
 
 from rest_framework_pydantic_ai import AgentDeps, SpecToolset
-from rest_framework_pydantic_ai.testing import instruction_capturing_model, tool_calling_model
+from rest_framework_pydantic_ai.testing import (
+    instruction_capturing_model,
+    streaming_tool_calling_model,
+    tool_calling_model,
+)
 
 
 def _toolset(service, name="t"):
@@ -122,3 +126,83 @@ async def test_instruction_capturing_model_honours_final_text():
     agent = Agent(instruction_capturing_model(captured, final_text="ok"), deps_type=AgentDeps)
 
     assert (await agent.run("go", deps=AgentDeps(user="u"))).output == "ok"
+
+
+def _ping(user: Any) -> Any:
+    """Ping."""
+    return {"ok": True}
+
+
+async def test_the_streaming_double_serves_a_streamed_run() -> None:
+    """The reason this double exists: the other one cannot serve one at all.
+
+    ``FunctionModel`` built with ``function=`` alone raises on a streamed
+    request, and AG-UI always streams -- so a consumer testing what its browser
+    receives got a run that died before the toolset was touched, reported
+    through the transport's redaction as "The run failed", naming nothing.
+    """
+    agent = Agent(
+        streaming_tool_calling_model("t"),
+        deps_type=AgentDeps,
+        toolsets=[_toolset(_ping)],
+    )
+
+    async with agent.run_stream("go", deps=AgentDeps(user="alice")) as run:
+        output = await run.get_output()
+
+    assert output == "done"
+
+
+async def test_the_streaming_double_still_serves_a_plain_run() -> None:
+    """Both functions are supplied, so one double covers either transport.
+
+    A test should not have to know whether the thing under it streams.
+    """
+    agent = Agent(
+        streaming_tool_calling_model("t"),
+        deps_type=AgentDeps,
+        toolsets=[_toolset(_ping)],
+    )
+
+    result = await agent.run("go", deps=AgentDeps(user="alice"))
+
+    assert result.output == "done"
+
+
+async def test_the_streaming_double_retries_in_the_same_order() -> None:
+    """The branch order is shared with the non-streamed double, not copied.
+
+    A retry prompt has to be read before a tool return, because a retried
+    call's history carries both and reading them the other way round ends the
+    run on the failed attempt. This asserts the streamed path has the same
+    order -- the reason the decision lives in one function.
+    """
+    attempts: list[str] = []
+
+    def picky(data, user):
+        """Refuses the first attempt and accepts the second."""
+        attempts.append(data["mode"])
+        if len(attempts) == 1:
+            raise ModelRetry("try again")
+        return {"mode": data["mode"]}
+
+    toolset = SpecToolset(
+        {
+            "t": ServiceSpec(
+                service=picky,
+                input_serializer=_ModeInputSerializer,
+                permission_classes=[AllowAny],
+                atomic=False,
+            )
+        }
+    )
+    agent = Agent(
+        streaming_tool_calling_model("t", {"mode": "first"}, retry_args={"mode": "second"}),
+        deps_type=AgentDeps,
+        toolsets=[toolset],
+    )
+
+    async with agent.run_stream("go", deps=AgentDeps(user="u")) as run:
+        await run.get_output()
+
+    assert attempts == ["first", "second"], "the streamed double retried out of order"
