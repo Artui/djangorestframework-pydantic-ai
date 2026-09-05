@@ -1431,17 +1431,42 @@ Requires <code>djangorestframework-services&gt;=0.29.1</code>.</p>
 </tbody>
 </table>
 <div class="admonition warning">
-<p class="admonition-title">A tool-failure policy changes the last row</p>
+<p class="admonition-title">A tool-failure policy does <em>not</em> change the last row</p>
 <p>"Aborts the run" is what a plain <code>pydantic_ai.Agent</code> does: nothing catches
-the exception, so it propagates out of <code>agent.run</code>. A host that installs a
-tool-failure policy catches it and hands the model a failed-tool result
-instead, and the run keeps going — free to try the next row in the same
-turn. <code>django-pydantic-agent</code>'s <code>build_agent</code> installs one <strong>by default</strong>
-(<code>ToolFailureConfig(enabled=True)</code>), so that is the behaviour you get under
-it and under <code>django-ag-ui</code> unless you opt out.</p>
+the exception, so it propagates out of <code>agent.run</code>. A tool-failure policy
+normally converts an escaping exception into a failed-tool result and lets
+the run continue — but <code>django-pydantic-agent</code>'s exempts an authorization
+refusal from exactly that, by default, and <code>django-ag-ui</code> inherits the
+exemption. So a denial aborts the run under those hosts too.</p>
+<p>That exemption is deliberate and worth knowing rather than working around:
+converting a denial would leave the run alive with the model free to try the
+next row, and a refusal a model can tell apart from a missing row turns a
+permission boundary into an existence oracle over rows the acting user
+cannot read — inside one turn, spending no retry budget.</p>
 <p>The denial itself is unaffected on every host: nothing is dispatched and no
-data is rendered. What changes is whether the run survives it, so do not
-rely on a <code>PermissionDenied</code> escaping as your only stop signal.</p>
+data is rendered.</p>
+</div>
+<div class="admonition danger">
+<p class="admonition-title">Your own exception has to <em>be</em> a <code>ServiceError</code></p>
+<p>Every row above is matched by type. A service that raises its own error
+class gets none of this unless that class derives from drf-services'
+<code>ServiceError</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_services</span><span class="w"> </span><span class="kn">import</span> <span class="n">ServiceError</span>
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="k">class</span><span class="w"> </span><span class="nc">BookingError</span><span class="p">(</span><span class="n">ServiceError</span><span class="p">):</span>  <span class="c1"># not Exception</span>
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Something the booking rules refuse.&quot;&quot;&quot;</span>
+</span></code></pre></div>
+<p>Deriving from <code>Exception</code> is the ordinary thing to reach for, and the
+failure is silent in a way worth spelling out, because it is not confined to
+the agent. The same exception escapes the DRF view as a <strong>500 for what is
+plainly a 409</strong>, escapes MCP as a protocol error, and aborts an agent run
+rather than settling the call as failed. Nothing warns — not at
+declaration, not at mount, not at dispatch.</p>
+<p>Two separate projects made this exact mistake and neither test suite could
+see it, because every write test asserted a path that succeeds. If a project
+genuinely cannot change its exception's base class, <code>exception_map=</code> is the
+other door: it takes the type and returns what the model should be told.</p>
 </div>
 <h3 id="why-the-failed-rows-raise-instead-of-returning">Why the failed rows raise instead of returning<a class="headerlink" href="#why-the-failed-rows-raise-instead-of-returning" title="Permanent link">&para;</a></h3>
 <p>Every <code>ToolFailed</code> row above used to be a returned <code>{"error": "..."}</code> dict. The
@@ -1463,7 +1488,7 @@ value is still marked <code>"success"</code>.</p>
 <code>max_retries</code> failed attempts (default <code>1</code>, pydantic-ai's function-tool
 default) the run aborts with <code>UnexpectedModelBehavior</code>. Raise it for models
 that need more attempts to converge:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">specs</span><span class="p">,</span> <span class="n">max_retries</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 </span></code></pre></div>
 
 

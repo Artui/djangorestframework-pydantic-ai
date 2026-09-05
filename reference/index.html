@@ -812,6 +812,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.testing.streaming_tool_calling_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        streaming_tool_calling_model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#rest_framework_pydantic_ai.testing.instruction_capturing_model" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1183,6 +1194,17 @@
     <span class="md-ellipsis">
       
         tool_calling_model
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rest_framework_pydantic_ai.testing.streaming_tool_calling_model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        streaming_tool_calling_model
       
     </span>
   </a>
@@ -3192,6 +3214,52 @@ arguments once will reject them again and the run will not settle.</p>
         <p>The branch order matters and is not arbitrary. A retry prompt is checked
 <strong>before</strong> a tool return, because a retried call's message history carries
 both and the tool-return arm would end the run on the failed attempt.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="rest_framework_pydantic_ai.testing.streaming_tool_calling_model" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">streaming_tool_calling_model</span>
+
+
+<a href="#rest_framework_pydantic_ai.testing.streaming_tool_calling_model" class="headerlink" title="Permanent link">&para;</a></h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">streaming_tool_calling_model</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">tool_name</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">args</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">retry_args</span><span class="p">:</span> <span class="n">Mapping</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">final_text</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;done&quot;</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">FunctionModel</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p><code>tool_calling_model</code>, for a transport that streams.</p>
+<p>The arguments and the behaviour are that function's; the difference is that
+this one supplies <code>stream_function</code> as well, and it exists because a
+<code>FunctionModel</code> built with <code>function=</code> alone cannot serve a streamed
+request at all -- it raises <code>FunctionModel must receive a
+`stream_function` to support streamed requests</code>.</p>
+<p>That matters more than a missing convenience. AG-UI <em>always</em> streams, so a
+consumer reaching for the double next door to test what its browser
+receives gets a run that dies before the toolset is touched -- and the
+transport redacts the reason, so what reaches the client is "The run
+failed", naming nothing. The one release whose entire subject is what a
+consumer sees downstream of a tool call could not be tested downstream of a
+tool call.</p>
+<p>Both functions are supplied, which <code>FunctionModel</code> allows: the same double
+then serves a streamed run and a non-streamed one, so a test does not have to
+know which the transport under it chose.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai.testing</span><span class="w"> </span><span class="kn">import</span> <span class="n">streaming_tool_calling_model</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># An AG-UI endpoint, driven end to end.</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">agent</span> <span class="o">=</span> <span class="n">Agent</span><span class="p">(</span><span class="n">streaming_tool_calling_model</span><span class="p">(</span><span class="s2">&quot;refund_order&quot;</span><span class="p">,</span> <span class="p">{</span><span class="s2">&quot;reference&quot;</span><span class="p">:</span> <span class="s2">&quot;ENC-1&quot;</span><span class="p">}))</span>
+</span></code></pre></div>
 
 
     </div>
