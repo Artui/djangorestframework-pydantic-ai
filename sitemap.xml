@@ -2,30 +2,30 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://artui.github.io/djangorestframework-pydantic-ai/</loc>
-         <lastmod>2026-08-30</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://artui.github.io/djangorestframework-pydantic-ai/agent-audience/</loc>
-         <lastmod>2026-08-30</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://artui.github.io/djangorestframework-pydantic-ai/background-runs/</loc>
-         <lastmod>2026-08-30</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://artui.github.io/djangorestframework-pydantic-ai/polymorphic-actions/</loc>
-         <lastmod>2026-08-30</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://artui.github.io/djangorestframework-pydantic-ai/quickstart/</loc>
-         <lastmod>2026-08-30</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://artui.github.io/djangorestframework-pydantic-ai/reference/</loc>
-         <lastmod>2026-08-30</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
     <url>
          <loc>https://artui.github.io/djangorestframework-pydantic-ai/spec-registry/</loc>
-         <lastmod>2026-08-30</lastmod>
+         <lastmod>2026-09-05</lastmod>
     </url>
 </urlset>

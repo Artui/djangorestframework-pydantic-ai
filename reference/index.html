@@ -1618,7 +1618,7 @@ pydantic-ai's own function-tool default.</p>
                 <p>Ceiling on a rendered result, measured on the encoded
 payload because what is being protected is the model's context
 window. Over it the call <strong>fails</strong> with a model-readable
-<code>{"error": …}</code> — never truncates, because a partial payload looks
+<code>ToolFailed</code> — never truncates, because a partial payload looks
 complete.</p>
               </div>
             </td>
@@ -2041,7 +2041,7 @@ loop, exactly as <code>call_tool</code> has to for dispatch.</p>
 <p>The per-tool descriptions and parameter schemas say what each tool <em>is</em>,
 but not how the family behaves: that list tools accept <code>page</code> /
 <code>limit</code> / <code>ordering</code>, that a business failure comes back as a readable
-<code>{"error": …}</code> result (a final answer, not a reason to retry) while a
+failed result (a final answer, not a reason to retry) while a
 bad argument comes back as a retry request, and that a permission error
 is final. Pydantic-AI appends the block to the system prompt each turn,
 for a toolset attached directly <em>or</em> wrapped by a capability.</p>
@@ -2360,11 +2360,16 @@ this toolset -- a test asserting the default pool, say.</p>
 
     <div class="doc doc-contents ">
 
-        <p>Return <code>payload</code>, or a model-readable refusal when it is over budget.</p>
+        <p>Return <code>payload</code>, or raise a model-readable refusal when it is over budget.</p>
 <p>Measured on the envelope, because the envelope is what is sent. Override to
 bound on something other than serialized length -- a row count, a per-run
 running total read off <code>ctx.usage</code>, a taper against <code>ctx.usage_limits</code>
 as a run gets long -- or to shape the refusal differently.</p>
+<p><strong>The default raises <code>ToolFailed</code></strong>; an override is free to return a
+value instead, and that value becomes the tool's result marked
+<code>outcome="success"</code>. Delegating to <code>super()</code> and inspecting what comes
+back is the one shape that changed -- the refusal used to be a returned
+<code>{"error": …}</code> and is now an exception.</p>
 <p><code>ctx</code> is not merely passed through to an override here: the default
 reads this run's correlation fields off it and stamps them on the
 <code>WARNING</code> a fired bound emits, which is the one line saying why a
