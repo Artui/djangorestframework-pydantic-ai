@@ -6,6 +6,42 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-09-05
+
+### Added
+
+- **`testing.streaming_tool_calling_model`**, for a transport that streams.
+  `tool_calling_model` builds a `FunctionModel` with `function=` alone, which
+  cannot serve a streamed request at all -- and AG-UI always streams. So a
+  consumer reaching for the shipped double to test what its browser receives got
+  a run that died before the toolset was touched, surfaced through the
+  transport's redaction as "The run failed", naming nothing. The release whose
+  whole subject is what a consumer sees downstream of a tool call could not be
+  tested downstream of a tool call.
+
+  Both functions are supplied, so one double serves a streamed run and a plain
+  one and a test need not know which the transport under it chose.
+
+### Fixed
+
+- **The docs now state the coupling that is matched by type and was written
+  nowhere.** A service raising its own error class gets none of the error
+  handling unless that class derives from `ServiceError`. Deriving from
+  `Exception` is the ordinary thing to reach for, and the failure is silent and
+  not confined to the agent: the same exception escapes the DRF view as a 500
+  for what is plainly a 409, escapes MCP as a protocol error, and aborts a run
+  rather than settling the call as failed. Two separate projects made this
+  mistake and neither suite could see it, because every write test asserted a
+  path that succeeds. `exception_map=` is the other door where a base class
+  cannot change.
+
+- **A warning box in the quickstart was wrong about the one host it named.** It
+  said a tool-failure policy converts an authorization denial into a failed-tool
+  result and lets the run continue. `django-pydantic-agent`'s exempts a denial
+  from exactly that, by default, and `django-ag-ui` inherits the exemption -- so
+  a denial aborts the run under those hosts too. The box now says so, and why
+  the exemption is deliberate rather than an oversight.
+
 ## [0.25.0] — 2026-09-05
 
 ### Changed — BREAKING
@@ -1448,7 +1484,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.22.0...v0.23.0
