@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-09-05
+
 ### Changed — BREAKING
 
 - **Every terminal failure is now raised as `pydantic_ai.ToolFailed` instead of
@@ -1446,7 +1448,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.24.0...v0.25.0
 [0.24.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.21.0...v0.22.0
