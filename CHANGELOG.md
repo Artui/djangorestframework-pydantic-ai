@@ -6,6 +6,54 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **Every terminal failure is now raised as `pydantic_ai.ToolFailed` instead of
+  returned as `{"error": "..."}`.** Four sites move: a `ServiceError` business
+  rule, an unresolved target (`"not found"`), a dispatch that ran past
+  `dispatch_timeout`, and a rendered result over `max_result_bytes`. **The
+  sentence the model reads is unchanged at all four.**
+
+  What changes is the one field a returned value cannot carry. Pydantic-AI marks
+  an ordinary return `outcome="success"` on the resulting `ToolReturnPart`; only
+  a raised `ToolFailed` marks it `"failed"`. A refusal handed back as a value was
+  therefore a failure only the model's reader could see — a log, an audit record
+  and a transport streaming the call to a browser all got a *successful* call
+  carrying prose, with nothing but the payload's wording to tell a conflict from
+  a row. Three distinct failure kinds were byte-identical to a success on the
+  AG-UI wire.
+
+  `ToolFailed` keeps both properties the returned dict was chosen for: it spends
+  none of the tool's retry budget, and it does not end the run. Unlike
+  `ModelRetry` it prepends no correction instructions — right for a bad argument,
+  wrong for a conflict the model cannot argue with.
+
+  **What breaks.** Anything asserting on the returned shape: a test reading
+  `result["error"]`, or a caller invoking `SpecToolset.call_tool` /
+  `_call_spec` directly and branching on the payload. Catch `ToolFailed` and read
+  `.message` instead. An `enforce_result_bytes` override that delegates to
+  `super()` and inspects what comes back is the other shape affected — the
+  refusal now arrives as an exception rather than a return.
+
+  **`exception_map` is unchanged.** A consumer handler that *returns* a value
+  still does, and that value is still marked `"success"` — the escape hatch for
+  an exception a project would rather express as an ordinary answer. A handler
+  that wants the failed marking raises `ToolFailed` itself.
+
+- **Floored at `pydantic-ai-slim>=2.16` (was `>=2`, `<3` unchanged).**
+  `ToolFailed` first exists at 2.16 and is imported at module level, so below the
+  floor the package does not import at all. The floor buys the `outcome="failed"`
+  marking; there is no older spelling of it, because an ordinary returned value
+  cannot carry one at any version.
+
+### Changed
+
+- The conventions block `get_instructions` teaches the model no longer describes
+  an `{"error": "..."}` payload, which the toolset had stopped producing. It now
+  says a business-rule failure comes back as a failed call whose content explains
+  why. An instruction naming a key that is never sent is worse than no
+  instruction, since a model trusts it over what it observes.
+
 ## [0.24.0] — 2026-08-30
 
 ### Changed — BREAKING

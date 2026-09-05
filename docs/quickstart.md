@@ -446,8 +446,10 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | drf-services outcome | What the agent sees |
 | --- | --- |
 | `ServiceValidationError` (bad input) | `ModelRetry` with the field errors — the model self-corrects |
-| `ServiceError` (business rule) | `{"error": "..."}` — model-readable content |
-| Unresolved instance | `{"error": "not found"}` |
+| `ServiceError` (business rule) | `ToolFailed` with the rule's own message — a failed result the model reads and reports |
+| Unresolved instance | `ToolFailed("not found")` |
+| A dispatch past `dispatch_timeout` | `ToolFailed` — abandoned, with the sentence telling the model to narrow and call again |
+| A rendered result over `max_result_bytes` | `ToolFailed` — refused rather than truncated, since a partial payload looks complete |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
 | Non-integer `page` / `limit` | `ModelRetry` — naming what is accepted |
 | An `ordering` sent to a list tool that advertises no sort at all | `ModelRetry` — saying the tool has none, rather than letting it fall through as an unknown key |
@@ -468,6 +470,26 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
     The denial itself is unaffected on every host: nothing is dispatched and no
     data is rendered. What changes is whether the run survives it, so do not
     rely on a `PermissionDenied` escaping as your only stop signal.
+
+### Why the failed rows raise instead of returning
+
+Every `ToolFailed` row above used to be a returned `{"error": "..."}` dict. The
+model read the same sentence either way, so the change is not about what it
+sees — it is about what everything *else* sees. Pydantic-AI marks an ordinary
+return `outcome="success"` on the resulting `ToolReturnPart`; only a raised
+`ToolFailed` marks it `"failed"`. Returning the dict therefore made a refusal
+indistinguishable from an answer to a log, an audit record, or a transport
+streaming the call to a browser, all of which had nothing but the payload's
+wording to go on.
+
+`ToolFailed` keeps the two properties the dict was chosen for: it spends none of
+the tool's retry budget, and it does not end the run. It also prepends no
+correction instructions, which `ModelRetry` does — right for a bad argument, and
+wrong for a conflict the model cannot argue with.
+
+If a failure is one your project would rather express as an ordinary result,
+`exception_map` still takes a handler that **returns** a value, and a returned
+value is still marked `"success"`.
 
 Each `ModelRetry` row consumes one unit of the tool's retry budget: after
 `max_retries` failed attempts (default `1`, pydantic-ai's function-tool
