@@ -2515,15 +2515,35 @@ def test_hidden_fields_leave_the_payload_and_choices_are_spoken():
     assert _rows(rows) == [{"id": 1, "name": "Sprocket", "status": "In stock"}]
 
 
-@pytest.mark.django_db
+# ``transaction=True`` because neither write below can be rolled back. ``acreate``
+# reaches the ORM through ``sync_to_async``, which in an async test with no
+# synchronous frame above the loop lands on asgiref's shared thread -- a different
+# thread, so a different connection, in autocommit -- while pytest-django's
+# rollback wraps this thread's connection and nothing else. Both rows would commit
+# and outlive the test, to be read by whichever later test counts rows, which then
+# fails for a reason nowhere near itself.
+#
+# Creating them on the test's own thread instead is the cheaper-looking fix and it
+# does not work: the dispatch under test runs on that same shared thread, and from
+# there rows still uncommitted in this thread's transaction are not visible at all
+# -- measured, not assumed. The assertion is about exactly those rows, so it would
+# read back an empty page.
+#
+# The cost is a flush of every table at teardown rather than a rollback. The two
+# other tests in this file that write from a dispatch thread pay it for the same
+# reason.
+@pytest.mark.django_db(transaction=True)
 async def test_call_tool_uses_the_projection_built_at_construction():
     user = await User.objects.acreate(username="u2")
-    await Widget.objects.acreate(name="Sprocket", price=100, owner=user)
+    widget = await Widget.objects.acreate(name="Sprocket", price=100, owner=user)
     toolset = SpecToolset({"widgets": agent_list_spec()})
 
     rows = await toolset.call_tool("widgets", {}, ctx_for(user), None)
 
-    assert _rows(rows) == [{"id": 1, "name": "Sprocket", "status": "In stock"}]
+    # ``widget.pk`` rather than a literal 1: a rolled-back test always starts from
+    # an empty table, but a truncating one only restarts the ids on backends that
+    # reuse them, and what this asserts is the projection, not the numbering.
+    assert _rows(rows) == [{"id": widget.pk, "name": "Sprocket", "status": "In stock"}]
 
 
 async def test_handle_instruction_present_only_when_a_tool_has_a_handle():

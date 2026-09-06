@@ -89,6 +89,16 @@ add it to `CHANGELOG.md` under `[Unreleased]`.
   `pytest-asyncio` (`asyncio_mode = "auto"`); just write `async def test_...`.
 - DB-touching tests use `@pytest.mark.django_db`. The minimal Django app lives
   at `tests/testapp/`; `tests/conftest_settings.py` is the settings module.
+- **A test that writes rows from anywhere but its own thread needs
+  `django_db(transaction=True)`.** pytest-django's rollback wraps the connection
+  belonging to the thread running the test, and `django.db.connections` is
+  thread-local — so a write reached through `sync_to_async`, which is every
+  dispatch this package makes and every `acreate` in an async test, lands on
+  asgiref's shared thread in autocommit and commits. Nothing fails there; the
+  stray row is read by a later test, which then looks broken for a reason
+  nowhere near itself. `tests/conftest.py` checks the committed contents of the
+  database after every test and fails the one that left rows, so this is
+  enforced rather than remembered.
 - 100% line + branch coverage is enforced via `--cov-fail-under=100`. If a
   branch is genuinely unreachable, **restructure rather than
   `# pragma: no cover`**.
