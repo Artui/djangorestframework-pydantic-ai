@@ -40,6 +40,7 @@ from typing import Any, cast
 
 from asgiref.sync import sync_to_async
 from django.core.exceptions import ImproperlyConfigured
+from django.db import connections
 from django.http import HttpRequest
 from pydantic_ai import ModelRetry, RunContext, ToolFailed
 from pydantic_ai.tools import ToolDefinition
@@ -729,7 +730,7 @@ class SpecToolset(AbstractToolset[Any]):
             # caller's dict.
             result = await _with_deadline(
                 sync_to_async(
-                    self._call_spec,
+                    self._call_spec_releasing_connections,
                     thread_sensitive=self._thread_sensitive,
                     executor=self._executor,
                 )(
@@ -1018,6 +1019,73 @@ class SpecToolset(AbstractToolset[Any]):
             ),
             **kw,
         )
+
+    def _call_spec_releasing_connections(
+        self, spec: Spec, user: Any, args: dict[str, Any], *, ctx: RunContext[Any], **kw: Any
+    ) -> Any:
+        """``_call_spec``, plus the connection cleanup the thread hop owes.
+
+        Django opens a database connection **per thread** and closes one per
+        *request* — the ``request_finished`` receiver, ``close_old_connections``.
+        Off HTTP there is no request, and on the default
+        ``thread_sensitive=True`` the dispatch runs on asgiref's process-wide
+        ``single_thread_executor``, so the connection it opens there outlives
+        the call, the toolset and the agent, with nothing that will ever close
+        it. Two separate projects hit this and could not fix it from outside,
+        because ``django.db.connections`` is thread-local: only asgiref's thread
+        can close asgiref's connection. The symptom lands somewhere else
+        entirely — a test session that will not drop its database because it "is
+        being accessed by other users", naming neither this package nor the
+        thread holding the handle.
+
+        **Only what this call opened is released**, which is what makes the
+        cleanup safe on every thread it can land on rather than only the one it
+        was written for. ``sync_to_async`` runs on the *caller's* thread whenever
+        there is a synchronous frame above the loop (asgiref's
+        ``current_thread_executor``) — a WSGI request driving an agent through
+        ``async_to_sync`` — and that thread's connection is the request's, quite
+        possibly mid-``atomic``. It was open before this call, so it is not ours
+        and is not touched. An unconditional close here is the obvious fix and it
+        is wrong: it severs the caller's own transaction.
+
+        The bookkeeping stays true across calls rather than decaying: a dispatch
+        that opened a connection closes it, so the next one on the same shared
+        thread finds the thread as it was and owns what it opens in turn. A
+        connection someone *else* opened on that thread — a consumer's own
+        ``sync_to_async`` ORM work — stays theirs forever.
+
+        ``close()`` rather than Django's ``close_if_unusable_or_obsolete()``,
+        which is what ``close_old_connections`` calls: that one honours
+        ``CONN_MAX_AGE``, a budget for reusing a connection *across requests*.
+        There are no requests on this thread, so a connection held back for the
+        next one is held forever — and the alias would then read as "not ours"
+        on the following dispatch, quietly restoring the leak at any
+        ``CONN_MAX_AGE`` above zero.
+
+        Every clause above is held by a named test, because a 100% branch gate
+        cannot see the difference between them: mutating each one out in turn
+        says that ``test_a_dispatch_closes_the_connection_it_opened_on_the_shared_thread``
+        holds the cleanup itself, its ``persistent-connections`` parameter alone
+        holds ``close()`` over ``close_if_unusable_or_obsolete()``, and
+        ``test_a_dispatch_leaves_a_connection_it_did_not_open_alone`` is the only
+        thing standing between this and the unconditional version.
+        """
+        # ``initialized_only`` so asking the question does not itself build a
+        # wrapper for every configured alias on this thread.
+        held_before = {
+            conn.alias
+            for conn in connections.all(initialized_only=True)
+            if conn.connection is not None
+        }
+        try:
+            return self._call_spec(spec, user, args, ctx=ctx, **kw)
+        finally:
+            for conn in connections.all(initialized_only=True):
+                # No ``conn.connection is not None`` here: Django's ``close()``
+                # returns immediately on a wrapper that never connected, so the
+                # extra conjunct would change nothing and no test could hold it.
+                if conn.alias not in held_before:
+                    conn.close()
 
 
 def _validate_permissions(specs: Mapping[str, Spec], *, require: bool) -> None:

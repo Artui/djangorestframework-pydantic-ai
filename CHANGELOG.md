@@ -6,6 +6,44 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A dispatch no longer leaves a database connection open behind it.** Django
+  opens a connection per *thread* and closes one per *request*; off HTTP there is
+  no request, and on the default `thread_sensitive=True` every dispatch runs on
+  asgiref's process-wide `single_thread_executor` -- so the connection opened
+  there outlived the call, the toolset and the agent, with nothing that would
+  ever close it. Two separate projects hit this independently and neither could
+  fix it from outside, because `django.db.connections` is thread-local: only
+  asgiref's thread can close asgiref's connection, so both ended up pushing
+  `connections.close_all` back into that executor from an autouse fixture. The
+  symptom surfaced nowhere near the cause -- a pytest session that would not drop
+  its database because it "is being accessed by other users", naming neither this
+  package nor the thread holding the handle.
+
+  **Only what the call itself opened is released.** `sync_to_async` runs on the
+  *caller's* thread whenever a synchronous frame sits above the loop -- a WSGI
+  request driving an agent through `async_to_sync` -- and that thread's
+  connection belongs to the request, quite possibly mid-`atomic`. It was open
+  before the call, so it is not the dispatch's to close. The unconditional
+  version of this fix severs the caller's own transaction.
+
+  `close()` rather than Django's `close_if_unusable_or_obsolete()`, which is
+  what its `request_finished` receiver calls: that one honours `CONN_MAX_AGE`,
+  a budget for reuse *between requests*, and this thread has none -- a
+  connection held back for the next request there is held forever.
+
+  **Three earlier attempts at this were written and backed out, and the reason
+  is worth carrying.** The suite's SQLite database was in-memory, and Django's
+  SQLite backend *ignores* `close()` on an in-memory database on purpose, to
+  avoid destroying it. So the cleanup ran and did nothing, and no assertion
+  could tell a working fix from an empty `finally`: the third attempt passed the
+  whole suite at 100% coverage while proving nothing at all. It was never the
+  wrong method, it was an unobservable environment. `TEST["NAME"]` now points at
+  a file, and the two tests here assert the database is *not* in-memory before
+  they assert anything else, so reverting that fails loudly instead of quietly
+  going vacuous.
+
 ## [0.26.0] — 2026-09-05
 
 ### Added
