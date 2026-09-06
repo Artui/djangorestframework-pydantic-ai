@@ -11,9 +11,11 @@ from typing import Any
 
 import django_filters
 import pytest
+from asgiref.sync import async_to_sync, sync_to_async
 from django.contrib.auth.models import User
 from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import connection, connections
 from django.test import RequestFactory
 from pydantic_ai import Agent, ModelRetry, ToolFailed
 from pydantic_ai.messages import ToolReturnPart
@@ -3259,6 +3261,180 @@ async def test_the_dispatch_thread_is_the_callers_to_choose() -> None:
         names = await _call_concurrently(toolset, times=3)
 
     assert len(set(names)) == 3
+
+
+def _dispatch_thread_state() -> tuple[int, bool]:
+    """This thread's ident, and whether it is holding an open default connection.
+
+    Has to run *inside* the dispatch thread, because that is the only place the
+    answer exists: ``django.db.connections`` is thread-local, so a caller can
+    neither read nor close a connection another thread opened. That asymmetry is
+    the whole shape of the bug -- it is also why a consumer cannot work around
+    it from outside without pushing ``connections.close_all`` back into the same
+    executor.
+    """
+    return threading.get_ident(), connections["default"].connection is not None
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("conn_max_age", [0, 60], ids=["no-reuse", "persistent-connections"])
+async def test_a_dispatch_closes_the_connection_it_opened_on_the_shared_thread(
+    conn_max_age: int,
+) -> None:
+    """A dispatch must not leave a database connection open behind it.
+
+    On the default ``thread_sensitive=True`` every call runs on asgiref's
+    process-wide ``single_thread_executor``. Django opens a connection per
+    thread and closes one per *request* -- and off HTTP there is no request, so
+    nothing ever closes this one. It outlives the run, the toolset and the agent,
+    and surfaces somewhere else entirely: at a test session's teardown as
+    "database is being accessed by other users", naming neither this package nor
+    the thread that holds the handle.
+
+    Reading the state back through a second ``sync_to_async`` is not a
+    convenience -- see ``_dispatch_thread_state``. The ident assertion is what
+    keeps the probe honest: asgiref only guarantees one shared thread while
+    ``thread_sensitive`` holds, and a probe that landed anywhere else would
+    report a closed connection and pass for the wrong reason.
+
+    Run at both ends of ``CONN_MAX_AGE`` because that setting is what separates
+    ``close()`` from Django's own ``close_if_unusable_or_obsolete()``, and only
+    the second parameter can tell them apart: at ``CONN_MAX_AGE=60`` the
+    obsolescence check declines to close, the alias then reads as somebody
+    else's on the next dispatch, and the leak is back. ``CONN_MAX_AGE`` budgets
+    reuse *between requests*; this thread has none, so a connection held for the
+    next request is held forever.
+    """
+    # Django's SQLite backend *ignores* ``close()`` on an in-memory database, to
+    # avoid destroying it -- so under a ``:memory:`` test database this test
+    # could not tell a working fix from a no-op, which is exactly how an earlier
+    # attempt at this fix came out green without being verified. Assert the
+    # environment can observe a close before asserting anything about one.
+    assert not connection.is_in_memory_db(), (
+        "this test needs a database whose connection can actually be closed; "
+        "see DATABASES['default']['TEST']['NAME'] in tests/conftest_settings.py"
+    )
+
+    dispatched_on: dict[str, int] = {}
+
+    def _list_recording_its_thread(user: Any) -> Any:
+        """List every widget, recording which thread the dispatch ran on."""
+        del user  # the subject is the connection, not the scoping
+        dispatched_on["thread"] = threading.get_ident()
+        return Widget.objects.all()
+
+    toolset = SpecToolset(
+        {
+            "widgets": SelectorSpec(
+                kind=SelectorKind.LIST,
+                selector=_list_recording_its_thread,
+                output_serializer=WidgetSerializer,
+                permission_classes=[AllowAny],
+            )
+        }
+    )
+    # Unsaved on purpose. Saving one would need a thread hop of its own -- the
+    # ORM is closed to the event loop -- and a row written from the dispatch
+    # thread commits on that thread's connection, outside the transaction this
+    # test is rolled back with. Nothing here reads the user anyway.
+    ctx = ctx_for(User(username="u"))
+    tools = await toolset.get_tools(ctx)
+
+    # One settings dict backs every thread's wrapper, so this reaches the
+    # dispatch thread's connection as well as this one's. ``close_at`` is fixed
+    # at connect time, so the close and reopen have to happen inside this
+    # window or the setting would not reach the connection under test.
+    settings_dict = connections.settings["default"]
+    original_max_age = settings_dict["CONN_MAX_AGE"]
+    settings_dict["CONN_MAX_AGE"] = conn_max_age
+    try:
+        # Whatever an earlier test left on the shared thread is not this test's
+        # subject. Start from a closed connection and prove that took, so the
+        # closing assertion is about this dispatch and nothing else.
+        await sync_to_async(connections.close_all, thread_sensitive=True)()
+        assert (await sync_to_async(_dispatch_thread_state, thread_sensitive=True)())[1] is False
+
+        await toolset.call_tool("widgets", {}, ctx, tools["widgets"])
+
+        ident, still_open = await sync_to_async(_dispatch_thread_state, thread_sensitive=True)()
+    finally:
+        settings_dict["CONN_MAX_AGE"] = original_max_age
+    assert ident == dispatched_on["thread"], "the probe did not land on the dispatch thread"
+    assert still_open is False, (
+        "the dispatch left an open database connection on asgiref's shared "
+        "sync_to_async thread; off HTTP there is no request boundary to close it"
+    )
+
+
+@pytest.mark.django_db
+def test_a_dispatch_leaves_a_connection_it_did_not_open_alone() -> None:
+    """The other half, and the one an unconditional cleanup gets wrong.
+
+    ``sync_to_async(thread_sensitive=True)`` does *not* always mean another
+    thread: with a synchronous frame above the loop -- a WSGI request driving an
+    agent through ``async_to_sync``, which is what this test builds -- asgiref
+    routes the dispatch straight back onto the caller's own thread. That
+    thread's connection belongs to the request and is very likely mid-``atomic``,
+    so a cleanup that closes whatever it finds severs the transaction its own
+    caller is still inside.
+
+    The ident assertion is load-bearing rather than defensive: if asgiref stopped
+    reusing the calling thread, the dispatch would land somewhere with no open
+    connection and every remaining assertion would hold for the wrong reason --
+    the test would pass while testing nothing.
+    """
+    assert not connection.is_in_memory_db(), (
+        "this test needs a database whose connection can actually be closed; "
+        "see DATABASES['default']['TEST']['NAME'] in tests/conftest_settings.py"
+    )
+    # pytest-django runs a ``django_db`` test inside an atomic block, so the
+    # connection this thread holds is the real thing this cleanup must not
+    # touch -- open, and with a transaction on it.
+    connection.ensure_connection()
+    assert connection.in_atomic_block
+
+    dispatched_on: dict[str, int] = {}
+
+    def _list_recording_its_thread(user: Any) -> Any:
+        """List every widget, recording which thread the dispatch ran on."""
+        del user  # the subject is the connection, not the scoping
+        dispatched_on["thread"] = threading.get_ident()
+        return Widget.objects.all()
+
+    toolset = SpecToolset(
+        {
+            "widgets": SelectorSpec(
+                kind=SelectorKind.LIST,
+                selector=_list_recording_its_thread,
+                output_serializer=WidgetSerializer,
+                permission_classes=[AllowAny],
+            )
+        }
+    )
+    ctx = ctx_for(User(username="u"))
+
+    async def _one_call() -> None:
+        tools = await toolset.get_tools(ctx)
+        await toolset.call_tool("widgets", {}, ctx, tools["widgets"])
+
+    async_to_sync(_one_call)()
+
+    assert dispatched_on["thread"] == threading.get_ident(), (
+        "asgiref did not route the dispatch back onto the calling thread, so "
+        "this test is no longer about the case it names"
+    )
+    # ``close()`` inside an atomic block deliberately does *not* blank
+    # ``connection.connection`` -- it flags the wrapper and lets the next query
+    # be the one that raises. So reading that attribute would show nothing;
+    # read the flag, then prove the consequence by using the connection.
+    assert connection.closed_in_transaction is False, (
+        "the dispatch closed a connection it did not open -- the caller's own, "
+        "with a transaction still on it"
+    )
+    # The consequence rather than only the flag: on a connection closed inside
+    # its transaction the *next* query is what raises. Filtered to nothing, so
+    # what it asserts is that the query ran at all.
+    assert Widget.objects.filter(name="no-such-widget").exists() is False
 
 
 # --- the back half of a call is overridable ----------------------------------
