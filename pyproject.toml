@@ -55,8 +55,17 @@ dependencies = [
     # generation, and this toolset cannot route around it: a tool definition is
     # built from ``spec_to_json_schema`` per spec, so a serializer that nests
     # itself takes the toolset down at construction rather than at the call that
-    # used it. Nothing below the floor imports a 0.49 symbol.
-    "djangorestframework-services>=0.49",
+    # used it. That raise bought behaviour and imports no 0.49 symbol.
+    # 0.51 floor: ``output_to_json_schema(affordances=…)``, which declares the
+    # ``affordances`` object ``render_for_audience`` adds to every item of a
+    # spec whose selector declares ``SelectorSpec.affordances`` -- without it the
+    # return schema denies a key every such payload carries. ``_return_schema``
+    # reads that attribute and passes the argument for every selector, and every
+    # service with an ``output_selector_spec``, whether it declares any or not,
+    # while the toolset builds its tool definitions at construction. Below 0.51
+    # the attribute and the keyword are both missing, so such a toolset cannot
+    # be built at all: a hard floor rather than a preference.
+    "djangorestframework-services>=0.51",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
     # a business-rule refusal, an unresolved target, a dispatch that ran past its

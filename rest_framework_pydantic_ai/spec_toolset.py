@@ -1531,34 +1531,52 @@ def _return_schema(
     re-introduce, one spec kind over, exactly the schema-versus-payload
     disagreement this release exists to close.
 
+    ``affordances`` declares the object the render adds to every item when the
+    selector spec it renders through declares them: per name, whether the
+    operation is available and, when it is not, the ``code`` -- enumerated from
+    the declaration -- and ``reason``. Leaving it out advertised items without the
+    key while every payload carried it -- the same disagreement, over the one key
+    that tells a model what it can do next. A spec declaring none passes ``None``
+    and its schema is unchanged.
+
     ``None`` for a spec with no ``output_serializer`` is the correct answer and
     not a gap: drf-services refuses to fabricate a shape it cannot derive, and a
     guessed one would be a claim the payload never has to honour.
     """
-    serializer, kind = _output_serializer_and_kind(spec)
+    rendered = _rendered_selector_spec(spec)
+    if rendered is None:
+        return None
     return output_to_json_schema(
-        serializer,
-        kind=kind,
+        rendered.output_serializer,
+        kind=rendered.kind,
         paginate=_is_list_selector(spec),
         projection=projection,
         handle_description=_HANDLE_DESCRIPTION,
         registry=registry,
+        affordances=rendered.affordances,
     )
 
 
-def _output_serializer_and_kind(spec: Spec) -> tuple[type | None, SelectorKind | None]:
-    """Where a spec keeps its output serializer, and under which kind.
+def _rendered_selector_spec(spec: Spec) -> SelectorSpec[Any, Any] | None:
+    """The selector spec a tool's output renders through, or ``None`` for none.
 
-    A selector holds both itself; a service holds them one level down on its
-    ``output_selector_spec``. drf-services exposes ``output_serializer_for`` for
-    the first half but nothing for the pair, and the ``kind`` is what decides
-    between an item and a collection — so the two are read together here rather
-    than deriving one from the spec and the other from an assumption.
+    A selector renders through itself; a service through its
+    ``output_selector_spec``, and a service without one returns its value
+    unrendered. The output serializer, the ``kind`` that decides between an item
+    and a collection, and the ``affordances`` each item carries are all read off
+    this one object, so the schema cannot take one from the spec and another from
+    an assumption.
+
+    Dispatching on the class rather than reading attributes off ``spec`` is what
+    keeps ``affordances`` right, and it is how drf-services' render path decides
+    the same question: a ``ServiceSpec``'s *own* ``affordances`` are the conditions
+    that service is checked against before it runs, a different declaration that
+    is never rendered. Read off the service, the schema would advertise answers
+    no payload carries.
     """
     if isinstance(spec, SelectorSpec):
-        return spec.output_serializer, spec.kind
-    nested = spec.output_selector_spec
-    return (None, None) if nested is None else (nested.output_serializer, nested.kind)
+        return spec
+    return spec.output_selector_spec
 
 
 def _spec_description(spec: Spec) -> str | None:
