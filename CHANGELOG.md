@@ -6,6 +6,41 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-09-16
+
+### Fixed
+
+- **A tool's `return_schema` now declares the `affordances` key its payload
+  carries.** drf-services 0.51 added `SelectorSpec.affordances` -- what can be
+  done to each row right now -- and `render_for_audience` adds an `affordances`
+  object to every item a spec declaring them renders. The return schema this
+  toolset advertised was built without the declaration, so the model was handed
+  items carrying a key the schema said did not exist: exactly the
+  schema-versus-payload disagreement `return_schema` is generated from the render
+  path to prevent. drf-services' own `spec_to_json_schema` passed the declaration
+  from the release that added it; this toolset builds its return schema itself,
+  because it paginates and projects, and was the half left behind.
+
+  The declaration is read off the selector spec the output renders through, which
+  is how the render decides the same question: a selector's own, and a service's
+  `output_selector_spec`'s. A service's *own* `affordances` are the conditions it
+  is checked against before it runs and are never rendered, so they are not
+  advertised either. Retrieve, paginated list and service tools are each checked
+  against the payload of a real call, and a spec declaring no affordances keeps a
+  byte-identical schema.
+
+### Changed
+
+- **Floored at `djangorestframework-services>=0.51` (was `>=0.49`).** The fix
+  above passes `output_to_json_schema(affordances=…)` and reads
+  `SelectorSpec.affordances` for every selector and every service with an
+  `output_selector_spec`, declared or not, while the toolset builds its tool
+  definitions at construction. Neither exists below 0.51, so below the floor such
+  a toolset cannot be constructed at all: the floor is hard rather than
+  preferred. The compatibility table in `CLAUDE.md` had gone on reading `0.48`
+  through the previous raise -- the second time that row has trailed the pin --
+  and now reads `0.51`.
+
 ## [0.27.0] — 2026-09-06
 
 ### Fixed
@@ -1524,7 +1559,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.24.0...v0.25.0

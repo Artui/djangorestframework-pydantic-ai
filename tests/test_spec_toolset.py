@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import threading
 import time
@@ -29,6 +30,7 @@ from rest_framework_services import (
     MARKING,
     UNSET,
     AdditionalInputRequired,
+    Affordance,
     FieldMarking,
     SelectorKind,
     SelectorSpec,
@@ -37,7 +39,9 @@ from rest_framework_services import (
     ServiceValidationError,
     SpecRegistry,
     UnknownArguments,
+    audience_projection_for_spec,
     build_offline_context,
+    output_to_json_schema,
     render_spec_output,
 )
 from typing_extensions import TypedDict, Unpack
@@ -3126,6 +3130,203 @@ async def test_a_consumer_can_opt_into_sending_the_return_schema():
 
     assert tools["list"].tool_def.include_return_schema is True
     assert tools["list"].tool_def.return_schema is not None
+
+
+# --- affordances: the return schema declares the key the render adds ----------
+
+
+class _OrderSerializer(serializers.Serializer):
+    number = serializers.CharField()
+
+
+#: The operation each rendered order reports on. Two conditions, so the codes the
+#: schema enumerates have an order to keep; the first is unmet, so every answer
+#: rendered is a refusal carrying ``code`` and ``reason`` -- the widest answer the
+#: schema has to describe. Callable conditions, which need no database and are the
+#: only kind a mapping row can be answered for.
+_CANCEL_ORDER = ServiceSpec(
+    service=lambda **_: None,
+    atomic=False,
+    affordances=[
+        Affordance(code="books_closed", reason="The books are closed.", when=lambda **_: False),
+        Affordance(code="already_shipped", reason="The order shipped.", when=lambda **_: True),
+    ],
+)
+
+
+def _get_order(**_: Any) -> dict[str, str]:
+    """Fetch one order."""
+    return {"number": "A-1"}
+
+
+def _list_orders(**_: Any) -> list[dict[str, str]]:
+    """List orders."""
+    return [{"number": "A-1"}, {"number": "A-2"}]
+
+
+def _place_order(**_: Any) -> dict[str, str]:
+    """Place an order."""
+    return {"number": "A-1"}
+
+
+def _order_selector_spec(kind: SelectorKind) -> SelectorSpec:
+    return SelectorSpec(
+        kind=kind,
+        selector=_list_orders if kind is SelectorKind.LIST else _get_order,
+        output_serializer=_OrderSerializer,
+        affordances={"cancel": _CANCEL_ORDER},
+        permission_classes=[AllowAny],
+    )
+
+
+def _order_service_spec(
+    *,
+    rendered: dict[str, ServiceSpec] | None = None,
+    own: list[Affordance] | None = None,
+) -> ServiceSpec:
+    """A service whose output renders through a selector declaring ``rendered``.
+
+    The nested selector hands the service's return straight back, and it has to
+    exist: the answers are put on a row by the selector spec declaring them, so a
+    nested spec with no selector renders a row that carries none.
+    """
+    return ServiceSpec(
+        service=_place_order,
+        atomic=False,
+        affordances=own,
+        output_selector_spec=SelectorSpec(
+            kind=SelectorKind.RETRIEVE,
+            selector=lambda result: result,
+            output_serializer=_OrderSerializer,
+            affordances=rendered,
+        ),
+        permission_classes=[AllowAny],
+    )
+
+
+#: Each shape a rendered item takes: the spec, where the item sits in the return
+#: schema, and where it sits in the payload a call returns.
+_AFFORDANCE_SHAPES = [
+    pytest.param(
+        lambda: _order_selector_spec(SelectorKind.RETRIEVE),
+        lambda schema: schema,
+        lambda payload: [payload],
+        id="retrieve selector",
+    ),
+    pytest.param(
+        lambda: _order_selector_spec(SelectorKind.LIST),
+        lambda schema: schema["properties"]["items"]["items"],
+        lambda payload: payload["items"],
+        id="paginated list selector",
+    ),
+    pytest.param(
+        lambda: _order_service_spec(rendered={"cancel": _CANCEL_ORDER}),
+        lambda schema: schema,
+        lambda payload: [payload],
+        id="service rendering through its output selector",
+    ),
+]
+
+
+@pytest.mark.parametrize(("make_spec", "schema_item", "payload_items"), _AFFORDANCE_SHAPES)
+async def test_declared_affordances_are_advertised_on_every_item(
+    make_spec, schema_item, payload_items
+):
+    """drf-services adds an ``affordances`` object to every item it renders for a
+    spec declaring them, and the schema this toolset advertised never said so --
+    a model reading the schema was told the key does not exist, then handed it.
+    """
+    tools = await SpecToolset({"orders": make_spec()}).get_tools(None)
+
+    item = schema_item(tools["orders"].tool_def.return_schema)
+
+    assert "affordances" in item["required"]
+    answers = item["properties"]["affordances"]
+    assert answers["required"] == ["cancel"]
+    cancel = answers["properties"]["cancel"]
+    assert cancel["required"] == ["available"]
+    assert cancel["properties"]["code"]["enum"] == ["books_closed", "already_shipped"]
+
+
+@pytest.mark.parametrize(("make_spec", "schema_item", "payload_items"), _AFFORDANCE_SHAPES)
+async def test_the_return_schema_describes_the_affordances_a_call_returns(
+    make_spec, schema_item, payload_items
+):
+    """The two halves generated from one declaration, compared against each other
+    through a real call rather than against expectations written here."""
+    toolset = SpecToolset({"orders": make_spec()})
+    tools = await toolset.get_tools(None)
+    item = schema_item(tools["orders"].tool_def.return_schema)
+
+    rendered = payload_items(await _call(toolset, "orders", User(username="u")))
+
+    assert rendered
+    for row in rendered:
+        assert set(row) == set(item["properties"])
+        assert set(item["required"]) <= set(row)
+        answers_schema = item["properties"]["affordances"]
+        assert set(row["affordances"]) == set(answers_schema["properties"])
+        answer = row["affordances"]["cancel"]
+        answer_schema = answers_schema["properties"]["cancel"]
+        assert answer == {
+            "available": False,
+            "code": "books_closed",
+            "reason": "The books are closed.",
+        }
+        assert set(answer) <= set(answer_schema["properties"])
+        assert answer["code"] in answer_schema["properties"]["code"]["enum"]
+
+
+async def test_a_services_own_affordances_are_not_what_it_renders():
+    """``ServiceSpec.affordances`` are the conditions *that* service is checked
+    against before it runs, and are never rendered. What a service's output
+    carries is declared on the selector it renders through -- so the schema reads
+    the same spec the render does, and here both say nothing.
+    """
+    spec = _order_service_spec(
+        own=[Affordance(code="books_closed", reason="The books are closed.", when=lambda **_: True)]
+    )
+    toolset = SpecToolset({"orders": spec})
+    tools = await toolset.get_tools(None)
+
+    payload = await _call(toolset, "orders", User(username="u"))
+
+    assert "affordances" not in tools["orders"].tool_def.return_schema["properties"]
+    assert "affordances" not in payload
+
+
+@pytest.mark.parametrize(
+    ("make_spec", "serializer", "kind", "paginate"),
+    [
+        pytest.param(list_spec, WidgetSerializer, SelectorKind.LIST, True, id="list selector"),
+        pytest.param(
+            retrieve_spec, WidgetSerializer, SelectorKind.RETRIEVE, False, id="retrieve selector"
+        ),
+        pytest.param(create_spec, WidgetSerializer, SelectorKind.RETRIEVE, False, id="service"),
+        pytest.param(
+            agent_list_spec, AgentWidgetSerializer, SelectorKind.LIST, True, id="projected list"
+        ),
+    ],
+)
+async def test_a_spec_declaring_no_affordances_keeps_its_return_schema_byte_for_byte(
+    make_spec, serializer, kind, paginate
+):
+    """Rebuilt from the arguments the schema was built from before affordances
+    were threaded through, and compared as JSON text so that key order counts
+    too: a spec that declares none must not so much as gain an empty object.
+    """
+    spec = make_spec()
+    tools = await SpecToolset({"t": spec}).get_tools(None)
+
+    before = output_to_json_schema(
+        serializer,
+        kind=kind,
+        paginate=paginate,
+        projection=audience_projection_for_spec(spec),
+        handle_description=_HANDLE_DESCRIPTION,
+    )
+
+    assert json.dumps(tools["t"].tool_def.return_schema) == json.dumps(before)
 
 
 # --- JsonSchemaRegistry threading ---------------------------------------------
