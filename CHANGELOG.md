@@ -6,6 +6,36 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A call an `Affordance` refuses now names the rule, not only the reason.**
+  drf-services raises `ActionUnavailable(reason, code=...)` when one of a spec's
+  affordance conditions is not met, and asks a transport serving an agent to pass
+  on both. This toolset turned every `ServiceError` into `ToolFailed(str(exc))`,
+  so the model received `The books are closed.` and `books_closed` survived only
+  on the exception's `__cause__`, where no model and no transport looks.
+  `ToolFailed` takes a message and nothing else, and that message is also what a
+  transport forwards as the tool result, so the sentence is the only channel. It
+  now reads `The books are closed. (code: books_closed)`: the reason first, then
+  the code, labelled.
+
+  The code is what connects the refusal to the answer the model may already have
+  read. A selector's rows carry `affordances: {<name>: {"available": false,
+  "code": ..., "reason": ...}}`, and the reason is a sentence a project may reword
+  while the code stays put. The conventions block `get_instructions` returns says
+  a refusal may end with `(code: <name>)` and that it is the same code an item's
+  `affordances` answer carries, without changing what it already said: a
+  business-rule failure is a final answer, not a reason to retry.
+
+  Every other `ServiceError`, `ServiceConflict` included, keeps its message
+  exactly as written, and the `outcome="failed"` marking is unchanged. The suffix
+  is written for the model and for a person reading a tool card; a program that
+  branches on the code reads `.code` off the exception, which is still the
+  `ToolFailed`'s `__cause__` and still reaches `translate_exception` before the
+  toolset's own handling. A handler registered there or in `exception_map`, for
+  `ActionUnavailable` or any class above it, replaces the sentence as it replaced
+  the old one.
+
 ## [0.28.0] — 2026-09-16
 
 ### Fixed

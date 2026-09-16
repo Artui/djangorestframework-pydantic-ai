@@ -446,6 +446,7 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | drf-services outcome | What the agent sees |
 | --- | --- |
 | `ServiceValidationError` (bad input) | `ModelRetry` with the field errors — the model self-corrects |
+| `ActionUnavailable` (an `Affordance` condition not met) | `ToolFailed` with the reason followed by the rule's code — `The books are closed. (code: books_closed)`; see below |
 | `ServiceError` (business rule) | `ToolFailed` with the rule's own message — a failed result the model reads and reports |
 | Unresolved instance | `ToolFailed("not found")` |
 | A dispatch past `dispatch_timeout` | `ToolFailed` — abandoned, with the sentence telling the model to narrow and call again |
@@ -499,6 +500,62 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
     see it, because every write test asserted a path that succeeds. If a project
     genuinely cannot change its exception's base class, `exception_map=` is the
     other door: it takes the type and returns what the model should be told.
+
+### A refused affordance names its code
+
+drf-services raises `ActionUnavailable` when one of a spec's `Affordance`
+conditions is not met, with the affordance's `reason` as the message and its
+`code` as an attribute. `ToolFailed` carries a message and nothing else, and that
+message is also what a transport forwards as the tool result, so the toolset puts
+both into it — the reason first, then the code, labelled:
+
+```python
+from rest_framework_services import Affordance, ServiceSpec
+
+
+def post_invoice(data, user):
+    """Post an invoice to the current period."""
+    ...
+
+
+post_invoice_spec = ServiceSpec(
+    service=post_invoice,
+    input_serializer=InvoiceInputSerializer,
+    affordances=[
+        Affordance(
+            code="books_closed",
+            reason="The books are closed.",
+            when=lambda: Period.current().is_open,
+        ),
+    ],
+)
+```
+
+A call made once the current period has closed fails, and the failed tool result's
+content — what the model reads and what a transport streams — is:
+
+```text
+The books are closed. (code: books_closed)
+```
+
+The code is the part that connects the refusal to what the model may already have
+read. A selector naming the same spec in its own `affordances`
+(`affordances={"post_invoice": post_invoice_spec}`) answers it on each row it
+renders, under `affordances.post_invoice`, as
+`{"available": false, "code": "books_closed", "reason": "The books are closed."}`
+— and the reason is a sentence a project may reword while the code stays put. The
+conventions block `get_instructions` returns tells the model a refusal may end
+this way. A `ServiceError` or `ServiceConflict` raised by hand has
+no code and keeps its message exactly as written.
+
+**The suffix is written for the model and for a person reading a tool card, not
+for a program.** It is meant to read the same on every agent transport serving
+these specs, and its wording is not an interface. A program that branches on the
+code reads `.code` off the exception instead: the `ActionUnavailable` is the
+`ToolFailed`'s `__cause__`, and `translate_exception` receives it before the
+toolset's own handling runs. A handler returned from there, or registered in
+`exception_map` for `ActionUnavailable` or any class above it, replaces the
+sentence along with the rest of the default.
 
 ### Why the failed rows raise instead of returning
 
