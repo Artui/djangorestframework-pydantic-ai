@@ -503,6 +503,7 @@ class SpecToolset(AbstractToolset[Any]):
         resolved = _resolve_specs(specs)
         contracts = _resolve_contracts(specs)
         _validate_tool_names(resolved)
+        _validate_list_inputs(resolved)
         _validate_permissions(resolved, require=require_permissions)
         _validate_query_params(query_params, tool_query_params, resolved)
         _validate_url_kwargs(url_kwargs, tool_url_kwargs, resolved)
@@ -1198,6 +1199,34 @@ def _validate_tool_names(specs: Mapping[str, Spec]) -> None:
             "SpecToolset tool names must match ^[a-zA-Z0-9_-]{1,64}$ (model provider "
             f"function-name constraint); invalid name(s): {invalid}."
         )
+
+
+def _validate_list_inputs(specs: Mapping[str, Spec]) -> None:
+    """Refuse a service spec whose input is a list, which no tool call can deliver.
+
+    ``many=True`` makes drf-services validate the payload as a JSON array, and a
+    model's tool arguments are always a JSON object. Such a tool was offered to the
+    model and answered every call with a retry it could not act on ("Expected a
+    list of items but got type dict"), until the retry budget ran out.
+
+    ``ImproperlyConfigured``, as ``_validate_permissions`` raises and as the MCP
+    transport raises for the same spec, so a consumer serving a registry over
+    both catches one thing.
+    """
+    listed = sorted(
+        name for name, spec in specs.items() if isinstance(spec, ServiceSpec) and spec.many
+    )
+    if not listed:
+        return
+    names: str = ", ".join(repr(name) for name in listed)
+    raise ImproperlyConfigured(
+        f"SpecToolset was given service spec(s) declaring many=True: {names}. Their "
+        "input is a JSON array, and a model's tool arguments are always a JSON object, "
+        "so every call would fail. Declare the list as a named field of the input "
+        "serializer instead (for example `items = ItemSerializer(many=True)`) and loop "
+        "over `data['items']` in the service, or leave the spec out of this toolset; "
+        "a SpecRegistry can be narrowed with by_tag."
+    )
 
 
 def _validate_query_params(

@@ -446,6 +446,26 @@ def test_retrieve_selector_not_found_fails_the_call():
     assert caught.value.message == "not found"
 
 
+@pytest.mark.django_db
+def test_a_nullable_retrieve_that_finds_nothing_returns_none():
+    """Not the output serializer's blank row, which read to the model as a widget
+    with an empty name: drf-services renders a single ``None`` as ``None`` from
+    0.52.1, the floor that buys this."""
+    user = User.objects.create(username="u")
+    spec = retrieve_spec(allow_none=True)
+
+    assert _dispatch(spec, user, {"pk": 999}) is None
+
+
+@pytest.mark.django_db
+def test_a_service_that_returns_nothing_returns_none():
+    user = User.objects.create(username="u")
+    spec = create_spec()
+    spec = replace(spec, service=lambda *, data: None)
+
+    assert _dispatch(spec, user, {"name": "a", "price": 1}) is None
+
+
 # --- service dispatch --------------------------------------------------------
 
 
@@ -588,6 +608,52 @@ def test_invalid_tool_name_raises_at_construction(bad):
 def test_valid_tool_names_are_accepted():
     # letters, digits, underscore, hyphen, up to 64 chars — no error.
     SpecToolset({"list_widgets-v2": list_spec()})
+
+
+# --- list inputs -------------------------------------------------------------
+
+
+def _count_widgets(*, data):
+    return {"count": len(data)}
+
+
+def test_a_many_service_spec_is_refused_at_construction():
+    """A ``many=True`` spec validates a JSON array, and tool arguments are always
+    an object: it used to be offered and answer every call with a retry the model
+    could not act on."""
+    spec = ServiceSpec(
+        service=_count_widgets,
+        input_serializer=WidgetInputSerializer,
+        many=True,
+        permission_classes=[AllowAny],
+    )
+
+    with pytest.raises(ImproperlyConfigured, match=r"'bulk_create'.*many=True.*by_tag"):
+        SpecToolset({"bulk_create": spec, "list_widgets": list_spec()})
+
+
+class _WidgetItems(serializers.Serializer):
+    items = WidgetInputSerializer(many=True)
+
+
+def _count_items(*, data):
+    return {"count": len(data["items"])}
+
+
+@pytest.mark.django_db
+def test_the_list_as_a_named_field_the_refusal_suggests_works():
+    """Holds the refusal's advice honest: the list arrives, and an invalid item is
+    sent back for a retry naming its index."""
+    user = User.objects.create(username="u")
+    spec = ServiceSpec(
+        service=_count_items, input_serializer=_WidgetItems, permission_classes=[AllowAny]
+    )
+    item = {"name": "a", "price": 1}
+
+    assert _dispatch(spec, user, {"items": [item, item]}) == {"count": 2}
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(spec, user, {"items": [item, {"name": "b"}]})
+    assert str(retry.value).startswith("{'items': {1: {'price': ")
 
 
 # --- pagination arg validation -----------------------------------------------

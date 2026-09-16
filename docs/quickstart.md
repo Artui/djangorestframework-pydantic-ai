@@ -211,6 +211,27 @@ from rest_framework_services import UnknownArguments
 toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 ```
 
+## A list as input
+
+A `ServiceSpec` declaring `many=True` is refused when the toolset is built. Its
+input validates as a JSON array, and a model's tool arguments are always a JSON
+object, so no call could reach the service. Name the list as a field of the input
+serializer instead, and loop over it:
+
+```python
+class BulkWidgetInput(serializers.Serializer):
+    items = WidgetInputSerializer(many=True)
+
+
+def create_widgets(*, data):
+    return [create_widget(**item) for item in data["items"]]
+```
+
+The model sends `{"items": [...]}`, and an invalid item comes back as a
+`ModelRetry` keyed by its index. If the spec also backs a REST view that takes a
+bare list, keep it out of the toolset: tag it in the `SpecRegistry` and build the
+toolset from `registry.by_tag(...)`.
+
 ## Ordering
 
 **The `filter_set` owns ordering.** Declare a django-filter `OrderingFilter`
@@ -448,7 +469,7 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | `ServiceValidationError` (bad input) | `ModelRetry` with the field errors — the model self-corrects |
 | `ActionUnavailable` (an `Affordance` condition not met) | `ToolFailed` with the reason followed by the rule's code — `The books are closed. (code: books_closed)`; see below |
 | `ServiceError` (business rule) | `ToolFailed` with the rule's own message — a failed result the model reads and reports |
-| Unresolved instance | `ToolFailed("not found")` |
+| Unresolved instance | `ToolFailed("not found")`, unless the spec sets `allow_none=True`, when the tool returns `None` |
 | A dispatch past `dispatch_timeout` | `ToolFailed` — abandoned, with the sentence telling the model to narrow and call again |
 | A rendered result over `max_result_bytes` | `ToolFailed` — refused rather than truncated, since a partial payload looks complete |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |

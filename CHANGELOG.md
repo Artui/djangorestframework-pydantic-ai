@@ -8,7 +8,29 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.29.0] — 2026-09-16
 
+### Changed
+
+- **Floored at `djangorestframework-services>=0.52.1`.** That release renders a
+  single `None` as `None` rather than as the output serializer's blank row, which
+  is the fix below; below it, the toolset still builds and runs, and answers a
+  row with empty fields where it found nothing.
+
+- **A `ServiceSpec` declaring `many=True` is refused when the toolset is built**,
+  with `ImproperlyConfigured` naming every such tool. Its input validates as a
+  JSON array, and a model's tool arguments are always a JSON object, so the tool
+  was offered and answered every call with a `ModelRetry` reading `Expected a
+  list of items but got type "dict"`, which no retry could satisfy. The message
+  names the shape that works, a named list field on the input serializer
+  (`items = ItemSerializer(many=True)`), and how to leave the spec out of a
+  toolset built from a registry. The MCP transport refuses the same spec with the
+  same exception.
+
 ### Fixed
+
+- **A tool that finds nothing returns `None`, not a blank row.** A `RETRIEVE`
+  selector with `allow_none=True` that found no row, and a service that returned
+  `None`, rendered through the output serializer as `{"name": "", "price": null}`,
+  which a model reads as a record with empty fields. Both now return `None`.
 
 - **A call an `Affordance` refuses now names the rule, not only the reason.**
   drf-services raises `ActionUnavailable(reason, code=...)` when one of a spec's
