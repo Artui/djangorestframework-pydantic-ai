@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-09-16
+
 ### Fixed
 
 - **A tool's `return_schema` now declares the `affordances` key its payload
@@ -1557,7 +1559,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.24.0...v0.25.0
