@@ -52,6 +52,7 @@ from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
     DEFAULT_PAGE_SIZE,
     UNSET,
+    ActionUnavailable,
     AdditionalInputRequired,
     AudienceProjection,
     DispatchResult,
@@ -502,6 +503,7 @@ class SpecToolset(AbstractToolset[Any]):
         resolved = _resolve_specs(specs)
         contracts = _resolve_contracts(specs)
         _validate_tool_names(resolved)
+        _validate_list_inputs(resolved)
         _validate_permissions(resolved, require=require_permissions)
         _validate_query_params(query_params, tool_query_params, resolved)
         _validate_url_kwargs(url_kwargs, tool_url_kwargs, resolved)
@@ -838,6 +840,12 @@ class SpecToolset(AbstractToolset[Any]):
         so a handler registered for a base class catches its subclasses and the
         **most specific** registration wins. Override for a decision the map
         cannot express — one that has to read the run's deps.
+
+        This runs ahead of every built-in arm, so it is also where a program reads
+        a refusal's code: an ``ActionUnavailable`` arrives here with ``.code``
+        intact, before the default renders it into the sentence
+        ``<reason> (code: <code>)``. A handler returned for it replaces that
+        sentence along with everything else the default would have done.
         """
         del ctx  # unused by the default; present so an override has it
         for klass in type(exc).__mro__:
@@ -1193,6 +1201,34 @@ def _validate_tool_names(specs: Mapping[str, Spec]) -> None:
         )
 
 
+def _validate_list_inputs(specs: Mapping[str, Spec]) -> None:
+    """Refuse a service spec whose input is a list, which no tool call can deliver.
+
+    ``many=True`` makes drf-services validate the payload as a JSON array, and a
+    model's tool arguments are always a JSON object. Such a tool was offered to the
+    model and answered every call with a retry it could not act on ("Expected a
+    list of items but got type dict"), until the retry budget ran out.
+
+    ``ImproperlyConfigured``, as ``_validate_permissions`` raises and as the MCP
+    transport raises for the same spec, so a consumer serving a registry over
+    both catches one thing.
+    """
+    listed = sorted(
+        name for name, spec in specs.items() if isinstance(spec, ServiceSpec) and spec.many
+    )
+    if not listed:
+        return
+    names: str = ", ".join(repr(name) for name in listed)
+    raise ImproperlyConfigured(
+        f"SpecToolset was given service spec(s) declaring many=True: {names}. Their "
+        "input is a JSON array, and a model's tool arguments are always a JSON object, "
+        "so every call would fail. Declare the list as a named field of the input "
+        "serializer instead (for example `items = ItemSerializer(many=True)`) and loop "
+        "over `data['items']` in the service, or leave the spec out of this toolset; "
+        "a SpecRegistry can be narrowed with by_tag."
+    )
+
+
 def _validate_query_params(
     query_params: Sequence[QueryParam],
     tool_query_params: Mapping[str, Sequence[QueryParam]] | None,
@@ -1365,11 +1401,19 @@ def _default_get_user(ctx: RunContext[Any]) -> Any:
 
 
 # The conventions block ``SpecToolset.get_instructions`` teaches the model.
+#
+# The ``(code: <name>)`` sentence is unconditional, unlike the lines
+# ``_derive_instructions`` appends, because no spec can answer whether a refusal
+# will carry one: a declared ``Affordance`` produces it, and so does a service
+# raising ``ActionUnavailable`` by hand, which nothing declares. It is part of the
+# failure contract rather than advice about an argument, and costs one sentence.
 _BASE_INSTRUCTIONS = (
     "The following tools call Django REST Framework services and selectors.\n"
     "- A successful call returns the tool's data. A business-rule failure comes back as a "
     "failed call whose content is a sentence explaining why — that is a final answer, not a "
-    "reason to retry; read it and report it, do not call the same tool the same way again.\n"
+    "reason to retry; read it and report it, do not call the same tool the same way again. "
+    "The sentence may end with `(code: <name>)`, naming the rule that refused; it is the same "
+    "code an item's `affordances` answer carries when a tool advertised one.\n"
     "- An invalid or missing argument comes back as a retry request naming the problem; "
     "correct the argument and call again.\n"
     "- A permission error is final: the current user may not perform that call — do not "
@@ -1819,7 +1863,7 @@ def _call_spec(
             # ordinary argument on the next call.
             raise ModelRetry(_missing_input_prompt(exc)) from exc
         if isinstance(exc, ServiceError):
-            # **Raised, not returned, and the message is unchanged.** A business
+            # **Raised, not returned, with the rule's own message.** A business
             # rule that refused — a conflict, a state the operation cannot run
             # against — is ``ToolFailed``'s own description: the call is done, it
             # failed definitively, and the model should adapt rather than repeat
@@ -1831,6 +1875,18 @@ def _call_spec(
             # sentence to the model, spends no retry budget, and prepends no
             # correction instructions — the three properties the returned dict
             # was chosen for — while marking the return ``outcome="failed"``.
+            if isinstance(exc, ActionUnavailable):
+                # **Inside this branch, not ahead of it, and still behind the
+                # consumer's map.** A subclass of ``ServiceConflict`` and so of
+                # ``ServiceError``: it fails the call exactly as its parent does,
+                # and the only difference is what the sentence carries. The
+                # message is the only channel -- ``ToolFailed`` takes nothing
+                # else, and it is what a transport forwards as the result -- so
+                # a refusal that dropped its ``code`` here left the model reading
+                # a reason it could not tie to the ``affordances`` answer naming
+                # the same rule, with the name surviving only on ``__cause__``,
+                # where no model looks.
+                raise ToolFailed(_refusal_message(exc)) from exc
             raise ToolFailed(str(exc)) from exc
         raise
 
@@ -1954,6 +2010,36 @@ def _missing_input_prompt(exc: AdditionalInputRequired) -> str:
         return str(exc)
     names: str = ", ".join(f"`{name}`" for name in exc.schema)
     return f"{exc} Call this tool again, additionally supplying: {names}."
+
+
+def _refusal_message(exc: ActionUnavailable) -> str:
+    """The sentence a refused call fails with: the reason, then the rule's code.
+
+    ``The books are closed. (code: books_closed)``. drf-services raises
+    ``ActionUnavailable`` when one of a spec's ``Affordance`` conditions is not
+    met, carrying that affordance's ``reason`` as the message and its ``code`` as
+    an attribute, and asks a transport serving an agent to pass on both. Here the
+    ``ToolFailed`` message is the only thing a model receives and the only thing a
+    transport forwards, so both go into it.
+
+    **The code is what connects the refusal to what the model already read.** A
+    selector tool's rows carry ``affordances: {<name>: {"available": false,
+    "code": ..., "reason": ...}}``, and the reason is a sentence a project may
+    reword between releases; the code is the part that stays put. Labelled rather
+    than bare so a reader does not take ``books_closed`` for more of the sentence,
+    and last so the reason still reads first.
+
+    **Written for the model and for a person reading a tool card, not for a
+    program.** The format is a convention across the family's agent transports
+    rather than this toolset's own -- django-pydantic-agent's drf-mcp bridge is
+    meant to render the same refusal as the same text, so changing it here means
+    changing it there. A program that branches on the code should read ``.code``
+    off the exception instead, either in
+    [`translate_exception`][rest_framework_pydantic_ai.SpecToolset.translate_exception]
+    or on the ``ToolFailed``'s ``__cause__``. Parsing it back out of the sentence
+    couples that program to wording this function is free to change.
+    """
+    return f"{exc.message} (code: {exc.code})"
 
 
 def _pop_pagination(

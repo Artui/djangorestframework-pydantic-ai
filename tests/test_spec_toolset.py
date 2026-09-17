@@ -7,6 +7,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -29,11 +30,13 @@ from rest_framework_services import (
     DEFAULT_PAGE_SIZE,
     MARKING,
     UNSET,
+    ActionUnavailable,
     AdditionalInputRequired,
     Affordance,
     FieldMarking,
     SelectorKind,
     SelectorSpec,
+    ServiceConflict,
     ServiceError,
     ServiceSpec,
     ServiceValidationError,
@@ -228,6 +231,14 @@ async def test_instructions_carry_the_error_contract():
     assert '{"error"' not in instr
     assert "comes back as a failed call" in instr
     assert "unknown arguments are rejected" in instr
+    # A refusal's sentence now ends with the rule's code, and the block says so in
+    # the shape the call produces: the label as it appears, and the key the same
+    # code was advertised under. Both halves, because an instruction naming only
+    # the suffix leaves the model to guess what the name refers to.
+    assert "`(code: <name>)`" in instr
+    assert "`affordances`" in instr
+    # The meaning that predates the code is intact.
+    assert "that is a final answer, not a reason to retry" in instr
 
 
 async def test_pagination_line_present_only_with_a_list_selector():
@@ -435,6 +446,26 @@ def test_retrieve_selector_not_found_fails_the_call():
     assert caught.value.message == "not found"
 
 
+@pytest.mark.django_db
+def test_a_nullable_retrieve_that_finds_nothing_returns_none():
+    """Not the output serializer's blank row, which read to the model as a widget
+    with an empty name: drf-services renders a single ``None`` as ``None`` from
+    0.52.1, the floor that buys this."""
+    user = User.objects.create(username="u")
+    spec = retrieve_spec(allow_none=True)
+
+    assert _dispatch(spec, user, {"pk": 999}) is None
+
+
+@pytest.mark.django_db
+def test_a_service_that_returns_nothing_returns_none():
+    user = User.objects.create(username="u")
+    spec = create_spec()
+    spec = replace(spec, service=lambda *, data: None)
+
+    assert _dispatch(spec, user, {"name": "a", "price": 1}) is None
+
+
 # --- service dispatch --------------------------------------------------------
 
 
@@ -577,6 +608,58 @@ def test_invalid_tool_name_raises_at_construction(bad):
 def test_valid_tool_names_are_accepted():
     # letters, digits, underscore, hyphen, up to 64 chars — no error.
     SpecToolset({"list_widgets-v2": list_spec()})
+
+
+# --- list inputs -------------------------------------------------------------
+
+
+def _count_widgets(*, data):
+    return {"count": len(data)}
+
+
+def test_a_many_service_spec_is_refused_at_construction():
+    """A ``many=True`` spec validates a JSON array, and tool arguments are always
+    an object: it used to be offered and answer every call with a retry the model
+    could not act on."""
+    spec = ServiceSpec(
+        service=_count_widgets,
+        input_serializer=WidgetInputSerializer,
+        many=True,
+        permission_classes=[AllowAny],
+    )
+
+    with pytest.raises(ImproperlyConfigured, match=r"'bulk_create'.*many=True.*by_tag"):
+        SpecToolset({"bulk_create": spec, "list_widgets": list_spec()})
+
+
+class _WidgetItems(serializers.Serializer):
+    items = WidgetInputSerializer(many=True)
+
+
+def _count_items(*, data):
+    return {"count": len(data["items"])}
+
+
+@pytest.mark.django_db
+def test_the_list_as_a_named_field_the_refusal_suggests_works():
+    """Holds the refusal's advice honest: the list arrives, and an invalid item is
+    sent back for a retry naming its index."""
+    user = User.objects.create(username="u")
+    spec = ServiceSpec(
+        service=_count_items, input_serializer=_WidgetItems, permission_classes=[AllowAny]
+    )
+    item = {"name": "a", "price": 1}
+
+    assert _dispatch(spec, user, {"items": [item, item]}) == {"count": 2}
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(spec, user, {"items": [item, {"name": "b"}]})
+    # DRF 3.18 keys a nested list's errors by the invalid items' indexes; below it
+    # they are a list holding an empty entry for each valid item. The floor is below
+    # 3.18, so both shapes reach the model.
+    items = retry.value.__cause__.detail["items"]
+    by_index = items if isinstance(items, dict) else {i: e for i, e in enumerate(items) if e}
+    assert list(by_index) == [1]
+    assert set(by_index[1]) == {"price"}
 
 
 # --- pagination arg validation -----------------------------------------------
@@ -977,6 +1060,18 @@ async def test_a_business_failure_marks_the_tool_return_failed():
     assert part.content == "nope"
     # And the run survived it, which is what separates ``ToolFailed`` from an
     # ordinary exception: the model got to answer.
+    assert result.output == "done"
+
+
+async def test_a_refused_call_marks_the_tool_return_failed_and_carries_its_code():
+    """What reaches the wire for an ``ActionUnavailable``: the same ``failed``
+    marking as any business error, and content that is the reason followed by the
+    code. ``content`` is what a transport forwards as the tool result, so this is
+    the text a browser rendering the call shows as well as what the model reads."""
+    result = await _run_one_tool(_refused_spec(), name="close_books")
+    part = _tool_return(result)
+    assert part.outcome == "failed"
+    assert part.content == "The books are closed. (code: books_closed)"
     assert result.output == "done"
 
 
@@ -3327,6 +3422,135 @@ async def test_a_spec_declaring_no_affordances_keeps_its_return_schema_byte_for_
     )
 
     assert json.dumps(tools["t"].tool_def.return_schema) == json.dumps(before)
+
+
+# --- a refused call names the rule that refused it ----------------------------
+#
+# drf-services raises ``ActionUnavailable(reason, code=...)`` when an affordance
+# condition is not met. ``ToolFailed`` takes a message and nothing else, so the
+# sentence is the only place the code can reach the model -- and the code is what
+# ties the refusal to the ``affordances`` answer the model may already have read.
+
+
+def _refusing_service(**_: Any) -> None:
+    """Close the books. Never reached: its one condition is unmet."""
+
+
+def _refused_spec() -> ServiceSpec:
+    return ServiceSpec(
+        service=_refusing_service,
+        atomic=False,
+        affordances=[
+            Affordance(code="books_closed", reason="The books are closed.", when=lambda: False)
+        ],
+        permission_classes=[AllowAny],
+    )
+
+
+async def test_a_refused_call_fails_with_its_reason_and_its_code():
+    """Through ``call_tool``, the path a run takes. The message used to be the
+    reason alone, with ``books_closed`` reachable only on ``__cause__``; the cause
+    is kept, because that is where a program reads the code from."""
+    toolset = SpecToolset({"close_books": _refused_spec()})
+
+    with pytest.raises(ToolFailed) as caught:
+        await _call(toolset, "close_books", User(username="u"))
+
+    assert caught.value.message == "The books are closed. (code: books_closed)"
+    cause = caught.value.__cause__
+    assert isinstance(cause, ActionUnavailable)
+    assert cause.code == "books_closed"
+    assert cause.message == "The books are closed."
+
+
+async def test_a_refusal_names_the_code_its_rows_advertised():
+    """The point of the suffix, asserted against the other half rather than a
+    literal: the code a row's ``affordances`` answer carries for an operation is
+    the code that operation's refusal ends with. Both come off one declaration,
+    ``_CANCEL_ORDER``, so a model that read the row can connect the two."""
+    toolset = SpecToolset(
+        {
+            "orders": _order_selector_spec(SelectorKind.RETRIEVE),
+            "cancel": replace(_CANCEL_ORDER, permission_classes=[AllowAny]),
+        },
+        descriptions={"cancel": "Cancel an order."},
+    )
+    row = await _call(toolset, "orders", User(username="u"))
+    advertised = row["affordances"]["cancel"]
+
+    with pytest.raises(ToolFailed) as caught:
+        await _call(toolset, "cancel", User(username="u"))
+
+    assert caught.value.message == f"{advertised['reason']} (code: {advertised['code']})"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(ServiceConflict("That slot is already booked."), id="ServiceConflict"),
+        pytest.param(ServiceError("That slot is already booked."), id="ServiceError"),
+    ],
+)
+def test_a_business_error_without_a_code_keeps_its_message_unchanged(exc):
+    """``ServiceConflict`` is ``ActionUnavailable``'s parent and is matched by the
+    same branch, so it is the case a check written one class too wide would
+    catch. A conflict raised by hand has no code, and must not gain a label."""
+
+    def refuse(**_):
+        """Refuse."""
+        raise exc
+
+    with pytest.raises(ToolFailed) as caught:
+        _dispatch(ServiceSpec(service=refuse, atomic=False), object(), {})
+
+    assert caught.value.message == "That slot is already booked."
+    assert "(code:" not in caught.value.message
+    assert caught.value.__cause__ is exc
+
+
+@pytest.mark.parametrize(
+    "registered",
+    [
+        pytest.param(ActionUnavailable, id="the refusal's own class"),
+        pytest.param(ServiceError, id="a base class it inherits"),
+    ],
+)
+def test_the_exception_map_still_wins_over_the_code_suffix(registered):
+    """The consumer's map is consulted before any built-in arm, this one
+    included, and it is where a program reads ``.code`` -- so a handler for the
+    refusal, or for any class above it, sees the exception whole and decides the
+    result without a suffix being added to it."""
+    result = _dispatch(
+        _refused_spec(),
+        object(),
+        toolset_kwargs={
+            "exception_map": {registered: lambda exc: {"refused": exc.code, "why": exc.message}}
+        },
+    )
+
+    assert result == {"refused": "books_closed", "why": "The books are closed."}
+
+
+def test_translate_exception_sees_the_code_before_the_default_renders_it():
+    """The override is the other door to the same place, and the one that can
+    read the run: returning ``None`` for everything else leaves the suffix to the
+    default, which the second call pins."""
+
+    class ReadingTheCode(SpecToolset):
+        def translate_exception(self, exc, *, ctx):
+            if isinstance(exc, ActionUnavailable) and ctx.deps.user == "auditor":
+                return lambda e: {"refused": e.code}
+            return super().translate_exception(exc, ctx=ctx)
+
+    spec = _refused_spec()
+    toolset = ReadingTheCode({"t": spec})
+
+    assert toolset._call_spec(spec, "auditor", {}, ctx=ctx_for("auditor")) == {
+        "refused": "books_closed"
+    }
+    with pytest.raises(ToolFailed) as caught:
+        toolset._call_spec(spec, "clerk", {}, ctx=ctx_for("clerk"))
+    assert caught.value.message == "The books are closed. (code: books_closed)"
 
 
 # --- JsonSchemaRegistry threading ---------------------------------------------
