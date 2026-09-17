@@ -10,10 +10,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **Floored at `djangorestframework-services>=0.52.1`.** That release renders a
-  single `None` as `None` rather than as the output serializer's blank row, which
-  is the fix below; below it, the toolset still builds and runs, and answers a
-  row with empty fields where it found nothing.
+- **Floored at `djangorestframework-services>=0.52.1` (was `>=0.51`).** That
+  release renders a single `None` as `None` rather than as the output
+  serializer's blank row, which is the fix below; below it, the toolset still
+  builds and runs, and answers a row with empty fields where it found nothing.
 
 - **A `ServiceSpec` declaring `many=True` is refused when the toolset is built**,
   with `ImproperlyConfigured` naming every such tool. Its input validates as a

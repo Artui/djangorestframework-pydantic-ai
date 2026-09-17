@@ -65,7 +65,11 @@ dependencies = [
     # while the toolset builds its tool definitions at construction. Below 0.51
     # the attribute and the keyword are both missing, so such a toolset cannot
     # be built at all: a hard floor rather than a preference.
-    "djangorestframework-services>=0.51",
+    # 0.52.1 renders a single ``None`` as ``None``: below it a nullable retrieve
+    # that found nothing, and a service that returned nothing, reach the model as
+    # the output serializer's blank row. A soft floor -- the toolset imports and
+    # runs below it -- held by the tests asserting both return ``None``.
+    "djangorestframework-services>=0.52.1",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
     # a business-rule refusal, an unresolved target, a dispatch that ran past its
