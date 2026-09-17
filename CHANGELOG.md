@@ -6,6 +6,46 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **A `ServiceSpec` declaring `many=True` is a tool that takes its list as one
+  named argument**, where it was refused when the toolset was built. A model's
+  tool arguments are always a JSON object and the spec validates a JSON array, so
+  the list travels under the argument the spec's `many_argument` names, `items`
+  unless it names another, and the service receives the list as it would from a
+  REST view's array body. The tool's parameter schema is an object with that one
+  required array property and `additionalProperties: false`, with any declared
+  `QueryParam` or `UrlKwarg` advertised beside it. Its `return_schema` describes
+  the rendered list as an array, although the `output_selector_spec` a bulk spec
+  renders through is `RETRIEVE` by convention.
+
+  An invalid item comes back as a `ModelRetry` keyed under the argument and then
+  by the invalid item's index, on every Django REST framework version supported,
+  rendered as every validation error is:
+
+  ```text
+  {'items': {1: {'price': [ErrorDetail(string='This field is required.', code='required')]}}}
+  ```
+
+  Any other argument sent beside the list comes back as `Unexpected argument(s):
+  'note'.` under every `unknown_arguments` policy, since the service receives
+  only the list. A tool that needs arguments beside its list still declares the
+  list as a field of its input serializer.
+
+- **A `QueryParam` or `UrlKwarg` named after a `many=True` spec's list argument
+  is refused with `ImproperlyConfigured`** when the toolset is built, whether
+  declared toolset-wide, per tool or on the registry entry's `OfflineContract`.
+  The toolset takes both out of the arguments before dispatch, so the list would
+  never have reached the service and every call would have come back saying the
+  argument the model had just sent was required.
+
+### Changed
+
+- **Floored at `djangorestframework-services>=0.53.0` (was `>=0.52.1`), and it is a
+  hard floor.** Every spec call passes `many_as_argument=True`, which first exists
+  there, so below it every tool call raises `TypeError`. The toolset still builds,
+  so nothing fails until a model calls a tool.
+
 ## [0.29.0] — 2026-09-16
 
 ### Changed

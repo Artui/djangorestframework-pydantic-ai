@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import cached_property
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, TypeGuard, cast
 
 from asgiref.sync import sync_to_async
 from django.core.exceptions import ImproperlyConfigured
@@ -299,6 +299,14 @@ class SpecToolset(AbstractToolset[Any]):
     its hands off the value, which the FilterSet validates and applies through
     its own ``param_map``.
 
+    **A ``many=True`` service takes its list as one named argument.** Its input
+    validates as a JSON array and a model's arguments are always an object, so the
+    list travels under the argument ``ServiceSpec.many_argument`` names --
+    ``items`` unless the spec names another -- and nothing may be sent beside it
+    but this toolset's own ``query_params`` / ``url_kwargs``. An invalid item comes
+    back as a ``ModelRetry`` keyed under that argument and then by the item's
+    index. The result is the rendered list, advertised as an array.
+
     For anything the keywords below do not cover,
     [`build_context`][rest_framework_pydantic_ai.SpecToolset.build_context] and
     [`translate_exception`][rest_framework_pydantic_ai.SpecToolset.translate_exception]
@@ -466,7 +474,9 @@ class SpecToolset(AbstractToolset[Any]):
 
     Raises:
         ImproperlyConfigured: A spec has no ``permission_classes`` and
-            ``require_permissions`` is set.
+            ``require_permissions`` is set, or a ``QueryParam`` / ``UrlKwarg`` on
+            a ``many=True`` spec's tool -- declared here or on its entry's
+            ``OfflineContract`` -- shares the name its list travels under.
         ValueError: A tool name is outside ``^[a-zA-Z0-9_-]{1,64}$``, a per-tool
             mapping names a tool this toolset does not expose, or one name is
             registered on both parameter channels.
@@ -503,7 +513,6 @@ class SpecToolset(AbstractToolset[Any]):
         resolved = _resolve_specs(specs)
         contracts = _resolve_contracts(specs)
         _validate_tool_names(resolved)
-        _validate_list_inputs(resolved)
         _validate_permissions(resolved, require=require_permissions)
         _validate_query_params(query_params, tool_query_params, resolved)
         _validate_url_kwargs(url_kwargs, tool_url_kwargs, resolved)
@@ -568,6 +577,11 @@ class SpecToolset(AbstractToolset[Any]):
         for name in self._specs:
             _validate_channel_declarations(name, self._tool_query_params[name], "query_params")
             _validate_channel_declarations(name, self._tool_url_kwargs[name], "url_kwargs")
+        # Also post-merge, for the same reason and one more: a contract's
+        # declarations exist only in the merged tuples.
+        _validate_many_argument_channels(
+            self._specs, self._tool_query_params, self._tool_url_kwargs
+        )
         # Agent markings are pure in the serializer, like the schemas below, so
         # they are resolved once rather than paying a serializer instantiation
         # on every tool call.
@@ -1201,34 +1215,6 @@ def _validate_tool_names(specs: Mapping[str, Spec]) -> None:
         )
 
 
-def _validate_list_inputs(specs: Mapping[str, Spec]) -> None:
-    """Refuse a service spec whose input is a list, which no tool call can deliver.
-
-    ``many=True`` makes drf-services validate the payload as a JSON array, and a
-    model's tool arguments are always a JSON object. Such a tool was offered to the
-    model and answered every call with a retry it could not act on ("Expected a
-    list of items but got type dict"), until the retry budget ran out.
-
-    ``ImproperlyConfigured``, as ``_validate_permissions`` raises and as the MCP
-    transport raises for the same spec, so a consumer serving a registry over
-    both catches one thing.
-    """
-    listed = sorted(
-        name for name, spec in specs.items() if isinstance(spec, ServiceSpec) and spec.many
-    )
-    if not listed:
-        return
-    names: str = ", ".join(repr(name) for name in listed)
-    raise ImproperlyConfigured(
-        f"SpecToolset was given service spec(s) declaring many=True: {names}. Their "
-        "input is a JSON array, and a model's tool arguments are always a JSON object, "
-        "so every call would fail. Declare the list as a named field of the input "
-        "serializer instead (for example `items = ItemSerializer(many=True)`) and loop "
-        "over `data['items']` in the service, or leave the spec out of this toolset; "
-        "a SpecRegistry can be narrowed with by_tag."
-    )
-
-
 def _validate_query_params(
     query_params: Sequence[QueryParam],
     tool_query_params: Mapping[str, Sequence[QueryParam]] | None,
@@ -1273,6 +1259,44 @@ def _validate_url_kwargs(
                 f"tool_url_kwargs references unknown tool {tool_name!r}; "
                 f"known tools: {sorted(specs)}."
             )
+
+
+def _validate_many_argument_channels(
+    specs: Mapping[str, Spec],
+    tool_query_params: Mapping[str, Sequence[QueryParam]],
+    tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]],
+) -> None:
+    """Refuse a declared channel named after the argument a tool's list travels under.
+
+    A ``QueryParam`` or ``UrlKwarg`` is popped out of the model's arguments before
+    dispatch, so one sharing ``spec.many_argument`` would take the list with it:
+    every call would reach drf-services without its list and come back as a retry
+    saying the argument is required -- the argument the model had just sent.
+
+    Its own check rather than ``many_argument`` added to the ``reserved`` names
+    handed to drf-services' shared validator, which would refuse the same
+    declaration with a list of the dispatcher's pool seeds and no word about the
+    list. ``ImproperlyConfigured``, as that validator raises for a channel name the
+    transport owns, which this is for one tool.
+    """
+    for tool_name, spec in specs.items():
+        if not _takes_a_list(spec):
+            continue
+        argument: str = spec.many_argument
+        channels: tuple[tuple[str, Sequence[QueryParam] | Sequence[UrlKwarg]], ...] = (
+            ("QueryParam", tool_query_params[tool_name]),
+            ("UrlKwarg", tool_url_kwargs[tool_name]),
+        )
+        for kind, declarations in channels:
+            if any(declaration.name == argument for declaration in declarations):
+                raise ImproperlyConfigured(
+                    f"SpecToolset tool {tool_name!r} takes its list under the argument "
+                    f"{argument!r} (its spec declares many=True), and a {kind} named "
+                    f"{argument!r} is declared for it too. A {kind} is taken out of the "
+                    "arguments before dispatch, so the list would never reach the service. "
+                    "Rename the declaration, or name the list's argument with "
+                    "ServiceSpec(many_argument=...)."
+                )
 
 
 def _validate_channel_declarations(tool_name: str, declarations: Sequence[Any], kind: str) -> None:
@@ -1586,13 +1610,19 @@ def _return_schema(
     ``None`` for a spec with no ``output_serializer`` is the correct answer and
     not a gap: drf-services refuses to fabricate a shape it cannot derive, and a
     guessed one would be a claim the payload never has to honour.
+
+    ``kind`` is ``LIST`` for a ``many=True`` service whatever its
+    ``output_selector_spec`` declares. That selector is ``RETRIEVE`` by
+    convention, because its kind describes one row, while drf-services renders
+    the list it returns as a list; the kind alone advertised an object for a
+    payload that is always an array.
     """
     rendered = _rendered_selector_spec(spec)
     if rendered is None:
         return None
     return output_to_json_schema(
         rendered.output_serializer,
-        kind=rendered.kind,
+        kind=SelectorKind.LIST if _takes_a_list(spec) else rendered.kind,
         paginate=_is_list_selector(spec),
         projection=projection,
         handle_description=_HANDLE_DESCRIPTION,
@@ -1657,6 +1687,13 @@ def _input_schema(
     ``UrlKwarg(required=True)``. A key that is both reflected-required and
     registered-required appears once: that is one statement made twice, not two
     requirements.
+
+    A ``many=True`` spec's reflected schema is already the object a model can
+    send -- one required array property named by ``spec.many_argument``, and
+    ``additionalProperties: false`` -- so the merge below applies to it unchanged.
+    The ``false`` is carried over and stays true: a declared channel is a
+    property, not an additional one, and ``_call_spec`` pops it before drf-services
+    refuses anything sent beside the list.
     """
     schema = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input", registry=registry))
     extra: dict[str, Any] = {}
@@ -1685,6 +1722,21 @@ def _input_schema(
 
 def _is_list_selector(spec: Spec) -> bool:
     return isinstance(spec, SelectorSpec) and spec.kind == SelectorKind.LIST
+
+
+def _takes_a_list(spec: Spec) -> TypeGuard[ServiceSpec[Any, Any, Any]]:
+    """Whether ``spec`` is a ``many=True`` service: a list in, and a list out.
+
+    A ``TypeGuard`` so a caller reading ``many_argument`` after it type-checks
+    without restating the ``isinstance``.
+
+    The ``isinstance`` is not a formality -- a ``SelectorSpec`` has no ``many`` to
+    read -- and is held by every toolset exposing a selector. ``spec.many`` is held
+    by ``test_a_service_tool_reads_its_output_serializer_one_level_down`` on the
+    return schema and ``test_a_channel_may_share_a_name_no_list_travels_under`` on
+    the channel check.
+    """
+    return isinstance(spec, ServiceSpec) and spec.many
 
 
 def _spec_ordering_argument(
@@ -1839,6 +1891,13 @@ def _call_spec(
             # channel that separates the FilterSet's data from the callable's
             # arguments — the two are one flat mapping off HTTP otherwise.
             filter_data=filter_data,
+            # A model's arguments are always an object, so a ``many=True`` spec's
+            # list arrives under the one argument ``spec.many_argument`` names --
+            # the argument its input schema advertises. A no-op on every other
+            # spec, which is why it is passed unconditionally rather than behind a
+            # ``spec.many`` branch this function would then have to keep in step
+            # with drf-services' idea of which specs take a list.
+            many_as_argument=True,
         )
     except BaseException as exc:
         # **One arm, not a chain, because the consumer's map has to be consulted

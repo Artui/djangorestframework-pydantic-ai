@@ -213,26 +213,71 @@ toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 
 ## A list as input
 
-A `ServiceSpec` declaring `many=True` is refused when the toolset is built. Its
-input validates as a JSON array, and a model's tool arguments are always a JSON
-object, so no call could reach the service. Name the list as a field of the input
-serializer instead, and loop over it:
+A `ServiceSpec` declaring `many=True` becomes a tool that takes its list as **one
+named argument**. Its input validates as a JSON array, and a model's tool
+arguments are always a JSON object, so the array travels under the argument the
+spec's `many_argument` names, `items` unless it names another:
+
+```python
+def create_widgets(*, data, user):
+    """Create several widgets in one call."""
+    return [Widget.objects.create(owner=user, **item) for item in data]
+
+
+create_widgets_spec = ServiceSpec(
+    service=create_widgets,
+    input_serializer=WidgetInputSerializer,
+    many=True,
+    many_argument="widgets",  # optional; the default is "items"
+    output_selector_spec=SelectorSpec(
+        kind=SelectorKind.RETRIEVE, output_serializer=WidgetSerializer
+    ),
+)
+```
+
+The model sends `{"widgets": [{...}, {...}]}` and the service receives the list,
+exactly as it would from a REST view's bare array body. The tool's parameter
+schema says so: an object with that one required property, an array of the item
+schema, carrying the list serializer's `allow_empty`, `min_length` and
+`max_length` as `minItems` / `maxItems`, and `additionalProperties: false`. A
+declared `QueryParam` or `UrlKwarg` is advertised beside it, since the toolset
+takes those out of the arguments before dispatch. The result is the rendered
+list, and the tool's `return_schema` describes it as an array even though the
+`output_selector_spec` is `RETRIEVE`.
+
+What the model is told when a call is wrong:
+
+- **An invalid item** comes back as a `ModelRetry` whose errors are keyed under
+  the argument, then by the invalid item's index, then by field, on every Django
+  REST framework version this package supports. The model reads
+  `{'widgets': {1: {'price': [ErrorDetail(string='This field is required.', code='required')]}}}`,
+  the same rendering every validation error gets, and corrects that one item.
+- **The argument missing, `null` or not a list** comes back keyed under the
+  argument in the words that field would use:
+  `{'widgets': [ErrorDetail(string='This field is required.', code='required')]}`.
+- **Any other argument sent beside the list** comes back as
+  `Unexpected argument(s): 'note'.` under every `unknown_arguments` policy,
+  because the service receives only the list and the argument would have
+  nowhere to go. The policy still decides what happens to an undeclared key
+  inside an item.
+
+A `QueryParam` or `UrlKwarg` sharing the list's argument name is refused with
+`ImproperlyConfigured` when the toolset is built, whether it is declared
+toolset-wide, per tool or on the registry entry's `OfflineContract`: it would be
+taken out of the arguments first and carry the list away with it.
+
+A tool that needs arguments **beside** its list cannot be `many=True`. Name the
+list as a field of the input serializer instead, and loop over it:
 
 ```python
 class BulkWidgetInput(serializers.Serializer):
     items = WidgetInputSerializer(many=True)
-
-
-def create_widgets(*, data):
-    return [create_widget(**item) for item in data["items"]]
+    dry_run = serializers.BooleanField(default=False)
 ```
 
-The model sends `{"items": [...]}`, and an invalid item comes back as a
-`ModelRetry` placing its errors at its index: keyed by index from Django REST
-framework 3.18, and below it as a list with an empty entry for each valid item.
-If the spec also backs a REST view that takes a
-bare list, keep it out of the toolset: tag it in the `SpecRegistry` and build the
-toolset from `registry.by_tag(...)`.
+The model sends `{"items": [...], "dry_run": true}`, and an invalid item comes
+back placing its errors at its index: keyed by index from Django REST framework
+3.18, and below it as a list with an empty entry for each valid item.
 
 ## Ordering
 
@@ -475,6 +520,8 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | A dispatch past `dispatch_timeout` | `ToolFailed` — abandoned, with the sentence telling the model to narrow and call again |
 | A rendered result over `max_result_bytes` | `ToolFailed` — refused rather than truncated, since a partial payload looks complete |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
+| An invalid item in a `many=True` list | `ModelRetry` with the errors keyed under the list's argument, then the item's index — see [A list as input](#a-list-as-input) |
+| An argument sent beside a `many=True` list | `ModelRetry` naming it, whatever `unknown_arguments` says |
 | Non-integer `page` / `limit` | `ModelRetry` — naming what is accepted |
 | An `ordering` sent to a list tool that advertises no sort at all | `ModelRetry` — saying the tool has none, rather than letting it fall through as an unknown key |
 | A `limit` over `max_page_size`, or a `page` past the last one | Clamped, not refused — the envelope reports the `page` and `totalPages` actually served, so the clamp is visible rather than silent |
