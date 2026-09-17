@@ -228,7 +228,9 @@ def create_widgets(*, data):
 ```
 
 The model sends `{"items": [...]}`, and an invalid item comes back as a
-`ModelRetry` keyed by its index. If the spec also backs a REST view that takes a
+`ModelRetry` placing its errors at its index: keyed by index from Django REST
+framework 3.18, and below it as a list with an empty entry for each valid item.
+If the spec also backs a REST view that takes a
 bare list, keep it out of the toolset: tag it in the `SpecRegistry` and build the
 toolset from `registry.by_tag(...)`.
 

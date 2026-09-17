@@ -653,7 +653,13 @@ def test_the_list_as_a_named_field_the_refusal_suggests_works():
     assert _dispatch(spec, user, {"items": [item, item]}) == {"count": 2}
     with pytest.raises(ModelRetry) as retry:
         _dispatch(spec, user, {"items": [item, {"name": "b"}]})
-    assert str(retry.value).startswith("{'items': {1: {'price': ")
+    # DRF 3.18 keys a nested list's errors by the invalid items' indexes; below it
+    # they are a list holding an empty entry for each valid item. The floor is below
+    # 3.18, so both shapes reach the model.
+    items = retry.value.__cause__.detail["items"]
+    by_index = items if isinstance(items, dict) else {i: e for i, e in enumerate(items) if e}
+    assert list(by_index) == [1]
+    assert set(by_index[1]) == {"price"}
 
 
 # --- pagination arg validation -----------------------------------------------
