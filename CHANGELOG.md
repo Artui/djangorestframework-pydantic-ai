@@ -39,6 +39,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never have reached the service and every call would have come back saying the
   argument the model had just sent was required.
 
+### Changed
+
+- **Floored at `djangorestframework-services>=0.53.0` (was `>=0.52.1`), and it is a
+  hard floor.** Every spec call passes `many_as_argument=True`, which first exists
+  there, so below it every tool call raises `TypeError`. The toolset still builds,
+  so nothing fails until a model calls a tool.
+
 ## [0.29.0] — 2026-09-16
 
 ### Changed
