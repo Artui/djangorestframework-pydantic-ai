@@ -2190,6 +2190,11 @@ action names it knows.</p>
 so a handler registered for a base class catches its subclasses and the
 <strong>most specific</strong> registration wins. Override for a decision the map
 cannot express — one that has to read the run's deps.</p>
+<p>This runs ahead of every built-in arm, so it is also where a program reads
+a refusal's code: an <code>ActionUnavailable</code> arrives here with <code>.code</code>
+intact, before the default renders it into the sentence
+<code>&lt;reason&gt; (code: &lt;code&gt;)</code>. A handler returned for it replaces that
+sentence along with everything else the default would have done.</p>
 
 
     </div>
