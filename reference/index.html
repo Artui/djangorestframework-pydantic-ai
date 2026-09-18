@@ -1306,6 +1306,13 @@ That includes ordering: a FilterSet carrying an <code>OrderingFilter</code> name
 filter's public choices into the schema as an enum — and the toolset keeps
 its hands off the value, which the FilterSet validates and applies through
 its own <code>param_map</code>.</p>
+<p><strong>A <code>many=True</code> service takes its list as one named argument.</strong> Its input
+validates as a JSON array and a model's arguments are always an object, so the
+list travels under the argument <code>ServiceSpec.many_argument</code> names --
+<code>items</code> unless the spec names another -- and nothing may be sent beside it
+but this toolset's own <code>query_params</code> / <code>url_kwargs</code>. An invalid item comes
+back as a <code>ModelRetry</code> keyed under that argument and then by the item's
+index. The result is the rendered list, advertised as an array.</p>
 <p>For anything the keywords below do not cover,
 <a class="autorefs autorefs-internal" title="build_context" href="#rest_framework_pydantic_ai.SpecToolset.build_context"><code>build_context</code></a> and
 <a class="autorefs autorefs-internal" title="translate_exception" href="#rest_framework_pydantic_ai.SpecToolset.translate_exception"><code>translate_exception</code></a>
@@ -1897,7 +1904,9 @@ extending the shared default:
             <td>
               <div class="doc-md-description">
                 <p>A spec has no <code>permission_classes</code> and
-<code>require_permissions</code> is set.</p>
+<code>require_permissions</code> is set, or a <code>QueryParam</code> / <code>UrlKwarg</code> on
+a <code>many=True</code> spec's tool -- declared here or on its entry's
+<code>OfflineContract</code> -- shares the name its list travels under.</p>
               </div>
             </td>
           </tr>
