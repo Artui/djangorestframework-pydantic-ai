@@ -1396,7 +1396,12 @@ registry its own.</p>
   
       async
   " href="#rest_framework_pydantic_ai.SpecToolset.get_instructions"><code>get_instructions</code></a>
-derives from the specs. <code>None</code> derives it.</p>
+derives from the specs. <code>None</code> derives it. What it does <strong>not</strong>
+replace is the per-step list of operations that are unavailable right
+now, which is appended after it whenever an operation condition leaves
+one out of the catalog: the override replaces conventions, and which
+operations are offered on a given step is state no override written in
+advance could have described.</p>
               </div>
             </td>
             <td>
@@ -2004,6 +2009,44 @@ a DB-backed check becomes a query per spec per step; and a tool the model
 never sees is one it cannot ask about, which is how a run ends in a
 guess instead of a denial. Nothing row-level is exposed either way — a
 listing carries a name, a description and an input schema.</p>
+<p><strong>An operation whose condition is unmet right now is left out, and that is
+not the same decision.</strong> A spec's <code>Affordance</code> answered without a row --
+a callable <code>when</code>, "the books are open" -- is asked each step, and a
+tool it fails is omitted until it holds again. Each of the three
+arguments above has an answer here. Such a condition reads only the
+seeds -- the user, the request, a registered seed -- and never an
+argument, so it cannot hide a tool the caller could in fact invoke:
+whatever the model would send, the call would be refused. Only the specs
+declaring one are asked, so a toolset that declares none pays nothing,
+not even a thread hop. And the model can still ask about what it cannot
+see, because
+<a class="autorefs autorefs-internal" title="get_instructions
+
+
+  
+      async
+  " href="#rest_framework_pydantic_ai.SpecToolset.get_instructions"><code>get_instructions</code></a>
+names every tool left out this way together with its reason, which is
+what it needs to tell the user why rather than guess.</p>
+<p>A condition on the row (an ORM expression) is never asked here: there is
+no row at listing time, and it goes on being answered per object at the
+call. A condition that raises aborts the step, as it would the call --
+one that cannot be answered is not a <code>no</code>.</p>
+<p><strong>The omission is applied beside <code>is_tool_listed</code>, not inside it</strong>, so
+an override of that seam -- which is free to return <code>True</code> -- cannot
+switch it off by not calling <code>super()</code>. Neither is an authorization
+decision: the call enforces every affordance whatever this listed, and a
+model calling a name left out gets pydantic-ai's unknown-tool retry.</p>
+<p>This and <code>get_instructions</code> each ask the conditions for themselves,
+once per step apiece, rather than sharing one answer. The run context
+carries no key that could safely scope a shared answer to one run and one
+step: <code>run_id</code> may be supplied by the caller and is reused when a
+failed run is retried under it, and a context built by hand has none.
+A memo keyed on it could hand one run's -- one user's -- answer to
+another, where asking twice costs a second evaluation of conditions that
+read only seeds. The price is that a condition flipping between the two
+reads can leave one step's catalog and its instructions disagreeing
+about one tool; the call's own enforcement is authoritative either way.</p>
 <p>Override <a class="autorefs autorefs-internal" title="is_tool_listed
 
 
@@ -2041,6 +2084,10 @@ tenant read off <code>ctx.deps</code>. Hiding a tool is a <em>disclosure</em> de
 never an authorization one: the call is gated by
 <code>spec.permission_classes</code> whatever this returns, so an override that
 wrongly returns <code>True</code> grants nothing.</p>
+<p>Not consulted for a tool an unmet operation condition already left out
+of this step's catalog, and returning <code>True</code> does not put one back:
+that omission is applied by <code>get_tools</code> itself, so an override need
+not call <code>super()</code> to keep it.</p>
 <p><code>async</code> because <code>get_tools</code> is, and it is called once per tool per
 model step. An override that queries the database must wrap that work in
 <code>asgiref.sync.sync_to_async</code> — Django refuses ORM access on the event
@@ -2076,6 +2123,19 @@ failed result (a final answer, not a reason to retry) while a
 bad argument comes back as a retry request, and that a permission error
 is final. Pydantic-AI appends the block to the system prompt each turn,
 for a toolset attached directly <em>or</em> wrapped by a capability.</p>
+<p><strong>Per step, when an operation condition leaves a tool out.</strong> The block is
+then derived from the tools this step offers, so no line advises about
+one it does not, and it ends by naming each tool left out with its
+<code>reason</code>: the model sees neither the tool nor, otherwise, any sign it
+exists, and a user asking for it would get a guess where a sentence was
+available. The conditions are asked here and in <code>get_tools</code>
+separately -- see that method for why, and for what it costs. With an
+<code>instructions</code> override, the override stands in for the derived block
+and the unavailable tools are still appended after it, because an
+override replaces the conventions and cannot have described which
+operations a given step would lack.</p>
+<p>A toolset declaring no such condition is untouched by any of this: it
+asks nothing, and returns the same string every step.</p>
 
 
     <p><span class="doc-section-title">Returns:</span></p>
@@ -2123,7 +2183,17 @@ for a toolset attached directly <em>or</em> wrapped by a capability.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>cannot fire.</p>
+                <p>cannot fire — followed in either case by the operations unavailable</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="str">str</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>this step, when there are any.</p>
               </div>
             </td>
           </tr>
@@ -2173,6 +2243,14 @@ being able to read off HTTP, and left unset it reads as <code>None</code> for
 every spec alike. Rewrite it in an override (it arrives in <code>**kwargs</code>
 in the forwarding form) when a permission class branches on the viewset
 action names it knows.</p>
+<p><strong>Also called when the catalog is listed</strong>, once per <code>get_tools</code> and
+once per <code>get_instructions</code>, whenever some spec declares an
+<code>Affordance</code> answered without a row: that condition is asked against
+this context's <code>request</code>, so it reads the same object at listing time
+as at the call. That call carries no arguments, no <code>action</code> and an
+empty <code>query_params</code>, since a listing has none of them, and runs in
+the dispatch thread as the call's does. An override that reads
+<code>action</code> to decide something should expect <code>None</code> there.</p>
 
 
     </div>
