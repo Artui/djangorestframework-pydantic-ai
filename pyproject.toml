@@ -69,12 +69,18 @@ dependencies = [
     # that found nothing, and a service that returned nothing, reach the model as
     # the output serializer's blank row. A soft floor on its own -- the toolset
     # imports and runs below it -- held by the tests asserting both return ``None``.
-    # 0.53.0 is the floor, and it is a hard one: every spec call passes
-    # ``many_as_argument=True``, which first exists there, so below it every tool
-    # call raises ``TypeError`` -- the toolset builds and nothing fails until a
-    # model calls a tool. It is also where a ``many=True`` spec's list is read from
-    # the one argument ``ServiceSpec.many_argument`` names.
-    "djangorestframework-services>=0.53.0",
+    # 0.53.0: every spec call passes ``many_as_argument=True``, which first exists
+    # there, so below it every tool call raises ``TypeError`` -- the toolset builds
+    # and nothing fails until a model calls a tool. It is also where a
+    # ``many=True`` spec's list is read from the one argument
+    # ``ServiceSpec.many_argument`` names.
+    # 0.54.0 is the floor, and it is a hard one: ``operation_affordances`` and
+    # ``unmet_operation_affordance`` first exist there, and the toolset imports
+    # both at module level to leave an operation whose condition is unmet out of
+    # a step's tools. They answer a condition against the names drf-services
+    # itself enforces it with at the call, which is why the toolset asks them
+    # rather than restating that rule.
+    "djangorestframework-services>=0.54.0",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
     # a business-rule refusal, an unresolved target, a dispatch that ran past its
