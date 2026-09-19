@@ -171,8 +171,10 @@ what this package puts in each:
 
 ### The tool catalog is not permission-filtered
 
-`get_tools` advertises every spec to every run. A tool whose permissions will
-deny this caller is still listed — the denial happens on the call. That is
+`get_tools` advertises every spec to every run, except a tool whose [operation
+condition is unmet](#an-operation-that-is-unavailable-right-now-is-left-out) at
+that step. A tool whose permissions will deny this caller is still listed — the
+denial happens on the call. That is
 deliberate: a permission whose answer depends on the arguments has none to read
 at listing time and would hide a tool the caller can actually use, the listing
 runs once per model step so a database-backed check would cost a query per spec
@@ -196,6 +198,56 @@ class OpsOnlyToolset(SpecToolset):
 
 Hiding a tool is a disclosure decision, never an authorization one: the call is
 gated by `permission_classes` whatever this returns.
+
+### An operation that is unavailable right now is left out
+
+A spec's `Affordance` answered without a row, a callable `when` such as
+`lambda: Period.current().is_open` (see [below](#a-refused-affordance-names-its-code)),
+is asked on every model step, and a tool whose condition is unmet is left out of
+that step's catalog. The arguments against filtering by permission do not apply
+to it. The condition reads only the seeds (the user, the request and any
+registered seed), never an argument, so it cannot hide a tool the caller could
+have invoked with other arguments. Only the specs declaring one are asked, and a
+toolset declaring none pays nothing. And the model can still tell the user about
+the missing tool, because the instructions for that step end by naming each tool
+left out with its reason:
+
+```text
+- These operations exist but cannot be performed right now, so they are not among your tools. If the user asks for one, say it is unavailable at the moment and give the reason listed for it, rather than guessing why:
+  - `post_invoice`: The books are closed.
+```
+
+The rest of the instructions are derived from the tools that step offers, so no
+line describes a tool it lacks. An `instructions=` override replaces those
+conventions but not this list, which is appended after the override: which
+tools a given step lacks is not something an override written in advance can
+say.
+
+A few things follow from how it is asked:
+
+- **An `is_tool_listed` override cannot put the tool back.** The omission is
+  applied beside it rather than inside the default, so an override returning
+  `True` does not need to call `super()` to keep it.
+- **Conditions run where a dispatch runs**, in a thread under the toolset's
+  `thread_sensitive` and `executor`, so one that queries is fine. The connection
+  it opens is closed after it, as a dispatch's is.
+- **The request a condition reads is built through `build_context`**, so a
+  condition reading `request` sees the same object when the catalog is listed as
+  at the call, including anything an override adds to it. That listing call
+  carries no arguments, no `action` and an empty query string.
+- **A condition on the row (an ORM expression) is never asked here.** There is
+  no row when the catalog is listed, so the call answers it for its own row.
+- **`get_tools` and `get_instructions` each ask once per step.** A shared answer
+  would need a key scoping it to one run, and the run context has none that is
+  safe: `run_id` can be supplied by the caller and is reused when a failed run
+  is retried. A condition that flips between the two reads can leave one step's
+  catalog and instructions disagreeing about one tool.
+
+None of this changes the call. `dispatch_spec` enforces every affordance
+whatever was listed, a call against a listing that went stale is refused as
+[below](#a-refused-affordance-names-its-code), and a model calling a tool that
+was left out gets pydantic-ai's unknown-tool retry, which names the tools that do
+exist.
 
 ## Unexpected arguments
 
@@ -601,8 +653,12 @@ post_invoice_spec = ServiceSpec(
 )
 ```
 
-A call made once the current period has closed fails, and the failed tool result's
-content — what the model reads and what a transport streams — is:
+While the period is closed the tool is [left out of the
+catalog](#an-operation-that-is-unavailable-right-now-is-left-out), so a run reaches
+this refusal only through a listing that went stale: the step was offered the tool,
+and the period closed before the call arrived. A condition on the row is refused
+the same way, and it is never asked when the catalog is listed. The failed tool
+result's content, which is what the model reads and what a transport streams, is:
 
 ```text
 The books are closed. (code: books_closed)

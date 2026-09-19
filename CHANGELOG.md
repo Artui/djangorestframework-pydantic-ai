@@ -6,6 +6,60 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-09-19
+
+### Changed
+
+- **A tool whose operation condition is unmet right now is left out of the
+  catalog, and the instructions say which tools are missing and why.** An
+  `Affordance` on a `ServiceSpec` answered without a row, a callable `when`, is
+  asked on each model step, and a tool it refuses is omitted from `get_tools`
+  until the condition holds again. The instructions for that step are derived
+  from the tools it offers, so no line describes the missing one, and end by
+  naming it with its `reason`:
+
+  ```text
+  - These operations exist but cannot be performed right now, so they are not among your tools. If the user asks for one, say it is unavailable at the moment and give the reason listed for it, rather than guessing why:
+    - `post_invoice`: The books are closed.
+  ```
+
+  A model offered a tool it cannot use this step spends a call finding that out,
+  and before the call it had nothing to tell the user but a guess. The catalog is
+  still not filtered by permission, and the reasons that argued against that do
+  not apply here. Such a condition reads only the seeds, never an argument, so it
+  cannot hide a tool the caller could have invoked. A toolset that declares no
+  such condition asks nothing and takes no thread hop. And the model can still
+  tell the user about the missing tool, because the instructions name it. A
+  condition on the row is never asked when the catalog is listed, since there is
+  no row to ask it about.
+
+  The omission is applied beside `is_tool_listed`, so an override returning
+  `True` does not put the tool back. With an `instructions=` override, the
+  unavailable tools are appended after the override, which cannot have
+  described them in advance. Nothing on the call path changes: the call still
+  enforces every affordance, a call against a listing that went stale is refused
+  with `(code: ...)` as before, and a model calling a name left out gets
+  pydantic-ai's unknown-tool retry.
+
+  Conditions are asked in the dispatch thread, under the toolset's
+  `thread_sensitive` and `executor`, against a request built through
+  `build_context`, so a condition reading `request` sees the same object at
+  listing time as at the call. `build_context` is therefore also called when the
+  catalog is listed, with no arguments, no `action` and an empty query string. A
+  condition that queries has the connection it opened closed after it, as a
+  dispatch does. `get_tools` and `get_instructions` each ask once per step
+  rather than sharing an answer, because the run context carries no key that
+  scopes one answer to one run safely. A condition that flips between the two
+  reads can therefore leave one step's catalog and instructions disagreeing
+  about one tool, and the call's own check decides.
+
+- **Floored at `djangorestframework-services>=0.54.0` (was `>=0.53.0`), and it is a
+  hard floor.** `operation_affordances` and `unmet_operation_affordance` first
+  exist there, and the toolset imports both at module level, so below it the
+  package does not import. They answer a condition against the names
+  drf-services enforces it with at the call, so a step's tools and the call that
+  follows cannot disagree about what a condition sees.
+
 ## [0.30.0] — 2026-09-18
 
 ### Added
@@ -1655,7 +1709,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.27.0...v0.28.0

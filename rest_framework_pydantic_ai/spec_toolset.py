@@ -31,10 +31,11 @@ import logging
 import re
 import time
 import warnings
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from functools import cached_property
+from functools import cached_property, lru_cache
 from types import MappingProxyType
 from typing import Any, TypeGuard, cast
 
@@ -54,6 +55,7 @@ from rest_framework_services import (
     UNSET,
     ActionUnavailable,
     AdditionalInputRequired,
+    Affordance,
     AudienceProjection,
     DispatchResult,
     FieldAudience,
@@ -68,13 +70,16 @@ from rest_framework_services import (
     SpecRegistry,
     UnknownArguments,
     audience_projection_for_spec,
+    base_pool,
     build_offline_context,
     dispatch_spec,
     enforce_permissions,
+    operation_affordances,
     output_to_json_schema,
     paginate_output,
     render_for_audience,
     spec_to_json_schema,
+    unmet_operation_affordance,
 )
 from rest_framework_services.dispatch.unguarded_specs import unguarded_specs
 from rest_framework_services.types.progress_reporter import ProgressReporter
@@ -335,7 +340,12 @@ class SpecToolset(AbstractToolset[Any]):
             registry its own.
         instructions: Replaces the conventions block
             [`get_instructions`][rest_framework_pydantic_ai.SpecToolset.get_instructions]
-            derives from the specs. ``None`` derives it.
+            derives from the specs. ``None`` derives it. What it does **not**
+            replace is the per-step list of operations that are unavailable right
+            now, which is appended after it whenever an operation condition leaves
+            one out of the catalog: the override replaces conventions, and which
+            operations are offered on a given step is state no override written in
+            advance could have described.
         get_user: Reads the acting identity off the run context. Defaults to
             ``ctx.deps.user`` (the
             [`AgentDeps`][rest_framework_pydantic_ai.AgentDeps] shape).
@@ -614,6 +624,27 @@ class SpecToolset(AbstractToolset[Any]):
             )
             for name, spec in self._specs.items()
         }
+        # The tools whose availability has to be *asked* each step: those with an
+        # affordance answered without a row. Static, like everything above, so
+        # the question "does anything here need asking?" costs a step nothing,
+        # and a toolset where the answer is no never builds a pool or hops.
+        #
+        # drf-services' own selection rather than a restatement of it: which
+        # conditions are callables and which are row expressions is one line it
+        # draws in one place, and a second copy here could only drift from it.
+        self._conditioned: tuple[str, ...] = tuple(
+            name for name, spec in self._specs.items() if operation_affordances(spec)
+        )
+        # Per instance, so the cache dies with the toolset rather than a
+        # module-level cache keeping every toolset it has seen alive. Keyed by
+        # which tools are left out and nothing else: the block is a pure
+        # function of that, so an entry holds no user's answer and serves any
+        # run that arrives at the same combination. Bounded because the key
+        # space is every subset of ``_conditioned``, however few of them a real
+        # deployment visits.
+        self._instructions_without: Callable[[frozenset[str]], str] = lru_cache(
+            maxsize=_INSTRUCTIONS_MEMO_SIZE
+        )(self._derive_instructions_without)
 
     @property
     def id(self) -> str | None:
@@ -646,9 +677,47 @@ class SpecToolset(AbstractToolset[Any]):
         guess instead of a denial. Nothing row-level is exposed either way — a
         listing carries a name, a description and an input schema.
 
+        **An operation whose condition is unmet right now is left out, and that is
+        not the same decision.** A spec's ``Affordance`` answered without a row --
+        a callable ``when``, "the books are open" -- is asked each step, and a
+        tool it fails is omitted until it holds again. Each of the three
+        arguments above has an answer here. Such a condition reads only the
+        seeds -- the user, the request, a registered seed -- and never an
+        argument, so it cannot hide a tool the caller could in fact invoke:
+        whatever the model would send, the call would be refused. Only the specs
+        declaring one are asked, so a toolset that declares none pays nothing,
+        not even a thread hop. And the model can still ask about what it cannot
+        see, because
+        [`get_instructions`][rest_framework_pydantic_ai.SpecToolset.get_instructions]
+        names every tool left out this way together with its reason, which is
+        what it needs to tell the user why rather than guess.
+
+        A condition on the row (an ORM expression) is never asked here: there is
+        no row at listing time, and it goes on being answered per object at the
+        call. A condition that raises aborts the step, as it would the call --
+        one that cannot be answered is not a ``no``.
+
+        **The omission is applied beside ``is_tool_listed``, not inside it**, so
+        an override of that seam -- which is free to return ``True`` -- cannot
+        switch it off by not calling ``super()``. Neither is an authorization
+        decision: the call enforces every affordance whatever this listed, and a
+        model calling a name left out gets pydantic-ai's unknown-tool retry.
+
+        This and ``get_instructions`` each ask the conditions for themselves,
+        once per step apiece, rather than sharing one answer. The run context
+        carries no key that could safely scope a shared answer to one run and one
+        step: ``run_id`` may be supplied by the caller and is reused when a
+        failed run is retried under it, and a context built by hand has none.
+        A memo keyed on it could hand one run's -- one user's -- answer to
+        another, where asking twice costs a second evaluation of conditions that
+        read only seeds. The price is that a condition flipping between the two
+        reads can leave one step's catalog and its instructions disagreeing
+        about one tool; the call's own enforcement is authoritative either way.
+
         Override [`is_tool_listed`][rest_framework_pydantic_ai.SpecToolset.is_tool_listed]
         when a deployment does want a narrower catalog.
         """
+        unavailable = await self._unavailable_operations(ctx)
         return {
             name: ToolsetTool(
                 toolset=self,
@@ -657,7 +726,7 @@ class SpecToolset(AbstractToolset[Any]):
                 args_validator=_TOOL_ARGS_VALIDATOR,
             )
             for name, tool_def in self._tool_defs.items()
-            if await self.is_tool_listed(name, ctx)
+            if name not in unavailable and await self.is_tool_listed(name, ctx)
         }
 
     async def is_tool_listed(self, name: str, ctx: RunContext[Any]) -> bool:
@@ -669,6 +738,11 @@ class SpecToolset(AbstractToolset[Any]):
         never an authorization one: the call is gated by
         ``spec.permission_classes`` whatever this returns, so an override that
         wrongly returns ``True`` grants nothing.
+
+        Not consulted for a tool an unmet operation condition already left out
+        of this step's catalog, and returning ``True`` does not put one back:
+        that omission is applied by ``get_tools`` itself, so an override need
+        not call ``super()`` to keep it.
 
         ``async`` because ``get_tools`` is, and it is called once per tool per
         model step. An override that queries the database must wrap that work in
@@ -689,15 +763,38 @@ class SpecToolset(AbstractToolset[Any]):
         is final. Pydantic-AI appends the block to the system prompt each turn,
         for a toolset attached directly *or* wrapped by a capability.
 
+        **Per step, when an operation condition leaves a tool out.** The block is
+        then derived from the tools this step offers, so no line advises about
+        one it does not, and it ends by naming each tool left out with its
+        ``reason``: the model sees neither the tool nor, otherwise, any sign it
+        exists, and a user asking for it would get a guess where a sentence was
+        available. The conditions are asked here and in ``get_tools``
+        separately -- see that method for why, and for what it costs. With an
+        ``instructions`` override, the override stands in for the derived block
+        and the unavailable tools are still appended after it, because an
+        override replaces the conventions and cannot have described which
+        operations a given step would lack.
+
+        A toolset declaring no such condition is untouched by any of this: it
+        asks nothing, and returns the same string every step.
+
         Returns:
             The ``instructions`` override when one was given, else a block
             derived from the specs — each line conditional on something in this
             toolset being able to act on it, so the prompt carries no advice that
-            cannot fire.
+            cannot fire — followed in either case by the operations unavailable
+            this step, when there are any.
         """
+        unavailable = await self._unavailable_operations(ctx)
         if self._instructions_override is not None:
-            return self._instructions_override
-        return self._derived_instructions
+            block = self._instructions_override
+        elif unavailable:
+            block = self._instructions_without(frozenset(unavailable))
+        else:
+            block = self._derived_instructions
+        if not unavailable:
+            return block
+        return f"{block}\n{_unavailable_instruction(unavailable)}"
 
     @cached_property
     def _derived_instructions(self) -> str:
@@ -728,6 +825,93 @@ class SpecToolset(AbstractToolset[Any]):
             self._projections,
             registry=self._json_schema_registry,
         )
+
+    def _derive_instructions_without(self, omitted: frozenset[str]) -> str:
+        """The conventions block for the tools a step offers, ``omitted`` aside.
+
+        Reached through ``_instructions_without``, the per-instance memo
+        ``__init__`` wraps it in, and only when some tool *is* omitted -- the
+        full set is ``_derived_instructions``, cached for the toolset's life.
+        The lines naming what was omitted are not part of it: they carry each
+        tool's ``reason``, and rendering them per step keeps this memo a
+        function of which tools are offered and nothing else.
+        """
+        offered = {name: spec for name, spec in self._specs.items() if name not in omitted}
+        return _derive_instructions(
+            offered,
+            {name: self._tool_query_params[name] for name in offered},
+            {name: self._projections[name] for name in offered},
+            registry=self._json_schema_registry,
+        )
+
+    async def _unavailable_operations(self, ctx: RunContext[Any]) -> dict[str, Affordance]:
+        """Each tool an operation condition refuses right now, with that condition.
+
+        Returns before building anything when no spec declares such a
+        condition, which is the ordinary toolset: no pool, no request, no thread
+        hop. Otherwise one hop answers every conditioned spec, rather than one
+        hop apiece -- ``aunmet_operation_affordance`` would take one per spec,
+        and see ``_answer_operation_conditions`` for the reason this cannot use
+        it anyway.
+
+        The user is read here, on the loop, exactly where ``call_tool`` reads
+        it, so an extractor that is only safe off the database is treated alike.
+        """
+        if not self._conditioned:
+            return {}
+        user = self._get_user(ctx)
+        return await sync_to_async(
+            self._answer_operation_conditions,
+            thread_sensitive=self._thread_sensitive,
+            executor=self._executor,
+        )(user, ctx)
+
+    def _answer_operation_conditions(
+        self, user: Any, ctx: RunContext[Any]
+    ) -> dict[str, Affordance]:
+        """Ask every conditioned spec, once, against the pool its call would see.
+
+        **Run in the dispatch thread and released like a dispatch.** A condition
+        is user code and may query, so it cannot run on the event loop; and a
+        query here opens a connection on the thread it lands on, which off HTTP
+        nothing closes -- the leak ``_call_spec_releasing_connections`` exists
+        for. drf-services' ``aunmet_operation_affordance`` hops through
+        ``sync_to_async`` on its own and leaves that connection open, and the
+        leak it leaves would not stay its own: a connection already open on the
+        shared thread is in every later dispatch's ``held_before``, so each of
+        them would then leave it alone too. It also ignores this toolset's
+        ``thread_sensitive`` and ``executor``, which a condition should honour
+        as the call it stands in front of does. So the hop is this toolset's and
+        the evaluation inside it is drf-services' synchronous
+        ``unmet_operation_affordance``.
+
+        **The pool is built the way the call's is.** The request comes from
+        [`build_context`][rest_framework_pydantic_ai.SpecToolset.build_context],
+        the seam the call builds its request through, so a condition reading
+        ``request`` sees the same kind of object -- a DRF ``Request`` around the
+        configured ``http_request`` or a synthetic one -- and whatever an
+        override puts on it. It is built with no arguments and no action,
+        because a listing has neither: the query string is empty, which is also
+        what a tool declaring no ``QueryParam`` dispatches with. No ``seeds=``
+        is passed on either side, since this toolset registers none, so the
+        condition sees the names ``dispatch_spec`` would give it.
+
+        One request and one pool serve every spec asked, because a condition
+        reads only seeds and the seeds do not depend on which operation is
+        being asked about.
+        """
+        with _releasing_connections_opened_here():
+            # ``query_params={}`` rather than ``None`` for the reason the call
+            # path gives: ``None`` would leave a configured ``http_request``'s
+            # own query string live on the request the condition reads.
+            context = self.build_context(user, {}, ctx=ctx, query_params={}, host=self._host)
+            pool = base_pool(user=user, request=context.request)
+            unavailable: dict[str, Affordance] = {}
+            for name in self._conditioned:
+                unmet = unmet_operation_affordance(self._specs[name], pool)
+                if unmet is not None:
+                    unavailable[name] = unmet
+            return unavailable
 
     async def call_tool(
         self,
@@ -834,6 +1018,15 @@ class SpecToolset(AbstractToolset[Any]):
         every spec alike. Rewrite it in an override (it arrives in ``**kwargs``
         in the forwarding form) when a permission class branches on the viewset
         action names it knows.
+
+        **Also called when the catalog is listed**, once per ``get_tools`` and
+        once per ``get_instructions``, whenever some spec declares an
+        ``Affordance`` answered without a row: that condition is asked against
+        this context's ``request``, so it reads the same object at listing time
+        as at the call. That call carries no arguments, no ``action`` and an
+        empty ``query_params``, since a listing has none of them, and runs in
+        the dispatch thread as the call's does. An override that reads
+        ``action`` to decide something should expect ``None`` there.
         """
         return build_offline_context(
             user,
@@ -1091,23 +1284,38 @@ class SpecToolset(AbstractToolset[Any]):
         holds ``close()`` over ``close_if_unusable_or_obsolete()``, and
         ``test_a_dispatch_leaves_a_connection_it_did_not_open_alone`` is the only
         thing standing between this and the unconditional version.
+
+        The bookkeeping itself is ``_releasing_connections_opened_here``, shared
+        with the listing-time evaluation of operation conditions, which makes the
+        same hop and owes the same cleanup.
         """
-        # ``initialized_only`` so asking the question does not itself build a
-        # wrapper for every configured alias on this thread.
-        held_before = {
-            conn.alias
-            for conn in connections.all(initialized_only=True)
-            if conn.connection is not None
-        }
-        try:
+        with _releasing_connections_opened_here():
             return self._call_spec(spec, user, args, ctx=ctx, **kw)
-        finally:
-            for conn in connections.all(initialized_only=True):
-                # No ``conn.connection is not None`` here: Django's ``close()``
-                # returns immediately on a wrapper that never connected, so the
-                # extra conjunct would change nothing and no test could hold it.
-                if conn.alias not in held_before:
-                    conn.close()
+
+
+@contextmanager
+def _releasing_connections_opened_here() -> Iterator[None]:
+    """Close, on the way out, each connection this thread opened inside the block.
+
+    The cleanup ``SpecToolset._call_spec_releasing_connections`` documents,
+    clause by clause. It is a helper rather than that method's body
+    because two hops owe it -- a dispatch, and the listing-time evaluation of
+    operation conditions -- and the second one leaking would disarm the first.
+    """
+    # ``initialized_only`` so asking the question does not itself build a
+    # wrapper for every configured alias on this thread.
+    held_before = {
+        conn.alias for conn in connections.all(initialized_only=True) if conn.connection is not None
+    }
+    try:
+        yield
+    finally:
+        for conn in connections.all(initialized_only=True):
+            # No ``conn.connection is not None`` here: Django's ``close()``
+            # returns immediately on a wrapper that never connected, so the
+            # extra conjunct would change nothing and no test could hold it.
+            if conn.alias not in held_before:
+                conn.close()
 
 
 def _validate_permissions(specs: Mapping[str, Spec], *, require: bool) -> None:
@@ -1470,6 +1678,41 @@ identifier depends on the reader, and only the transport knows its audience.
 Ours is a model reading a tool's output schema, so the sentence is the per-field
 half of ``_HANDLE_INSTRUCTION`` — same advice, at the field that needs it.
 """
+
+
+_UNAVAILABLE_INSTRUCTION = (
+    "- These operations exist but cannot be performed right now, so they are not among your "
+    "tools. If the user asks for one, say it is unavailable at the moment and give the reason "
+    "listed for it, rather than guessing why:"
+)
+"""The heading of the per-step list of operations an unmet condition left out.
+
+Said once, above the names, so each tool left out costs one short line. What it
+has to carry is the thing the catalog's silence cannot: the tool exists, and
+there is a reason it is absent that can be passed on to a person as written --
+a condition's ``reason`` is a sentence written for people and models alike.
+"""
+
+_INSTRUCTIONS_MEMO_SIZE = 32
+"""How many combinations of omitted tools one toolset keeps a derived block for.
+
+Every subset of the conditioned tools is a possible key, which is why there is a
+bound at all; in practice a deployment moves between a handful -- the books open
+or closed -- and an evicted entry costs one derivation, tens of microseconds.
+"""
+
+
+def _unavailable_instruction(unavailable: Mapping[str, Affordance]) -> str:
+    """The heading, then one line per tool left out: its name and its ``reason``.
+
+    In the toolset's declaration order, which is the order ``unavailable`` was
+    built in, so the same step always reads the same way. The ``code`` is left
+    out on purpose: it is for programs and for tying a refusal to a row's
+    ``affordances``, and a model relaying this to a person has no use for it.
+    """
+    lines = [_UNAVAILABLE_INSTRUCTION]
+    lines.extend(f"  - `{name}`: {affordance.reason}" for name, affordance in unavailable.items())
+    return "\n".join(lines)
 
 
 def _ordering_instruction(names: Sequence[str]) -> str:

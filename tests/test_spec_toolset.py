@@ -18,13 +18,22 @@ from django.contrib.auth.models import User
 from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, connections
+from django.db.models import Q
 from django.test import RequestFactory
 from pydantic_ai import Agent, ModelRetry, ToolFailed
-from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RunUsage
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny, BasePermission
+from rest_framework.request import Request
 from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
     DEFAULT_PAGE_SIZE,
@@ -56,6 +65,7 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _HANDLE_DESCRIPTION,
     _HANDLE_INSTRUCTION,
     _LIST_INSTRUCTION,
+    _UNAVAILABLE_INSTRUCTION,
     UndescribedToolWarning,
     UnguardedSpecWarning,
     _build_tool_def,
@@ -1335,8 +1345,35 @@ async def test_a_refused_call_marks_the_tool_return_failed_and_carries_its_code(
     """What reaches the wire for an ``ActionUnavailable``: the same ``failed``
     marking as any business error, and content that is the reason followed by the
     code. ``content`` is what a transport forwards as the tool result, so this is
-    the text a browser rendering the call shows as well as what the model reads."""
-    result = await _run_one_tool(_refused_spec(), name="close_books")
+    the text a browser rendering the call shows as well as what the model reads.
+
+    The books close *while the model is answering*: the step that offered
+    ``close_books`` asked its condition and found it met, and the call that
+    followed is refused. That is the one way a run reaches this refusal through
+    a listing, since an unmet condition leaves the tool out of the catalog."""
+    books = {"open": True}
+    spec = ServiceSpec(
+        service=_refusing_service,
+        atomic=False,
+        affordances=[
+            Affordance(
+                code="books_closed", reason="The books are closed.", when=lambda: books["open"]
+            )
+        ],
+        permission_classes=[AllowAny],
+    )
+    calls_close_books = tool_calling_model("close_books")
+
+    def close_the_books_then_call(messages: Any, info: Any) -> Any:
+        books["open"] = False
+        return calls_close_books.function(messages, info)
+
+    agent = Agent(
+        FunctionModel(close_the_books_then_call),
+        deps_type=AgentDeps,
+        toolsets=[SpecToolset({"close_books": spec})],
+    )
+    result = await agent.run("go", deps=AgentDeps(user="alice"))
     part = _tool_return(result)
     assert part.outcome == "failed"
     assert part.content == "The books are closed. (code: books_closed)"
@@ -3218,6 +3255,419 @@ async def test_a_hidden_tool_is_still_callable_and_still_gated():
         await toolset.call_tool("denied", {}, ctx_for(object()), None)
 
 
+# --- operations unavailable right now ----------------------------------------
+#
+# A ``ServiceSpec`` affordance answered without a row -- a callable ``when`` --
+# is asked each step, and a tool it refuses is left out of the catalog and named,
+# with its reason, in the instructions. Unlike a permission, it reads only seeds,
+# so it cannot hide a tool the caller could have invoked with other arguments.
+
+
+def _approve(**_: Any) -> dict[str, bool]:
+    """Approve the pending invoices."""
+    return {"approved": True}
+
+
+def _conditioned_spec(
+    when: Any, *, code: str = "books_closed", reason: str = "The books are closed."
+) -> ServiceSpec:
+    """A service whose one affordance is ``when``."""
+    return ServiceSpec(
+        service=_approve,
+        atomic=False,
+        affordances=[Affordance(code=code, reason=reason, when=when)],
+        permission_classes=[AllowAny],
+    )
+
+
+def _books_open_for(user: Any) -> bool:
+    """Met for the user named ``open`` and nobody else: an answer that differs by caller."""
+    return user.username == "open"
+
+
+@pytest.mark.parametrize(("username", "listed"), [("open", True), ("closed", False)])
+async def test_an_operation_is_listed_only_while_its_condition_is_met(username, listed):
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "approve": _conditioned_spec(_books_open_for)}
+    )
+
+    tools = await toolset.get_tools(ctx_for(User(username=username)))
+
+    assert ("approve" in tools) is listed
+    assert "list_widgets" in tools
+
+
+async def test_a_row_condition_is_listed_without_a_hop_or_a_pool(monkeypatch):
+    """There is no row at listing time, so a condition on one is never asked here.
+
+    Unmet on every row -- ``pk__in=[]`` matches nothing -- and listed anyway,
+    because it is answered per object at the call. A hop or a pool here would be
+    the cost of asking a question with no answer; stubbing both to fail proves
+    neither happens, and with no hop no query can have run either: the ORM is
+    closed to the event loop.
+    """
+
+    def no_hop(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("listing a row-conditioned spec hopped to a thread")
+
+    def no_pool(**_: Any) -> Any:
+        raise AssertionError("listing a row-conditioned spec built a pool")
+
+    toolset = SpecToolset(
+        {
+            "cancel": _conditioned_spec(Q(pk__in=[])),
+            "orders": _order_selector_spec(SelectorKind.RETRIEVE),
+        },
+        descriptions={"cancel": "Cancel an order."},
+    )
+    monkeypatch.setattr(spec_toolset, "sync_to_async", no_hop)
+    monkeypatch.setattr(spec_toolset, "base_pool", no_pool)
+
+    tools = await toolset.get_tools(ctx_for(User(username="u")))
+
+    assert sorted(tools) == ["cancel", "orders"]
+
+
+async def test_a_toolset_declaring_no_condition_builds_no_pool_and_reads_no_user(monkeypatch):
+    """The ordinary toolset pays nothing: no pool, no hop, not even the user.
+
+    ``get_user`` raising is the sharpest probe of "nothing is built": the user
+    is the first thing a pool needs, and the extractor is project code that may
+    be expensive.
+    """
+    built: list[Any] = []
+    monkeypatch.setattr(spec_toolset, "base_pool", lambda **kw: built.append(kw))
+
+    def no_user(ctx: Any) -> Any:
+        raise AssertionError("a toolset with no condition read the user to list")
+
+    toolset = SpecToolset({"list_widgets": list_spec(), "make": create_spec()}, get_user=no_user)
+
+    tools = await toolset.get_tools(ctx_for())
+    instructions = await toolset.get_instructions(ctx_for())
+
+    assert sorted(tools) == ["list_widgets", "make"]
+    assert instructions == toolset._derived_instructions
+    assert built == []
+
+
+async def test_is_tool_listed_returning_true_does_not_relist_an_unavailable_tool():
+    """The omission is not inside the overridable default, so an override that
+    lists everything -- and never calls ``super()`` -- cannot switch it off."""
+
+    class ListEverything(SpecToolset):
+        async def is_tool_listed(self, name, ctx):
+            return True
+
+    toolset = ListEverything(
+        {"list_widgets": list_spec(), "approve": _conditioned_spec(lambda: False)}
+    )
+
+    assert sorted(await toolset.get_tools(ctx_for(User(username="u")))) == ["list_widgets"]
+
+
+async def test_the_instructions_name_an_unavailable_operation_and_describe_only_the_rest():
+    """Everything describing the omitted tool goes, and its name and reason arrive.
+
+    ``approve`` is the only tool declaring the ``fields`` read-shaping param, so
+    the line naming ``fields`` is present exactly when ``approve`` is offered --
+    which is what shows the block is derived from the tools this step offers
+    rather than from all of them. ``ping`` has a condition that holds, and is
+    named nowhere: the instructions list what is missing, never what is there.
+    """
+    books = {"open": False}
+    toolset = SpecToolset(
+        {
+            "list_widgets": list_spec(),
+            "approve": _conditioned_spec(lambda: books["open"]),
+            "ping": _conditioned_spec(lambda: True, code="always", reason="Never shown."),
+        },
+        tool_query_params={"approve": [QueryParam(name="fields")]},
+    )
+    ctx = ctx_for(User(username="u"))
+
+    closed = await toolset.get_instructions(ctx)
+
+    assert closed.endswith(f"{_UNAVAILABLE_INSTRUCTION}\n  - `approve`: The books are closed.")
+    assert "`fields`" not in closed
+    assert _LIST_INSTRUCTION in closed
+    assert "ping" not in closed
+    assert "Never shown." not in closed
+    assert "list_widgets" not in closed
+
+    books["open"] = True
+    opened = await toolset.get_instructions(ctx)
+
+    assert opened == toolset._derived_instructions
+    assert "`fields`" in opened
+    assert _UNAVAILABLE_INSTRUCTION not in opened
+
+
+async def test_an_instructions_override_is_kept_and_the_unavailable_operations_follow_it():
+    """The override replaces the conventions, not the per-step availability."""
+    books = {"open": False}
+    toolset = SpecToolset(
+        {"approve": _conditioned_spec(lambda: books["open"])}, instructions="House rules."
+    )
+    ctx = ctx_for(User(username="u"))
+
+    assert await toolset.get_instructions(ctx) == (
+        f"House rules.\n{_UNAVAILABLE_INSTRUCTION}\n  - `approve`: The books are closed."
+    )
+    books["open"] = True
+    assert await toolset.get_instructions(ctx) == "House rules."
+
+
+async def test_one_toolset_serving_two_users_gives_each_their_own_answer():
+    """A shared instance, interleaved runs, conditions answering differently.
+
+    A toolset is typically a module-level singleton serving every run in the
+    process, so nothing it remembers may carry one caller's availability into
+    another's catalog or instructions. Same ``run_id`` and ``run_step`` on
+    both contexts on purpose: a memo keyed on those would be the leak.
+    """
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "approve": _conditioned_spec(_books_open_for)}
+    )
+    opened = ctx_for(User(username="open"))
+    closed = ctx_for(User(username="closed"))
+
+    for _ in range(2):
+        assert "approve" in await toolset.get_tools(opened)
+        assert "approve" not in await toolset.get_tools(closed)
+        assert "`approve`" not in await toolset.get_instructions(opened)
+        assert "`approve`: The books are closed." in await toolset.get_instructions(closed)
+
+
+async def test_the_derived_block_is_memoised_by_which_tools_are_left_out(monkeypatch):
+    """A step pays the derivation only for a combination the toolset has not seen.
+
+    Two different users both missing ``approve`` share one derivation, because
+    the block is a function of which tools are offered and nothing else -- the
+    reason lines, which are, are rendered per step outside the memo.
+    """
+    calls: list[frozenset[str]] = []
+    derive = spec_toolset._derive_instructions
+
+    def counting(specs: Any, *args: Any, **kwargs: Any) -> str:
+        calls.append(frozenset(specs))
+        return derive(specs, *args, **kwargs)
+
+    monkeypatch.setattr(spec_toolset, "_derive_instructions", counting)
+    toolset = SpecToolset(
+        {"list_widgets": list_spec(), "approve": _conditioned_spec(_books_open_for)}
+    )
+
+    for username in ("closed", "also-closed", "closed"):
+        await toolset.get_instructions(ctx_for(User(username=username)))
+
+    assert calls == [frozenset({"list_widgets"})]
+
+
+@pytest.mark.django_db
+async def test_a_condition_that_queries_runs_off_the_event_loop():
+    """Django raises ``SynchronousOnlyOperation`` for ORM access on the loop.
+
+    A condition is user code and ``Period.current().is_open`` is the ordinary
+    shape of one, so listing has to hop exactly as a dispatch does.
+    """
+    toolset = SpecToolset({"approve": _conditioned_spec(lambda: Widget.objects.exists())})
+
+    tools = await toolset.get_tools(ctx_for(User(username="u")))
+
+    assert tools == {}
+
+
+@pytest.mark.parametrize(
+    "http_request",
+    [None, RequestFactory().get("/", {"scope": "all"})],
+    ids=["synthetic request", "configured http_request"],
+)
+async def test_a_condition_sees_the_request_and_user_its_call_would(http_request):
+    """Asked at listing time, then again by the call's own enforcement.
+
+    The two must see the same kind of object under ``request`` -- a DRF
+    ``Request`` around the same kind of wrapped request -- or a condition
+    reading it answers one way when the catalog is built and another when the
+    call is refused, and the listing stops predicting the call.
+
+    The configured request carries a query string of its own, which neither
+    side may pass on: the call replaces it with the tool's declared
+    ``QueryParam`` values, none here, and the listing has no arguments at all.
+    """
+    seen: list[tuple[type, type, dict[str, Any], Any, Any]] = []
+
+    def records(request: Any, user: Any) -> bool:
+        seen.append(
+            (type(request), type(request._request), dict(request.query_params), request.user, user)
+        )
+        return True
+
+    user = User(username="u")
+    toolset = SpecToolset({"approve": _conditioned_spec(records)}, http_request=http_request)
+    ctx = ctx_for(user)
+
+    tools = await toolset.get_tools(ctx)
+    await toolset.call_tool("approve", {}, ctx, tools["approve"])
+
+    listed, called = seen
+    assert listed[0] is Request
+    assert listed[:3] == called[:3]
+    assert listed[2] == {}
+    assert listed[3] is user and listed[4] is user
+    assert called[3] is user and called[4] is user
+
+
+async def test_a_build_context_override_reaches_a_condition_at_listing_time():
+    """The listing builds its request through the same seam the call does.
+
+    A project stamping per-run state on the synthetic request -- a tenant read
+    off ``ctx.deps`` -- has conditions that read it. Built any other way, the
+    listing would ask them against a request the call never uses.
+    """
+
+    class TenantStamping(SpecToolset):
+        def build_context(self, user, params, *, ctx, **kwargs):
+            context = super().build_context(user, params, ctx=ctx, **kwargs)
+            context.request.tenant = ctx.deps.user.username
+            return context
+
+    toolset = TenantStamping(
+        {"approve": _conditioned_spec(lambda request: request.tenant == "acme")}
+    )
+
+    assert "approve" in await toolset.get_tools(ctx_for(User(username="acme")))
+    assert "approve" not in await toolset.get_tools(ctx_for(User(username="globex")))
+
+
+async def test_a_condition_is_asked_on_the_toolsets_own_dispatch_thread():
+    """``thread_sensitive`` and ``executor`` govern the listing as they do the call.
+
+    A condition stands in front of the call it gates, so a deployment that moved
+    dispatch off asgiref's shared thread has moved its conditions with it.
+    """
+    threads: list[str] = []
+
+    def records_thread() -> bool:
+        threads.append(threading.current_thread().name)
+        return True
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="conditions") as pool:
+        toolset = SpecToolset(
+            {"approve": _conditioned_spec(records_thread)},
+            thread_sensitive=False,
+            executor=pool,
+        )
+        await toolset.get_tools(ctx_for(User(username="u")))
+
+    assert threads and threads[0].startswith("conditions")
+
+
+@pytest.mark.django_db
+async def test_a_listing_time_condition_closes_the_connection_it_opened() -> None:
+    """The dispatch's connection cleanup, owed by the listing's hop as well.
+
+    A condition that queries opens a connection on asgiref's shared thread,
+    and off HTTP nothing closes it. Left open, it would also disarm the
+    dispatch's own cleanup: that closes only what *it* opened, and a connection
+    already open when a dispatch starts reads as someone else's. So this lists,
+    checks, then dispatches and checks again.
+    """
+    assert not connection.is_in_memory_db(), (
+        "this test needs a database whose connection can actually be closed; "
+        "see DATABASES['default']['TEST']['NAME'] in tests/conftest_settings.py"
+    )
+    asked_on: dict[str, int] = {}
+
+    def queries() -> bool:
+        asked_on["thread"] = threading.get_ident()
+        return not Widget.objects.exists()
+
+    toolset = SpecToolset({"approve": _conditioned_spec(queries)})
+    ctx = ctx_for(User(username="u"))
+
+    await sync_to_async(connections.close_all, thread_sensitive=True)()
+    assert (await sync_to_async(_dispatch_thread_state, thread_sensitive=True)())[1] is False
+
+    tools = await toolset.get_tools(ctx)
+    ident, open_after_listing = await sync_to_async(_dispatch_thread_state, thread_sensitive=True)()
+    await toolset.call_tool("approve", {}, ctx, tools["approve"])
+    _, open_after_call = await sync_to_async(_dispatch_thread_state, thread_sensitive=True)()
+
+    assert ident == asked_on["thread"], "the probe did not land on the condition's thread"
+    assert open_after_listing is False
+    assert open_after_call is False
+
+
+async def test_an_omitted_tool_is_absent_from_what_the_model_is_offered():
+    """Through a real run: the model's tool list lacks it, its instructions name it."""
+    offered: list[list[str]] = []
+    instructions: list[str | None] = []
+    calls_ping = tool_calling_model("ping")
+
+    def recording(messages: Any, info: Any) -> Any:
+        offered.append(sorted(tool.name for tool in info.function_tools))
+        instructions.append(messages[-1].instructions)
+        return calls_ping.function(messages, info)
+
+    toolset = SpecToolset(
+        {
+            "ping": ServiceSpec(service=_approve, permission_classes=[AllowAny], atomic=False),
+            "approve": _conditioned_spec(lambda: False),
+        }
+    )
+    agent = Agent(FunctionModel(recording), deps_type=AgentDeps, toolsets=[toolset])
+
+    result = await agent.run("go", deps=AgentDeps(user=User(username="u")))
+
+    assert result.output == "done"
+    assert offered == [["ping"], ["ping"]]
+    assert all("`approve`: The books are closed." in (text or "") for text in instructions)
+
+
+async def test_a_model_calling_an_omitted_tool_gets_the_unknown_tool_retry():
+    """Nothing new on the call path: an omitted name is simply not a tool.
+
+    pydantic-ai answers it with a retry naming the tools that do exist, and the
+    service never runs.
+    """
+    ran: list[bool] = []
+    retries: list[str] = []
+
+    def approve(**_: Any) -> None:
+        """Approve."""
+        ran.append(True)
+
+    def calls_approve(messages: Any, info: Any) -> Any:
+        retry = [p for p in messages[-1].parts if isinstance(p, RetryPromptPart)]
+        if retry:
+            retries.append(retry[0].model_response())
+            return ModelResponse(parts=[TextPart("done")])
+        return ModelResponse(parts=[ToolCallPart(tool_name="approve", args={})])
+
+    toolset = SpecToolset(
+        {
+            "approve": ServiceSpec(
+                service=approve,
+                atomic=False,
+                affordances=[
+                    Affordance(
+                        code="books_closed", reason="The books are closed.", when=lambda: False
+                    )
+                ],
+                permission_classes=[AllowAny],
+            )
+        }
+    )
+    agent = Agent(FunctionModel(calls_approve), deps_type=AgentDeps, toolsets=[toolset])
+
+    result = await agent.run("go", deps=AgentDeps(user=User(username="u")))
+
+    assert result.output == "done"
+    assert ran == []
+    assert "Unknown tool name: 'approve'" in retries[0]
+
+
 # --- the pagination envelope --------------------------------------------------
 #
 # Every list-selector result is a page. The input contract said so all along --
@@ -3650,7 +4100,9 @@ async def test_a_services_own_affordances_are_not_what_it_renders():
         own=[Affordance(code="books_closed", reason="The books are closed.", when=lambda **_: True)]
     )
     toolset = SpecToolset({"orders": spec})
-    tools = await toolset.get_tools(None)
+    # A real context rather than ``None``: the spec's own condition is asked
+    # when the catalog is listed, against the user this context carries.
+    tools = await toolset.get_tools(ctx_for(User(username="u")))
 
     payload = await _call(toolset, "orders", User(username="u"))
 
@@ -3698,6 +4150,13 @@ async def test_a_spec_declaring_no_affordances_keeps_its_return_schema_byte_for_
 # condition is not met. ``ToolFailed`` takes a message and nothing else, so the
 # sentence is the only place the code can reach the model -- and the code is what
 # ties the refusal to the ``affordances`` answer the model may already have read.
+#
+# A condition answered without a row also leaves its tool out of the catalog
+# while it is unmet, so a run normally never reaches these refusals through a
+# listing. What does reach them is a call made against a listing that went stale
+# -- the condition flipped after the step was offered the tool -- and a
+# condition on the row, which no listing asks. So these call the tool directly,
+# the way a stale entry arrives, rather than through ``get_tools``.
 
 
 def _refusing_service(**_: Any) -> None:
@@ -3722,7 +4181,7 @@ async def test_a_refused_call_fails_with_its_reason_and_its_code():
     toolset = SpecToolset({"close_books": _refused_spec()})
 
     with pytest.raises(ToolFailed) as caught:
-        await _call(toolset, "close_books", User(username="u"))
+        await toolset.call_tool("close_books", {}, ctx_for(User(username="u")), None)
 
     assert caught.value.message == "The books are closed. (code: books_closed)"
     cause = caught.value.__cause__
@@ -3746,8 +4205,9 @@ async def test_a_refusal_names_the_code_its_rows_advertised():
     row = await _call(toolset, "orders", User(username="u"))
     advertised = row["affordances"]["cancel"]
 
+    # Called directly: ``cancel``'s unmet condition leaves it out of the listing.
     with pytest.raises(ToolFailed) as caught:
-        await _call(toolset, "cancel", User(username="u"))
+        await toolset.call_tool("cancel", {}, ctx_for(User(username="u")), None)
 
     assert caught.value.message == f"{advertised['reason']} (code: {advertised['code']})"
 
