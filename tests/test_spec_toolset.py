@@ -7,6 +7,7 @@ import threading
 import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
@@ -19,7 +20,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, connections
 from django.test import RequestFactory
 from pydantic_ai import Agent, ModelRetry, ToolFailed
-from pydantic_ai.messages import ToolReturnPart
+from pydantic_ai.messages import RetryPromptPart, ToolReturnPart
 from pydantic_ai.usage import RunUsage
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
@@ -29,11 +30,14 @@ from rest_framework_services import (
     DEFAULT_PAGE_SIZE,
     MARKING,
     UNSET,
+    ActionUnavailable,
     AdditionalInputRequired,
     Affordance,
     FieldMarking,
+    OfflineContract,
     SelectorKind,
     SelectorSpec,
+    ServiceConflict,
     ServiceError,
     ServiceSpec,
     ServiceValidationError,
@@ -228,6 +232,14 @@ async def test_instructions_carry_the_error_contract():
     assert '{"error"' not in instr
     assert "comes back as a failed call" in instr
     assert "unknown arguments are rejected" in instr
+    # A refusal's sentence now ends with the rule's code, and the block says so in
+    # the shape the call produces: the label as it appears, and the key the same
+    # code was advertised under. Both halves, because an instruction naming only
+    # the suffix leaves the model to guess what the name refers to.
+    assert "`(code: <name>)`" in instr
+    assert "`affordances`" in instr
+    # The meaning that predates the code is intact.
+    assert "that is a final answer, not a reason to retry" in instr
 
 
 async def test_pagination_line_present_only_with_a_list_selector():
@@ -435,6 +447,26 @@ def test_retrieve_selector_not_found_fails_the_call():
     assert caught.value.message == "not found"
 
 
+@pytest.mark.django_db
+def test_a_nullable_retrieve_that_finds_nothing_returns_none():
+    """Not the output serializer's blank row, which read to the model as a widget
+    with an empty name: drf-services renders a single ``None`` as ``None`` from
+    0.52.1, the floor that buys this."""
+    user = User.objects.create(username="u")
+    spec = retrieve_spec(allow_none=True)
+
+    assert _dispatch(spec, user, {"pk": 999}) is None
+
+
+@pytest.mark.django_db
+def test_a_service_that_returns_nothing_returns_none():
+    user = User.objects.create(username="u")
+    spec = create_spec()
+    spec = replace(spec, service=lambda *, data: None)
+
+    assert _dispatch(spec, user, {"name": "a", "price": 1}) is None
+
+
 # --- service dispatch --------------------------------------------------------
 
 
@@ -577,6 +609,325 @@ def test_invalid_tool_name_raises_at_construction(bad):
 def test_valid_tool_names_are_accepted():
     # letters, digits, underscore, hyphen, up to 64 chars — no error.
     SpecToolset({"list_widgets-v2": list_spec()})
+
+
+# --- list inputs -------------------------------------------------------------
+#
+# A ``many=True`` spec validates a JSON array, and a model's tool arguments are
+# always a JSON object, so the list travels under the one argument the spec's
+# ``many_argument`` names -- ``items`` unless it names another.
+
+
+def _create_widgets(*, data, user):
+    """Create several widgets for the acting user in one call."""
+    return [Widget.objects.create(owner=user, **item) for item in data]
+
+
+def bulk_spec(**kwargs):
+    # Guarded by default, for the same reason as the fixtures above.
+    kwargs.setdefault("permission_classes", [AllowAny])
+    kwargs.setdefault(
+        "output_selector_spec",
+        SelectorSpec(kind=SelectorKind.RETRIEVE, output_serializer=WidgetSerializer),
+    )
+    return ServiceSpec(
+        service=_create_widgets,
+        input_serializer=WidgetInputSerializer,
+        many=True,
+        **kwargs,
+    )
+
+
+_ITEM = {"name": "a", "price": 1}
+
+
+def test_a_many_service_spec_builds_a_tool():
+    """It used to be refused at construction, because nothing a model sends is the
+    array it validates. The selector beside it is there because a ``SelectorSpec``
+    has no ``many`` to read, so the checks asking which tools take a list have to
+    pass over it rather than fail on it."""
+    toolset = SpecToolset({"create_widgets": bulk_spec(), "list_widgets": list_spec()})
+
+    assert set(toolset.specs) == {"create_widgets", "list_widgets"}
+
+
+async def test_a_many_tool_takes_its_list_as_one_argument():
+    tools = await SpecToolset({"create_widgets": bulk_spec()}).get_tools(None)
+    schema = tools["create_widgets"].tool_def.parameters_json_schema
+
+    assert set(schema["properties"]) == {"items"}
+    assert schema["properties"]["items"]["type"] == "array"
+    assert set(schema["properties"]["items"]["items"]["properties"]) == {"name", "price"}
+    assert schema["required"] == ["items"]
+    # The list is the whole input, and dispatch refuses anything sent beside it.
+    assert schema["additionalProperties"] is False
+
+
+async def test_declared_channels_are_advertised_beside_the_list_argument():
+    """``additionalProperties: false`` survives the merge and stays true: it forbids
+    an *undeclared* argument, and a ``QueryParam`` or ``UrlKwarg`` is declared."""
+    toolset = SpecToolset(
+        {"create_widgets": bulk_spec()},
+        query_params=[QueryParam("fields")],
+        url_kwargs=[UrlKwarg("project_pk", required=True)],
+    )
+    tools = await toolset.get_tools(None)
+    schema = tools["create_widgets"].tool_def.parameters_json_schema
+
+    assert set(schema["properties"]) == {"items", "fields", "project_pk"}
+    assert schema["required"] == ["items", "project_pk"]
+    assert schema["additionalProperties"] is False
+
+
+@pytest.mark.django_db
+def test_declared_channels_beside_the_list_are_not_unexpected_arguments():
+    """Both channels are popped before dispatch, which is what keeps drf-services'
+    refusal of any argument beside the list from reaching them."""
+    user = User.objects.create(username="u")
+
+    result = _dispatch(
+        bulk_spec(),
+        user,
+        {"items": [_ITEM], "fields": "name", "project_pk": "7"},
+        query_params=(QueryParam("fields"),),
+        url_kwargs=(UrlKwarg("project_pk"),),
+    )
+
+    assert [row["name"] for row in result] == ["a"]
+
+
+@pytest.mark.django_db
+def test_a_many_tool_creates_every_item_and_returns_the_rendered_list():
+    user = User.objects.create(username="u")
+
+    result = _dispatch(bulk_spec(), user, {"items": [_ITEM, {"name": "b", "price": 2}]})
+
+    assert [(row["name"], row["price"]) for row in result] == [("a", 1), ("b", 2)]
+    assert Widget.objects.filter(owner=user).count() == 2
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_model_calls_a_many_tool_through_the_run_loop():
+    user = await User.objects.acreate(username="u")
+
+    result = await _run_one_tool(
+        bulk_spec(), name="create_widgets", user=user, args={"items": [_ITEM]}
+    )
+
+    part = _tool_return(result)
+    assert part.outcome == "success"
+    assert [row["name"] for row in part.content] == ["a"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_many_tool_advertises_the_array_it_returns():
+    """The two halves generated from one spec, compared against each other.
+
+    A ``many=True`` spec renders its list through an ``output_selector_spec``
+    declared ``RETRIEVE``, the kind describing one row, so a return schema read
+    off that kind advertised an object while every payload was an array.
+    """
+    user = await User.objects.acreate(username="u")
+    toolset = SpecToolset({"create_widgets": bulk_spec()})
+
+    tools = await toolset.get_tools(None)
+    payload = await _call(toolset, "create_widgets", user, {"items": [_ITEM]})
+    return_schema = tools["create_widgets"].tool_def.return_schema
+
+    assert return_schema is not None
+    assert return_schema["type"] == "array"
+    assert isinstance(payload, list)
+    assert set(payload[0]) == set(return_schema["items"]["properties"])
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_spec_naming_its_list_argument_is_advertised_and_called_by_that_name():
+    user = await User.objects.acreate(username="u")
+    toolset = SpecToolset({"create_widgets": bulk_spec(many_argument="widgets")})
+
+    tools = await toolset.get_tools(None)
+    schema = tools["create_widgets"].tool_def.parameters_json_schema
+    payload = await _call(toolset, "create_widgets", user, {"widgets": [_ITEM]})
+
+    assert set(schema["properties"]) == {"widgets"}
+    assert schema["required"] == ["widgets"]
+    assert [row["name"] for row in payload] == ["a"]
+
+
+@pytest.mark.django_db
+def test_an_invalid_item_is_a_retry_keyed_under_the_argument_by_its_index():
+    """Only the invalid item is named, by index, whatever DRF the project runs:
+    drf-services normalises the older list shape before it keys the errors."""
+    user = User.objects.create(username="u")
+
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(bulk_spec(), user, {"items": [_ITEM, {"name": "b"}]})
+
+    detail = retry.value.__cause__.detail
+    assert list(detail) == ["items"]
+    assert list(detail["items"]) == [1]
+    assert set(detail["items"][1]) == {"price"}
+    assert not Widget.objects.exists()
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_the_model_reads_an_item_error_as_argument_index_and_field():
+    """What the retry prompt actually carries, read off a real run rather than off
+    the exception: the argument, the item's index as a bare integer beside the
+    quoted field names, and the field's own message. The model corrects the one
+    item and the call goes through."""
+    user = await User.objects.acreate(username="u")
+    toolset = SpecToolset({"create_widgets": bulk_spec()})
+    agent = Agent(
+        tool_calling_model(
+            "create_widgets",
+            {"items": [_ITEM, {"name": "b"}]},
+            retry_args={"items": [_ITEM, {"name": "b", "price": 2}]},
+        ),
+        deps_type=AgentDeps,
+        toolsets=[toolset],
+    )
+
+    result = await agent.run("go", deps=AgentDeps(user=user))
+
+    retries = [
+        part
+        for message in result.all_messages()
+        for part in message.parts
+        if isinstance(part, RetryPromptPart)
+    ]
+    assert len(retries) == 1
+    assert "{'items': {1: {'price': [" in retries[0].content
+    assert "This field is required." in retries[0].content
+    assert _tool_return(result).outcome == "success"
+    assert await Widget.objects.filter(owner=user).acount() == 2
+
+
+@pytest.mark.parametrize("policy", list(UnknownArguments))
+@pytest.mark.django_db
+def test_an_argument_beside_the_list_is_refused_under_every_policy(policy):
+    """The service receives only the list, so ``IGNORE`` would drop the argument
+    without a trace and ``PASSTHROUGH`` has nowhere to put it."""
+    user = User.objects.create(username="u")
+
+    with pytest.raises(ModelRetry, match=r"Unexpected argument\(s\): 'note'\."):
+        _dispatch(bulk_spec(), user, {"items": [_ITEM], "note": "x"}, unknown_arguments=policy)
+
+    assert not Widget.objects.exists()
+
+
+def _bulk_registry(contract: OfflineContract) -> SpecRegistry:
+    registry = SpecRegistry()
+    registry.register("create_widgets", bulk_spec(), agent_contract=contract)
+    return registry
+
+
+@pytest.mark.parametrize(
+    ("build", "kind"),
+    [
+        pytest.param(
+            lambda: SpecToolset(
+                {"create_widgets": bulk_spec()}, query_params=[QueryParam("items")]
+            ),
+            "QueryParam",
+            id="toolset-wide query_params",
+        ),
+        pytest.param(
+            lambda: SpecToolset(
+                {"create_widgets": bulk_spec()},
+                tool_query_params={"create_widgets": [QueryParam("items")]},
+            ),
+            "QueryParam",
+            id="tool_query_params",
+        ),
+        pytest.param(
+            lambda: SpecToolset(
+                _bulk_registry(OfflineContract(query_params=(QueryParam("items"),)))
+            ),
+            "QueryParam",
+            id="contract query_params",
+        ),
+        pytest.param(
+            lambda: SpecToolset({"create_widgets": bulk_spec()}, url_kwargs=[UrlKwarg("items")]),
+            "UrlKwarg",
+            id="toolset-wide url_kwargs",
+        ),
+        pytest.param(
+            lambda: SpecToolset(
+                {"create_widgets": bulk_spec()},
+                tool_url_kwargs={"create_widgets": [UrlKwarg("items")]},
+            ),
+            "UrlKwarg",
+            id="tool_url_kwargs",
+        ),
+        pytest.param(
+            lambda: SpecToolset(_bulk_registry(OfflineContract(url_kwargs=(UrlKwarg("items"),)))),
+            "UrlKwarg",
+            id="contract url_kwargs",
+        ),
+    ],
+)
+def test_a_channel_named_after_the_list_argument_is_refused(build, kind):
+    """A declared channel is popped out of the arguments before dispatch, so one
+    sharing the list's name would take the list with it and the service would
+    never see a call succeed. Every declaration site, because the check has to
+    read the merged declarations to see a contract's."""
+    with pytest.raises(ImproperlyConfigured) as caught:
+        build()
+
+    message = str(caught.value)
+    assert f"{kind} named 'items'" in message
+    assert "'create_widgets'" in message
+    # Not drf-services' reserved-name refusal, which would say nothing about why.
+    assert "reserved transport keys" not in message
+
+
+def test_a_channel_may_share_a_name_no_list_travels_under():
+    """The two ways the refusal could over-reach. A single-item spec has no list
+    argument, which holds the ``spec.many`` conjunct; a spec naming its own list
+    argument leaves ``items`` free, which holds reading ``many_argument`` rather
+    than assuming the default."""
+    SpecToolset({"create_widget": create_spec()}, query_params=[QueryParam("items")])
+    SpecToolset(
+        {"create_widgets": bulk_spec(many_argument="widgets")}, url_kwargs=[UrlKwarg("items")]
+    )
+
+    with pytest.raises(ImproperlyConfigured, match="UrlKwarg named 'widgets'"):
+        SpecToolset(
+            {"create_widgets": bulk_spec(many_argument="widgets")},
+            url_kwargs=[UrlKwarg("widgets")],
+        )
+
+
+class _WidgetItems(serializers.Serializer):
+    items = WidgetInputSerializer(many=True)
+
+
+def _count_items(*, data):
+    return {"count": len(data["items"])}
+
+
+@pytest.mark.django_db
+def test_a_list_declared_as_a_serializer_field_still_arrives():
+    """The shape for a tool that takes arguments beside its list, which ``many=True``
+    refuses: the list arrives, and an invalid item is sent back for a retry naming
+    its index."""
+    user = User.objects.create(username="u")
+    spec = ServiceSpec(
+        service=_count_items, input_serializer=_WidgetItems, permission_classes=[AllowAny]
+    )
+    item = {"name": "a", "price": 1}
+
+    assert _dispatch(spec, user, {"items": [item, item]}) == {"count": 2}
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(spec, user, {"items": [item, {"name": "b"}]})
+    # DRF 3.18 keys a nested list's errors by the invalid items' indexes; below it
+    # they are a list holding an empty entry for each valid item. The floor is below
+    # 3.18, so both shapes reach the model.
+    items = retry.value.__cause__.detail["items"]
+    by_index = items if isinstance(items, dict) else {i: e for i, e in enumerate(items) if e}
+    assert list(by_index) == [1]
+    assert set(by_index[1]) == {"price"}
 
 
 # --- pagination arg validation -----------------------------------------------
@@ -977,6 +1328,18 @@ async def test_a_business_failure_marks_the_tool_return_failed():
     assert part.content == "nope"
     # And the run survived it, which is what separates ``ToolFailed`` from an
     # ordinary exception: the model got to answer.
+    assert result.output == "done"
+
+
+async def test_a_refused_call_marks_the_tool_return_failed_and_carries_its_code():
+    """What reaches the wire for an ``ActionUnavailable``: the same ``failed``
+    marking as any business error, and content that is the reason followed by the
+    code. ``content`` is what a transport forwards as the tool result, so this is
+    the text a browser rendering the call shows as well as what the model reads."""
+    result = await _run_one_tool(_refused_spec(), name="close_books")
+    part = _tool_return(result)
+    assert part.outcome == "failed"
+    assert part.content == "The books are closed. (code: books_closed)"
     assert result.output == "done"
 
 
@@ -3327,6 +3690,135 @@ async def test_a_spec_declaring_no_affordances_keeps_its_return_schema_byte_for_
     )
 
     assert json.dumps(tools["t"].tool_def.return_schema) == json.dumps(before)
+
+
+# --- a refused call names the rule that refused it ----------------------------
+#
+# drf-services raises ``ActionUnavailable(reason, code=...)`` when an affordance
+# condition is not met. ``ToolFailed`` takes a message and nothing else, so the
+# sentence is the only place the code can reach the model -- and the code is what
+# ties the refusal to the ``affordances`` answer the model may already have read.
+
+
+def _refusing_service(**_: Any) -> None:
+    """Close the books. Never reached: its one condition is unmet."""
+
+
+def _refused_spec() -> ServiceSpec:
+    return ServiceSpec(
+        service=_refusing_service,
+        atomic=False,
+        affordances=[
+            Affordance(code="books_closed", reason="The books are closed.", when=lambda: False)
+        ],
+        permission_classes=[AllowAny],
+    )
+
+
+async def test_a_refused_call_fails_with_its_reason_and_its_code():
+    """Through ``call_tool``, the path a run takes. The message used to be the
+    reason alone, with ``books_closed`` reachable only on ``__cause__``; the cause
+    is kept, because that is where a program reads the code from."""
+    toolset = SpecToolset({"close_books": _refused_spec()})
+
+    with pytest.raises(ToolFailed) as caught:
+        await _call(toolset, "close_books", User(username="u"))
+
+    assert caught.value.message == "The books are closed. (code: books_closed)"
+    cause = caught.value.__cause__
+    assert isinstance(cause, ActionUnavailable)
+    assert cause.code == "books_closed"
+    assert cause.message == "The books are closed."
+
+
+async def test_a_refusal_names_the_code_its_rows_advertised():
+    """The point of the suffix, asserted against the other half rather than a
+    literal: the code a row's ``affordances`` answer carries for an operation is
+    the code that operation's refusal ends with. Both come off one declaration,
+    ``_CANCEL_ORDER``, so a model that read the row can connect the two."""
+    toolset = SpecToolset(
+        {
+            "orders": _order_selector_spec(SelectorKind.RETRIEVE),
+            "cancel": replace(_CANCEL_ORDER, permission_classes=[AllowAny]),
+        },
+        descriptions={"cancel": "Cancel an order."},
+    )
+    row = await _call(toolset, "orders", User(username="u"))
+    advertised = row["affordances"]["cancel"]
+
+    with pytest.raises(ToolFailed) as caught:
+        await _call(toolset, "cancel", User(username="u"))
+
+    assert caught.value.message == f"{advertised['reason']} (code: {advertised['code']})"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        pytest.param(ServiceConflict("That slot is already booked."), id="ServiceConflict"),
+        pytest.param(ServiceError("That slot is already booked."), id="ServiceError"),
+    ],
+)
+def test_a_business_error_without_a_code_keeps_its_message_unchanged(exc):
+    """``ServiceConflict`` is ``ActionUnavailable``'s parent and is matched by the
+    same branch, so it is the case a check written one class too wide would
+    catch. A conflict raised by hand has no code, and must not gain a label."""
+
+    def refuse(**_):
+        """Refuse."""
+        raise exc
+
+    with pytest.raises(ToolFailed) as caught:
+        _dispatch(ServiceSpec(service=refuse, atomic=False), object(), {})
+
+    assert caught.value.message == "That slot is already booked."
+    assert "(code:" not in caught.value.message
+    assert caught.value.__cause__ is exc
+
+
+@pytest.mark.parametrize(
+    "registered",
+    [
+        pytest.param(ActionUnavailable, id="the refusal's own class"),
+        pytest.param(ServiceError, id="a base class it inherits"),
+    ],
+)
+def test_the_exception_map_still_wins_over_the_code_suffix(registered):
+    """The consumer's map is consulted before any built-in arm, this one
+    included, and it is where a program reads ``.code`` -- so a handler for the
+    refusal, or for any class above it, sees the exception whole and decides the
+    result without a suffix being added to it."""
+    result = _dispatch(
+        _refused_spec(),
+        object(),
+        toolset_kwargs={
+            "exception_map": {registered: lambda exc: {"refused": exc.code, "why": exc.message}}
+        },
+    )
+
+    assert result == {"refused": "books_closed", "why": "The books are closed."}
+
+
+def test_translate_exception_sees_the_code_before_the_default_renders_it():
+    """The override is the other door to the same place, and the one that can
+    read the run: returning ``None`` for everything else leaves the suffix to the
+    default, which the second call pins."""
+
+    class ReadingTheCode(SpecToolset):
+        def translate_exception(self, exc, *, ctx):
+            if isinstance(exc, ActionUnavailable) and ctx.deps.user == "auditor":
+                return lambda e: {"refused": e.code}
+            return super().translate_exception(exc, ctx=ctx)
+
+    spec = _refused_spec()
+    toolset = ReadingTheCode({"t": spec})
+
+    assert toolset._call_spec(spec, "auditor", {}, ctx=ctx_for("auditor")) == {
+        "refused": "books_closed"
+    }
+    with pytest.raises(ToolFailed) as caught:
+        toolset._call_spec(spec, "clerk", {}, ctx=ctx_for("clerk"))
+    assert caught.value.message == "The books are closed. (code: books_closed)"
 
 
 # --- JsonSchemaRegistry threading ---------------------------------------------

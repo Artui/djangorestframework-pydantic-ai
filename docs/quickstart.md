@@ -211,6 +211,74 @@ from rest_framework_services import UnknownArguments
 toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 ```
 
+## A list as input
+
+A `ServiceSpec` declaring `many=True` becomes a tool that takes its list as **one
+named argument**. Its input validates as a JSON array, and a model's tool
+arguments are always a JSON object, so the array travels under the argument the
+spec's `many_argument` names, `items` unless it names another:
+
+```python
+def create_widgets(*, data, user):
+    """Create several widgets in one call."""
+    return [Widget.objects.create(owner=user, **item) for item in data]
+
+
+create_widgets_spec = ServiceSpec(
+    service=create_widgets,
+    input_serializer=WidgetInputSerializer,
+    many=True,
+    many_argument="widgets",  # optional; the default is "items"
+    output_selector_spec=SelectorSpec(
+        kind=SelectorKind.RETRIEVE, output_serializer=WidgetSerializer
+    ),
+)
+```
+
+The model sends `{"widgets": [{...}, {...}]}` and the service receives the list,
+exactly as it would from a REST view's bare array body. The tool's parameter
+schema says so: an object with that one required property, an array of the item
+schema, carrying the list serializer's `allow_empty`, `min_length` and
+`max_length` as `minItems` / `maxItems`, and `additionalProperties: false`. A
+declared `QueryParam` or `UrlKwarg` is advertised beside it, since the toolset
+takes those out of the arguments before dispatch. The result is the rendered
+list, and the tool's `return_schema` describes it as an array even though the
+`output_selector_spec` is `RETRIEVE`.
+
+What the model is told when a call is wrong:
+
+- **An invalid item** comes back as a `ModelRetry` whose errors are keyed under
+  the argument, then by the invalid item's index, then by field, on every Django
+  REST framework version this package supports. The model reads
+  `{'widgets': {1: {'price': [ErrorDetail(string='This field is required.', code='required')]}}}`,
+  the same rendering every validation error gets, and corrects that one item.
+- **The argument missing, `null` or not a list** comes back keyed under the
+  argument in the words that field would use:
+  `{'widgets': [ErrorDetail(string='This field is required.', code='required')]}`.
+- **Any other argument sent beside the list** comes back as
+  `Unexpected argument(s): 'note'.` under every `unknown_arguments` policy,
+  because the service receives only the list and the argument would have
+  nowhere to go. The policy still decides what happens to an undeclared key
+  inside an item.
+
+A `QueryParam` or `UrlKwarg` sharing the list's argument name is refused with
+`ImproperlyConfigured` when the toolset is built, whether it is declared
+toolset-wide, per tool or on the registry entry's `OfflineContract`: it would be
+taken out of the arguments first and carry the list away with it.
+
+A tool that needs arguments **beside** its list cannot be `many=True`. Name the
+list as a field of the input serializer instead, and loop over it:
+
+```python
+class BulkWidgetInput(serializers.Serializer):
+    items = WidgetInputSerializer(many=True)
+    dry_run = serializers.BooleanField(default=False)
+```
+
+The model sends `{"items": [...], "dry_run": true}`, and an invalid item comes
+back placing its errors at its index: keyed by index from Django REST framework
+3.18, and below it as a list with an empty entry for each valid item.
+
 ## Ordering
 
 **The `filter_set` owns ordering.** Declare a django-filter `OrderingFilter`
@@ -446,11 +514,14 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | drf-services outcome | What the agent sees |
 | --- | --- |
 | `ServiceValidationError` (bad input) | `ModelRetry` with the field errors — the model self-corrects |
+| `ActionUnavailable` (an `Affordance` condition not met) | `ToolFailed` with the reason followed by the rule's code — `The books are closed. (code: books_closed)`; see below |
 | `ServiceError` (business rule) | `ToolFailed` with the rule's own message — a failed result the model reads and reports |
-| Unresolved instance | `ToolFailed("not found")` |
+| Unresolved instance | `ToolFailed("not found")`, unless the spec sets `allow_none=True`, when the tool returns `None` |
 | A dispatch past `dispatch_timeout` | `ToolFailed` — abandoned, with the sentence telling the model to narrow and call again |
 | A rendered result over `max_result_bytes` | `ToolFailed` — refused rather than truncated, since a partial payload looks complete |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
+| An invalid item in a `many=True` list | `ModelRetry` with the errors keyed under the list's argument, then the item's index — see [A list as input](#a-list-as-input) |
+| An argument sent beside a `many=True` list | `ModelRetry` naming it, whatever `unknown_arguments` says |
 | Non-integer `page` / `limit` | `ModelRetry` — naming what is accepted |
 | An `ordering` sent to a list tool that advertises no sort at all | `ModelRetry` — saying the tool has none, rather than letting it fall through as an unknown key |
 | A `limit` over `max_page_size`, or a `page` past the last one | Clamped, not refused — the envelope reports the `page` and `totalPages` actually served, so the clamp is visible rather than silent |
@@ -499,6 +570,62 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
     see it, because every write test asserted a path that succeeds. If a project
     genuinely cannot change its exception's base class, `exception_map=` is the
     other door: it takes the type and returns what the model should be told.
+
+### A refused affordance names its code
+
+drf-services raises `ActionUnavailable` when one of a spec's `Affordance`
+conditions is not met, with the affordance's `reason` as the message and its
+`code` as an attribute. `ToolFailed` carries a message and nothing else, and that
+message is also what a transport forwards as the tool result, so the toolset puts
+both into it — the reason first, then the code, labelled:
+
+```python
+from rest_framework_services import Affordance, ServiceSpec
+
+
+def post_invoice(data, user):
+    """Post an invoice to the current period."""
+    ...
+
+
+post_invoice_spec = ServiceSpec(
+    service=post_invoice,
+    input_serializer=InvoiceInputSerializer,
+    affordances=[
+        Affordance(
+            code="books_closed",
+            reason="The books are closed.",
+            when=lambda: Period.current().is_open,
+        ),
+    ],
+)
+```
+
+A call made once the current period has closed fails, and the failed tool result's
+content — what the model reads and what a transport streams — is:
+
+```text
+The books are closed. (code: books_closed)
+```
+
+The code is the part that connects the refusal to what the model may already have
+read. A selector naming the same spec in its own `affordances`
+(`affordances={"post_invoice": post_invoice_spec}`) answers it on each row it
+renders, under `affordances.post_invoice`, as
+`{"available": false, "code": "books_closed", "reason": "The books are closed."}`
+— and the reason is a sentence a project may reword while the code stays put. The
+conventions block `get_instructions` returns tells the model a refusal may end
+this way. A `ServiceError` or `ServiceConflict` raised by hand has
+no code and keeps its message exactly as written.
+
+**The suffix is written for the model and for a person reading a tool card, not
+for a program.** It is meant to read the same on every agent transport serving
+these specs, and its wording is not an interface. A program that branches on the
+code reads `.code` off the exception instead: the `ActionUnavailable` is the
+`ToolFailed`'s `__cause__`, and `translate_exception` receives it before the
+toolset's own handling runs. A handler returned from there, or registered in
+`exception_map` for `ActionUnavailable` or any class above it, replaces the
+sentence along with the rest of the default.
 
 ### Why the failed rows raise instead of returning
 

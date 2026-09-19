@@ -65,7 +65,16 @@ dependencies = [
     # while the toolset builds its tool definitions at construction. Below 0.51
     # the attribute and the keyword are both missing, so such a toolset cannot
     # be built at all: a hard floor rather than a preference.
-    "djangorestframework-services>=0.51",
+    # 0.52.1 renders a single ``None`` as ``None``: below it a nullable retrieve
+    # that found nothing, and a service that returned nothing, reach the model as
+    # the output serializer's blank row. A soft floor on its own -- the toolset
+    # imports and runs below it -- held by the tests asserting both return ``None``.
+    # 0.53.0 is the floor, and it is a hard one: every spec call passes
+    # ``many_as_argument=True``, which first exists there, so below it every tool
+    # call raises ``TypeError`` -- the toolset builds and nothing fails until a
+    # model calls a tool. It is also where a ``many=True`` spec's list is read from
+    # the one argument ``ServiceSpec.many_argument`` names.
+    "djangorestframework-services>=0.53.0",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
     # a business-rule refusal, an unresolved target, a dispatch that ran past its
@@ -185,7 +194,7 @@ root = ["./rest_framework_pydantic_ai"]
 # rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.28.0"
+current_version = "0.30.0"
 allow_dirty = false
 commit = false
 tag = false

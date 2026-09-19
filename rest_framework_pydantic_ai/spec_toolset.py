@@ -36,7 +36,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import cached_property
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, TypeGuard, cast
 
 from asgiref.sync import sync_to_async
 from django.core.exceptions import ImproperlyConfigured
@@ -52,6 +52,7 @@ from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
     DEFAULT_PAGE_SIZE,
     UNSET,
+    ActionUnavailable,
     AdditionalInputRequired,
     AudienceProjection,
     DispatchResult,
@@ -298,6 +299,14 @@ class SpecToolset(AbstractToolset[Any]):
     its hands off the value, which the FilterSet validates and applies through
     its own ``param_map``.
 
+    **A ``many=True`` service takes its list as one named argument.** Its input
+    validates as a JSON array and a model's arguments are always an object, so the
+    list travels under the argument ``ServiceSpec.many_argument`` names --
+    ``items`` unless the spec names another -- and nothing may be sent beside it
+    but this toolset's own ``query_params`` / ``url_kwargs``. An invalid item comes
+    back as a ``ModelRetry`` keyed under that argument and then by the item's
+    index. The result is the rendered list, advertised as an array.
+
     For anything the keywords below do not cover,
     [`build_context`][rest_framework_pydantic_ai.SpecToolset.build_context] and
     [`translate_exception`][rest_framework_pydantic_ai.SpecToolset.translate_exception]
@@ -465,7 +474,9 @@ class SpecToolset(AbstractToolset[Any]):
 
     Raises:
         ImproperlyConfigured: A spec has no ``permission_classes`` and
-            ``require_permissions`` is set.
+            ``require_permissions`` is set, or a ``QueryParam`` / ``UrlKwarg`` on
+            a ``many=True`` spec's tool -- declared here or on its entry's
+            ``OfflineContract`` -- shares the name its list travels under.
         ValueError: A tool name is outside ``^[a-zA-Z0-9_-]{1,64}$``, a per-tool
             mapping names a tool this toolset does not expose, or one name is
             registered on both parameter channels.
@@ -566,6 +577,11 @@ class SpecToolset(AbstractToolset[Any]):
         for name in self._specs:
             _validate_channel_declarations(name, self._tool_query_params[name], "query_params")
             _validate_channel_declarations(name, self._tool_url_kwargs[name], "url_kwargs")
+        # Also post-merge, for the same reason and one more: a contract's
+        # declarations exist only in the merged tuples.
+        _validate_many_argument_channels(
+            self._specs, self._tool_query_params, self._tool_url_kwargs
+        )
         # Agent markings are pure in the serializer, like the schemas below, so
         # they are resolved once rather than paying a serializer instantiation
         # on every tool call.
@@ -838,6 +854,12 @@ class SpecToolset(AbstractToolset[Any]):
         so a handler registered for a base class catches its subclasses and the
         **most specific** registration wins. Override for a decision the map
         cannot express — one that has to read the run's deps.
+
+        This runs ahead of every built-in arm, so it is also where a program reads
+        a refusal's code: an ``ActionUnavailable`` arrives here with ``.code``
+        intact, before the default renders it into the sentence
+        ``<reason> (code: <code>)``. A handler returned for it replaces that
+        sentence along with everything else the default would have done.
         """
         del ctx  # unused by the default; present so an override has it
         for klass in type(exc).__mro__:
@@ -1239,6 +1261,44 @@ def _validate_url_kwargs(
             )
 
 
+def _validate_many_argument_channels(
+    specs: Mapping[str, Spec],
+    tool_query_params: Mapping[str, Sequence[QueryParam]],
+    tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]],
+) -> None:
+    """Refuse a declared channel named after the argument a tool's list travels under.
+
+    A ``QueryParam`` or ``UrlKwarg`` is popped out of the model's arguments before
+    dispatch, so one sharing ``spec.many_argument`` would take the list with it:
+    every call would reach drf-services without its list and come back as a retry
+    saying the argument is required -- the argument the model had just sent.
+
+    Its own check rather than ``many_argument`` added to the ``reserved`` names
+    handed to drf-services' shared validator, which would refuse the same
+    declaration with a list of the dispatcher's pool seeds and no word about the
+    list. ``ImproperlyConfigured``, as that validator raises for a channel name the
+    transport owns, which this is for one tool.
+    """
+    for tool_name, spec in specs.items():
+        if not _takes_a_list(spec):
+            continue
+        argument: str = spec.many_argument
+        channels: tuple[tuple[str, Sequence[QueryParam] | Sequence[UrlKwarg]], ...] = (
+            ("QueryParam", tool_query_params[tool_name]),
+            ("UrlKwarg", tool_url_kwargs[tool_name]),
+        )
+        for kind, declarations in channels:
+            if any(declaration.name == argument for declaration in declarations):
+                raise ImproperlyConfigured(
+                    f"SpecToolset tool {tool_name!r} takes its list under the argument "
+                    f"{argument!r} (its spec declares many=True), and a {kind} named "
+                    f"{argument!r} is declared for it too. A {kind} is taken out of the "
+                    "arguments before dispatch, so the list would never reach the service. "
+                    "Rename the declaration, or name the list's argument with "
+                    "ServiceSpec(many_argument=...)."
+                )
+
+
 def _validate_channel_declarations(tool_name: str, declarations: Sequence[Any], kind: str) -> None:
     """Apply drf-services' shared channel checks to one tool's merged tuple.
 
@@ -1365,11 +1425,19 @@ def _default_get_user(ctx: RunContext[Any]) -> Any:
 
 
 # The conventions block ``SpecToolset.get_instructions`` teaches the model.
+#
+# The ``(code: <name>)`` sentence is unconditional, unlike the lines
+# ``_derive_instructions`` appends, because no spec can answer whether a refusal
+# will carry one: a declared ``Affordance`` produces it, and so does a service
+# raising ``ActionUnavailable`` by hand, which nothing declares. It is part of the
+# failure contract rather than advice about an argument, and costs one sentence.
 _BASE_INSTRUCTIONS = (
     "The following tools call Django REST Framework services and selectors.\n"
     "- A successful call returns the tool's data. A business-rule failure comes back as a "
     "failed call whose content is a sentence explaining why — that is a final answer, not a "
-    "reason to retry; read it and report it, do not call the same tool the same way again.\n"
+    "reason to retry; read it and report it, do not call the same tool the same way again. "
+    "The sentence may end with `(code: <name>)`, naming the rule that refused; it is the same "
+    "code an item's `affordances` answer carries when a tool advertised one.\n"
     "- An invalid or missing argument comes back as a retry request naming the problem; "
     "correct the argument and call again.\n"
     "- A permission error is final: the current user may not perform that call — do not "
@@ -1542,13 +1610,19 @@ def _return_schema(
     ``None`` for a spec with no ``output_serializer`` is the correct answer and
     not a gap: drf-services refuses to fabricate a shape it cannot derive, and a
     guessed one would be a claim the payload never has to honour.
+
+    ``kind`` is ``LIST`` for a ``many=True`` service whatever its
+    ``output_selector_spec`` declares. That selector is ``RETRIEVE`` by
+    convention, because its kind describes one row, while drf-services renders
+    the list it returns as a list; the kind alone advertised an object for a
+    payload that is always an array.
     """
     rendered = _rendered_selector_spec(spec)
     if rendered is None:
         return None
     return output_to_json_schema(
         rendered.output_serializer,
-        kind=rendered.kind,
+        kind=SelectorKind.LIST if _takes_a_list(spec) else rendered.kind,
         paginate=_is_list_selector(spec),
         projection=projection,
         handle_description=_HANDLE_DESCRIPTION,
@@ -1613,6 +1687,13 @@ def _input_schema(
     ``UrlKwarg(required=True)``. A key that is both reflected-required and
     registered-required appears once: that is one statement made twice, not two
     requirements.
+
+    A ``many=True`` spec's reflected schema is already the object a model can
+    send -- one required array property named by ``spec.many_argument``, and
+    ``additionalProperties: false`` -- so the merge below applies to it unchanged.
+    The ``false`` is carried over and stays true: a declared channel is a
+    property, not an additional one, and ``_call_spec`` pops it before drf-services
+    refuses anything sent beside the list.
     """
     schema = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input", registry=registry))
     extra: dict[str, Any] = {}
@@ -1641,6 +1722,21 @@ def _input_schema(
 
 def _is_list_selector(spec: Spec) -> bool:
     return isinstance(spec, SelectorSpec) and spec.kind == SelectorKind.LIST
+
+
+def _takes_a_list(spec: Spec) -> TypeGuard[ServiceSpec[Any, Any, Any]]:
+    """Whether ``spec`` is a ``many=True`` service: a list in, and a list out.
+
+    A ``TypeGuard`` so a caller reading ``many_argument`` after it type-checks
+    without restating the ``isinstance``.
+
+    The ``isinstance`` is not a formality -- a ``SelectorSpec`` has no ``many`` to
+    read -- and is held by every toolset exposing a selector. ``spec.many`` is held
+    by ``test_a_service_tool_reads_its_output_serializer_one_level_down`` on the
+    return schema and ``test_a_channel_may_share_a_name_no_list_travels_under`` on
+    the channel check.
+    """
+    return isinstance(spec, ServiceSpec) and spec.many
 
 
 def _spec_ordering_argument(
@@ -1795,6 +1891,13 @@ def _call_spec(
             # channel that separates the FilterSet's data from the callable's
             # arguments — the two are one flat mapping off HTTP otherwise.
             filter_data=filter_data,
+            # A model's arguments are always an object, so a ``many=True`` spec's
+            # list arrives under the one argument ``spec.many_argument`` names --
+            # the argument its input schema advertises. A no-op on every other
+            # spec, which is why it is passed unconditionally rather than behind a
+            # ``spec.many`` branch this function would then have to keep in step
+            # with drf-services' idea of which specs take a list.
+            many_as_argument=True,
         )
     except BaseException as exc:
         # **One arm, not a chain, because the consumer's map has to be consulted
@@ -1819,7 +1922,7 @@ def _call_spec(
             # ordinary argument on the next call.
             raise ModelRetry(_missing_input_prompt(exc)) from exc
         if isinstance(exc, ServiceError):
-            # **Raised, not returned, and the message is unchanged.** A business
+            # **Raised, not returned, with the rule's own message.** A business
             # rule that refused — a conflict, a state the operation cannot run
             # against — is ``ToolFailed``'s own description: the call is done, it
             # failed definitively, and the model should adapt rather than repeat
@@ -1831,6 +1934,18 @@ def _call_spec(
             # sentence to the model, spends no retry budget, and prepends no
             # correction instructions — the three properties the returned dict
             # was chosen for — while marking the return ``outcome="failed"``.
+            if isinstance(exc, ActionUnavailable):
+                # **Inside this branch, not ahead of it, and still behind the
+                # consumer's map.** A subclass of ``ServiceConflict`` and so of
+                # ``ServiceError``: it fails the call exactly as its parent does,
+                # and the only difference is what the sentence carries. The
+                # message is the only channel -- ``ToolFailed`` takes nothing
+                # else, and it is what a transport forwards as the result -- so
+                # a refusal that dropped its ``code`` here left the model reading
+                # a reason it could not tie to the ``affordances`` answer naming
+                # the same rule, with the name surviving only on ``__cause__``,
+                # where no model looks.
+                raise ToolFailed(_refusal_message(exc)) from exc
             raise ToolFailed(str(exc)) from exc
         raise
 
@@ -1954,6 +2069,36 @@ def _missing_input_prompt(exc: AdditionalInputRequired) -> str:
         return str(exc)
     names: str = ", ".join(f"`{name}`" for name in exc.schema)
     return f"{exc} Call this tool again, additionally supplying: {names}."
+
+
+def _refusal_message(exc: ActionUnavailable) -> str:
+    """The sentence a refused call fails with: the reason, then the rule's code.
+
+    ``The books are closed. (code: books_closed)``. drf-services raises
+    ``ActionUnavailable`` when one of a spec's ``Affordance`` conditions is not
+    met, carrying that affordance's ``reason`` as the message and its ``code`` as
+    an attribute, and asks a transport serving an agent to pass on both. Here the
+    ``ToolFailed`` message is the only thing a model receives and the only thing a
+    transport forwards, so both go into it.
+
+    **The code is what connects the refusal to what the model already read.** A
+    selector tool's rows carry ``affordances: {<name>: {"available": false,
+    "code": ..., "reason": ...}}``, and the reason is a sentence a project may
+    reword between releases; the code is the part that stays put. Labelled rather
+    than bare so a reader does not take ``books_closed`` for more of the sentence,
+    and last so the reason still reads first.
+
+    **Written for the model and for a person reading a tool card, not for a
+    program.** The format is a convention across the family's agent transports
+    rather than this toolset's own -- django-pydantic-agent's drf-mcp bridge is
+    meant to render the same refusal as the same text, so changing it here means
+    changing it there. A program that branches on the code should read ``.code``
+    off the exception instead, either in
+    [`translate_exception`][rest_framework_pydantic_ai.SpecToolset.translate_exception]
+    or on the ``ToolFailed``'s ``__cause__``. Parsing it back out of the sentence
+    couples that program to wording this function is free to change.
+    """
+    return f"{exc.message} (code: {exc.code})"
 
 
 def _pop_pagination(

@@ -6,6 +6,102 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-09-18
+
+### Added
+
+- **A `ServiceSpec` declaring `many=True` is a tool that takes its list as one
+  named argument**, where it was refused when the toolset was built. A model's
+  tool arguments are always a JSON object and the spec validates a JSON array, so
+  the list travels under the argument the spec's `many_argument` names, `items`
+  unless it names another, and the service receives the list as it would from a
+  REST view's array body. The tool's parameter schema is an object with that one
+  required array property and `additionalProperties: false`, with any declared
+  `QueryParam` or `UrlKwarg` advertised beside it. Its `return_schema` describes
+  the rendered list as an array, although the `output_selector_spec` a bulk spec
+  renders through is `RETRIEVE` by convention.
+
+  An invalid item comes back as a `ModelRetry` keyed under the argument and then
+  by the invalid item's index, on every Django REST framework version supported,
+  rendered as every validation error is:
+
+  ```text
+  {'items': {1: {'price': [ErrorDetail(string='This field is required.', code='required')]}}}
+  ```
+
+  Any other argument sent beside the list comes back as `Unexpected argument(s):
+  'note'.` under every `unknown_arguments` policy, since the service receives
+  only the list. A tool that needs arguments beside its list still declares the
+  list as a field of its input serializer.
+
+- **A `QueryParam` or `UrlKwarg` named after a `many=True` spec's list argument
+  is refused with `ImproperlyConfigured`** when the toolset is built, whether
+  declared toolset-wide, per tool or on the registry entry's `OfflineContract`.
+  The toolset takes both out of the arguments before dispatch, so the list would
+  never have reached the service and every call would have come back saying the
+  argument the model had just sent was required.
+
+### Changed
+
+- **Floored at `djangorestframework-services>=0.53.0` (was `>=0.52.1`), and it is a
+  hard floor.** Every spec call passes `many_as_argument=True`, which first exists
+  there, so below it every tool call raises `TypeError`. The toolset still builds,
+  so nothing fails until a model calls a tool.
+
+## [0.29.0] — 2026-09-16
+
+### Changed
+
+- **Floored at `djangorestframework-services>=0.52.1` (was `>=0.51`).** That
+  release renders a single `None` as `None` rather than as the output
+  serializer's blank row, which is the fix below; below it, the toolset still
+  builds and runs, and answers a row with empty fields where it found nothing.
+
+- **A `ServiceSpec` declaring `many=True` is refused when the toolset is built**,
+  with `ImproperlyConfigured` naming every such tool. Its input validates as a
+  JSON array, and a model's tool arguments are always a JSON object, so the tool
+  was offered and answered every call with a `ModelRetry` reading `Expected a
+  list of items but got type "dict"`, which no retry could satisfy. The message
+  names the shape that works, a named list field on the input serializer
+  (`items = ItemSerializer(many=True)`), and how to leave the spec out of a
+  toolset built from a registry. The MCP transport refuses the same spec with the
+  same exception.
+
+### Fixed
+
+- **A tool that finds nothing returns `None`, not a blank row.** A `RETRIEVE`
+  selector with `allow_none=True` that found no row, and a service that returned
+  `None`, rendered through the output serializer as `{"name": "", "price": null}`,
+  which a model reads as a record with empty fields. Both now return `None`.
+
+- **A call an `Affordance` refuses now names the rule, not only the reason.**
+  drf-services raises `ActionUnavailable(reason, code=...)` when one of a spec's
+  affordance conditions is not met, and asks a transport serving an agent to pass
+  on both. This toolset turned every `ServiceError` into `ToolFailed(str(exc))`,
+  so the model received `The books are closed.` and `books_closed` survived only
+  on the exception's `__cause__`, where no model and no transport looks.
+  `ToolFailed` takes a message and nothing else, and that message is also what a
+  transport forwards as the tool result, so the sentence is the only channel. It
+  now reads `The books are closed. (code: books_closed)`: the reason first, then
+  the code, labelled.
+
+  The code is what connects the refusal to the answer the model may already have
+  read. A selector's rows carry `affordances: {<name>: {"available": false,
+  "code": ..., "reason": ...}}`, and the reason is a sentence a project may reword
+  while the code stays put. The conventions block `get_instructions` returns says
+  a refusal may end with `(code: <name>)` and that it is the same code an item's
+  `affordances` answer carries, without changing what it already said: a
+  business-rule failure is a final answer, not a reason to retry.
+
+  Every other `ServiceError`, `ServiceConflict` included, keeps its message
+  exactly as written, and the `outcome="failed"` marking is unchanged. The suffix
+  is written for the model and for a person reading a tool card; a program that
+  branches on the code reads `.code` off the exception, which is still the
+  `ToolFailed`'s `__cause__` and still reaches `translate_exception` before the
+  toolset's own handling. A handler registered there or in `exception_map`, for
+  `ActionUnavailable` or any class above it, replaces the sentence as it replaced
+  the old one.
+
 ## [0.28.0] — 2026-09-16
 
 ### Fixed
@@ -1559,7 +1655,9 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.29.0...v0.30.0
+[0.29.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.28.0...v0.29.0
 [0.28.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.25.0...v0.26.0
