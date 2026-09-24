@@ -5325,10 +5325,10 @@ def test_a_render_output_override_is_covered_too():
 @pytest.mark.parametrize(
     ("args", "subject"),
     [
-        ({"query": "{bogus}", "fields": "bogus"}, "`query` and `fields` were"),
+        ({"query": "{bogus}", "fields": "bogus"}, "`query` or `fields` was"),
         (
             {"query": "{bogus}", "fields": "bogus", "expand": "true"},
-            "`query`, `fields` and `expand` were",
+            "`query`, `fields` or `expand` was",
         ),
     ],
     ids=["two", "three"],

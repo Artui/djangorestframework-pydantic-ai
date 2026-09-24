@@ -27,8 +27,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ```
 
   The last sentence is added on a list tool only. With several read-shaping
-  values supplied, all of them are named, since the serializer does not say which
-  one it refused. A consumer's `render_output` override is covered too.
+  values supplied, all of them are named ("`query` or `fields` was rejected"),
+  since the serializer does not say which one it refused. A consumer's `render_output` override is covered too.
 
   **It stays loud when nothing the model sent shaped the render**: no read-shaping
   value supplied, an explicit `null`, or a value seeded from a declared `default`.

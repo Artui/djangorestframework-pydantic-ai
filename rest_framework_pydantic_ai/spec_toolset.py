@@ -2511,19 +2511,20 @@ def _render_rejection_message(names: Sequence[str], detail: Any, *, paged: bool)
     change, and "while rendering the result" tells it the rest of the call was
     accepted.
 
-    **Several supplied names are all named.** The serializer does not say which
-    one it refused, so singling one out would be a guess presented as a fact.
+    **Several supplied names are all named, joined with "or".** The serializer
+    does not say which one it refused, so singling one out would be a guess
+    presented as a fact, and "and ... were" would claim all of them were. The
+    MCP transport words it the same way.
 
     On a paged tool the scope sentence follows, because the likeliest way to
     write a bad selection there is against the page envelope, which is exactly
     the shape the tool's result documents -- saying so turns that into one retry.
     """
     quoted = [f"`{name}`" for name in names]
-    if len(quoted) == 1:
-        subject = f"{quoted[0]} was"
-    else:
-        subject = f"{', '.join(quoted[:-1])} and {quoted[-1]} were"
-    message = f"{subject} rejected while rendering the result: {_format_validation_detail(detail)}"
+    subject = quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} or {quoted[-1]}"
+    message = (
+        f"{subject} was rejected while rendering the result: {_format_validation_detail(detail)}"
+    )
     # restql's messages carry no full stop and DRF's do; the sentence should end
     # in exactly one either way.
     if not message.endswith((".", "!", "?")):
