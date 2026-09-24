@@ -299,14 +299,13 @@ list, and the tool's `return_schema` describes it as an array even though the
 
 What the model is told when a call is wrong:
 
-- **An invalid item** comes back as a `ModelRetry` whose errors are keyed under
-  the argument, then by the invalid item's index, then by field, on every Django
-  REST framework version this package supports. The model reads
-  `{'widgets': {1: {'price': [ErrorDetail(string='This field is required.', code='required')]}}}`,
-  the same rendering every validation error gets, and corrects that one item.
-- **The argument missing, `null` or not a list** comes back keyed under the
-  argument in the words that field would use:
-  `{'widgets': [ErrorDetail(string='This field is required.', code='required')]}`.
+- **An invalid item** comes back as a `ModelRetry` naming the argument, then the
+  invalid item's index, then the field, on every Django REST framework version
+  this package supports. The model reads `widgets[1].price: This field is
+  required.`, the same rendering every validation error gets, and corrects that
+  one item.
+- **The argument missing, `null` or not a list** comes back under the argument
+  in the words that field would use: `widgets: This field is required.`
 - **Any other argument sent beside the list** comes back as
   `Unexpected argument(s): 'note'.` under every `unknown_arguments` policy,
   because the service receives only the list and the argument would have
@@ -328,8 +327,9 @@ class BulkWidgetInput(serializers.Serializer):
 ```
 
 The model sends `{"items": [...], "dry_run": true}`, and an invalid item comes
-back placing its errors at its index: keyed by index from Django REST framework
-3.18, and below it as a list with an empty entry for each valid item.
+back placing its errors at its index, as `items[1].price: ...`. Django REST
+framework keys them by index from 3.18 and lists them below it, with an empty
+entry for each valid item; the model reads the same line either way.
 
 ## Ordering
 
@@ -435,6 +435,62 @@ reserved even when a `filter_set` owns it: a registered channel pops the value a
 call time, so the FilterSet would never see it.)
 Requires `djangorestframework-services>=0.23`, which added the
 `build_offline_context(query_params=…)` seam.
+
+### On a list tool, a param shapes each row
+
+Every list tool returns a page, `{"items": [...], "page": 1, "totalPages": N,
+"hasNext": ...}`, but the serializer that reads a read-shaping param renders one
+row at a time and never sees the envelope. So a selection written against the
+documented shape, `{items{id, name}}`, asks each row for an `items` field it does
+not have. The toolset tells the model this in two places:
+
+- each `QueryParam` on a list tool has "On a paged result it applies to each item
+  in `items`, never to the page envelope (`items`, `page`, `totalPages`,
+  `hasNext`)." appended to its description, or as its description when it
+  declares none; a retrieve tool's param is left as declared;
+- the read-shaping line of the instructions the toolset derives says the same,
+  "On a tool that returns a page, they apply to each item in `items`, never to
+  the page itself.", when some list tool declares a `QueryParam`.
+
+An `instructions=` override replaces the derived block, and this line with it:
+an override written before this sentence existed does not gain it, so add the
+advice to your own text if your tools page and take a selection.
+
+### A selection the serializer rejects
+
+A read-shaping param is the one argument used **while the result is rendered**
+rather than while the call runs, so it is the one that can fail after the work
+is done. When the output serializer raises a `ValidationError` (or a
+`ServiceValidationError`) while rendering, and the model supplied a value for at
+least one of the tool's read-shaping params, the model gets a retry naming the
+argument:
+
+```text
+`query` was rejected while rendering the result: `items` field is not found. On a
+paged result it applies to each item in `items`, never to the page envelope
+(`items`, `page`, `totalPages`, `hasNext`).
+```
+
+The last sentence is there only on a list tool. With several params supplied,
+all of them are named, since the serializer does not say which one it refused.
+`exception_map=` / `translate_exception` sees the error first, as on the dispatch
+path.
+
+The same error **stays loud**, and ends the run as before, when nothing the model
+sent shaped the render: no read-shaping value supplied, an explicit `null`, or a
+value that came from a declared `default`. A retry cannot fix a serializer that
+fails on its own or a default that is wrong, and would hide the bug behind the
+retry budget. Only validation errors are converted; an `AttributeError` in a
+serializer is a bug whatever the model sent.
+
+!!! tip "Use strict selection on tools an agent calls"
+    This only works if the serializer says no. django-restql's default is
+    strict: an unknown field raises, and the model corrects itself in one retry.
+    A tolerant selection, one that drops fields it cannot find, turns the same
+    mistake into a page of empty rows, `"items": [{}, {}]`, which is a successful
+    result as far as anything downstream can tell. The toolset cannot tell that
+    apart from a real answer without knowing the param's grammar, so it does not
+    try.
 
 ## URL-derived values (route captures)
 
@@ -565,7 +621,8 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 
 | drf-services outcome | What the agent sees |
 | --- | --- |
-| `ServiceValidationError` (bad input) | `ModelRetry` with the field errors — the model self-corrects |
+| `ServiceValidationError` (bad input) | `ModelRetry` with the field errors, one `field: message` line each — the model self-corrects |
+| A read-shaping value the output serializer rejects while rendering | `ModelRetry` naming the argument — see [A selection the serializer rejects](#a-selection-the-serializer-rejects) |
 | `ActionUnavailable` (an `Affordance` condition not met) | `ToolFailed` with the reason followed by the rule's code — `The books are closed. (code: books_closed)`; see below |
 | `ServiceError` (business rule) | `ToolFailed` with the rule's own message — a failed result the model reads and reports |
 | Unresolved instance | `ToolFailed("not found")`, unless the spec sets `allow_none=True`, when the tool returns `None` |
