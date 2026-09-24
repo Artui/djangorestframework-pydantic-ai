@@ -6,6 +6,64 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A read-shaping value the output serializer rejects while rendering is now a
+  retry, not a dead run.** A `QueryParam` is the one argument used while the
+  result is rendered rather than while the call runs, and the render sat outside
+  the error handling, so strict django-restql refusing a selection (for example
+  `{items{id, name}}` on a list tool, written against the page envelope) ended the
+  run with a raw `ValidationError`. A `ValidationError` or `ServiceValidationError`
+  raised while rendering now reaches `exception_map` / `translate_exception` first,
+  as on the dispatch path, and otherwise becomes a `ModelRetry` naming the
+  argument:
+
+  ```text
+  `query` was rejected while rendering the result: `items` field is not found. On a
+  paged result it applies to each item in `items`, never to the page envelope
+  (`items`, `page`, `totalPages`, `hasNext`).
+  ```
+
+  The last sentence is added on a list tool only. With several read-shaping
+  values supplied, all of them are named, since the serializer does not say which
+  one it refused. A consumer's `render_output` override is covered too.
+
+  **It stays loud when nothing the model sent shaped the render**: no read-shaping
+  value supplied, an explicit `null`, or a value seeded from a declared `default`.
+  A retry cannot fix a serializer that fails on its own or a default that is
+  wrong, and would hide the bug behind the retry budget. Only validation errors
+  are converted; any other exception out of a serializer is a server bug whatever
+  the model sent.
+- **An explicit `null` for a read-shaping argument is treated as omitted.** The
+  declared `default` applies, and nothing reaches the query string without one.
+  `QueryParam` documents a `null` this way, but the value was forwarded and
+  stringified, so the serializer received the four characters `None`, which strict
+  django-restql refuses to parse.
+
+### Changed
+
+- **A validation retry reads as text instead of a Python repr.** The retry for a
+  `ServiceValidationError` or DRF `ValidationError` carried `str(exc.detail)`, for
+  example `{'name': [ErrorDetail(string='This field is required.', code='required')]}`.
+  It now carries one `path: message` line per error: `name: This field is
+  required.`, a nested field as `address.city: ...`, a list position as
+  `widgets[1].price: ...`. A message not about one argument (`non_field_errors`, a
+  bare string) is printed on its own, and the `code` is dropped. This changes the
+  text of every validation retry, on the dispatch path as well as the new render
+  path, so a test asserting the old repr needs updating.
+- **A list tool says what a read-shaping param applies to.** Each `QueryParam` on a
+  list tool has "On a paged result it applies to each item in `items`, never to the
+  page envelope (`items`, `page`, `totalPages`, `hasNext`)." appended to its
+  description, or as its description when it declares none. The derived
+  instructions' read-shaping line gains "On a tool that returns a page, they apply
+  to each item in `items`, never to the page itself." when some list tool declares
+  a `QueryParam`. The MCP transport carries the same sentence on its paged tools.
+
+  An `instructions=` override replaces the derived block, so it does not gain the
+  line: add the advice to your own text if your tools page and take a selection.
+  The parameter sentence rides the tool schema and reaches every consumer either
+  way.
+
 ## [0.31.0] — 2026-09-19
 
 ### Changed
