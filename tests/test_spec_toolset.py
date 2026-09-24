@@ -5051,11 +5051,14 @@ async def test_an_instructions_override_never_derives_at_all():
 # --- a read-shaping value the render rejects ----------------------------------
 #
 # A read-shaping param is the one caller input read while the output renders
-# rather than while the call dispatches: restql parses ``query`` inside the
-# output serializer's ``to_representation``. So a selection it rejects fails
-# after the dispatch arms have closed, and used to end the run with a raw DRF
-# ``ValidationError``. These pin what the model gets back instead, and the cases
-# where nothing it sent could have caused the error and the error stays loud.
+# rather than while the call dispatches: a ``fields`` or ``query`` selection is
+# parsed inside the output serializer's ``to_representation``. So a selection it
+# rejects fails after the dispatch arms have closed, and used to end the run with
+# a raw DRF ``ValidationError``. These pin what the model gets back instead, and
+# the cases where nothing it sent could have caused the error and the error stays
+# loud. The toolset never reads the value, so the producers are mixed on purpose:
+# real django-restql, the strict selector most likely to be in use, and a
+# serializer that parses its own ``fields`` and words its own refusal.
 
 
 class _StrictRestqlWidget(DynamicFieldsMixin, serializers.ModelSerializer):
@@ -5085,6 +5088,30 @@ def _restql_not_found(name: str) -> DRFValidationError:
     ``to_representation``, so a stand-in built on it describes a producer that
     exists rather than one the tests agree with by construction."""
     return DRFValidationError(f"`{name}` field is not found", code="not_found")
+
+
+class _OwnFieldsWidget(serializers.ModelSerializer):
+    """A selection with no library behind it: ``?fields=id,name``, parsed here.
+
+    Refuses an unknown name in its own words and with its own code, so a test
+    through it shows the retry carries whatever the serializer says rather than
+    anything shaped for django-restql.
+    """
+
+    class Meta:
+        model = Widget
+        fields = ["id", "name"]
+
+    def to_representation(self, instance: Any) -> Any:
+        data = super().to_representation(instance)
+        raw = self.context["request"].query_params.get("fields")
+        if not raw:
+            return data
+        wanted = [name.strip() for name in raw.split(",")]
+        for name in wanted:
+            if name not in data:
+                raise DRFValidationError(f"Unknown field `{name}`.", code="unknown_field")
+        return {name: data[name] for name in wanted}
 
 
 def _ordered_widgets(user):
@@ -5185,6 +5212,29 @@ def test_a_tool_that_does_not_page_is_not_told_about_a_page():
     assert retry.value.message == (
         "`query` was rejected while rendering the result: `bogus` field is not found."
     )
+
+
+@pytest.mark.django_db
+def test_a_selection_no_library_parses_is_retried_in_the_serializers_own_words():
+    """Nothing here is restql: a ``fields`` param, parsed by the serializer itself.
+
+    The retry names the param the model sent and then quotes the serializer
+    verbatim, full stop included and not doubled, which is the whole contract a
+    consumer's own selection relies on. A valid selection still shapes the rows.
+    """
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+    fields = (QueryParam("fields"),)
+
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(_paged_spec(_OwnFieldsWidget), user, {"fields": "items"}, query_params=fields)
+
+    assert retry.value.message == (
+        "`fields` was rejected while rendering the result: Unknown field `items`. "
+        + _SCOPE_DESCRIPTION
+    )
+    page = _dispatch(_paged_spec(_OwnFieldsWidget), user, {"fields": "name"}, query_params=fields)
+    assert page["items"] == [{"name": "a"}]
 
 
 @pytest.mark.django_db

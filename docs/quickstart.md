@@ -442,8 +442,8 @@ Requires `djangorestframework-services>=0.23`, which added the
 Every list tool returns a page, `{"items": [...], "page": 1, "totalPages": N,
 "hasNext": ...}`, but the serializer that reads a read-shaping param renders one
 row at a time and never sees the envelope. So a selection written against the
-documented shape, `{items{id, name}}`, asks each row for an `items` field it does
-not have. The toolset tells the model this in two places:
+documented shape, `fields=items` or django-restql's `{items{id, name}}`, asks
+each row for an `items` field it does not have. The toolset tells the model this in two places:
 
 - each `QueryParam` on a list tool has "On a paged result it applies to each item
   in `items`, never to the page envelope (`items`, `page`, `totalPages`,
@@ -467,11 +467,14 @@ least one of the tool's read-shaping params, the model gets a retry naming the
 argument:
 
 ```text
-`query` was rejected while rendering the result: `items` field is not found. On a
+`fields` was rejected while rendering the result: Unknown field `items`. On a
 paged result it applies to each item in `items`, never to the page envelope
 (`items`, `page`, `totalPages`, `hasNext`).
 ```
 
+What follows the colon is the serializer's own message, verbatim. The toolset
+never reads a param's value, so this works the same for a `fields` your own
+serializer parses, for django-restql's `query`, or for anything else that raises.
 The last sentence is there only on a list tool. With several params supplied,
 all of them are named, since the serializer does not say which one it refused.
 `exception_map=` / `translate_exception` sees the error first, as on the dispatch
@@ -485,8 +488,9 @@ retry budget. Only validation errors are converted; an `AttributeError` in a
 serializer is a bug whatever the model sent.
 
 !!! tip "Use strict selection on tools an agent calls"
-    This only works if the serializer says no. django-restql's default is
-    strict: an unknown field raises, and the model corrects itself in one retry.
+    This only works if the serializer says no. Make a name it does not know
+    raise a `ValidationError` (django-restql does by default), and the model
+    corrects itself in one retry.
     A tolerant selection, one that drops fields it cannot find, turns the same
     mistake into a page of empty rows, `"items": [{}, {}]`, which is a successful
     result as far as anything downstream can tell. The toolset cannot tell that

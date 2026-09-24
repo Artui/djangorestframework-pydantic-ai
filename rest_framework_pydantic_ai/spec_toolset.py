@@ -2001,7 +2001,7 @@ def _query_param_schema(query_param: QueryParam, *, paged: bool) -> dict[str, An
     """One ``QueryParam``'s property, told what it applies to when the tool pages.
 
     Every list selector here returns a page, and the declared description is
-    written by someone thinking of a row -- "restql field selection" -- while
+    written by someone thinking of a row -- "fields to return" -- while
     the model reads it beside a documented ``{"items": [...], ...}`` result. The
     scope sentence closes that gap at the parameter, where the model is choosing
     a value. Appended after the declared text, which stays first because it is
@@ -2304,12 +2304,12 @@ def _call_spec(
         )
     except (DRFValidationError, ServiceValidationError) as exc:
         # **A read-shaping param is the one caller input used while rendering**,
-        # not while dispatching -- a restql ``query`` is parsed by the output
-        # serializer's ``to_representation`` -- so a bad one fails here, after
-        # the ``try`` above has closed, and used to escape the run as a raw
-        # ``ValidationError``. Wrapped around the call rather than inside
-        # ``_render_output`` so a consumer's ``render_output`` override is
-        # covered too.
+        # not while dispatching -- a ``fields`` or ``query`` selection is read
+        # by the output serializer's ``to_representation`` -- so a bad one fails
+        # here, after the ``try`` above has closed, and used to escape the run
+        # as a raw ``ValidationError``. Wrapped around the call rather than
+        # inside ``_render_output`` so a consumer's ``render_output`` override
+        # is covered too.
         #
         # The consumer's map first, and its handler's value returned as-is,
         # exactly as on the dispatch path: one ``translate_exception`` should not
@@ -2505,9 +2505,9 @@ def _validation_detail_path(path: str, key: Any) -> str:
 def _render_rejection_message(names: Sequence[str], detail: Any, *, paged: bool) -> str:
     """The retry for a render the caller's read-shaping values broke.
 
-    For example ``"`query` was rejected while rendering the result: `items` field
-    is not found."`` Names the argument first, because the detail alone --
-    restql's own wording -- says nothing about *which* argument the model has to
+    For example ``"`fields` was rejected while rendering the result: Unknown
+    field `items`."`` Names the argument first, because the detail alone -- the
+    serializer's own wording -- says nothing about *which* argument the model has to
     change, and "while rendering the result" tells it the rest of the call was
     accepted.
 
@@ -2525,8 +2525,8 @@ def _render_rejection_message(names: Sequence[str], detail: Any, *, paged: bool)
     message = (
         f"{subject} was rejected while rendering the result: {_format_validation_detail(detail)}"
     )
-    # restql's messages carry no full stop and DRF's do; the sentence should end
-    # in exactly one either way.
+    # A serializer's message may or may not carry a full stop (DRF's own do,
+    # django-restql's do not); the sentence should end in exactly one either way.
     if not message.endswith((".", "!", "?")):
         message += "."
     if paged:
@@ -2654,11 +2654,11 @@ def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) 
 
     **An explicit ``None`` is omitted, not forwarded.** ``QueryParam`` documents
     it that way -- ``{"fields": null}`` is how a model says it chose not to fill
-    the param, and the ``default`` still applies -- and the stringifying above is
-    why it matters: forwarded, the null reached the serializer as the four
-    characters ``None``, which strict django-restql refuses to parse, ending a
-    run over an argument the model had declined to send. Popped either way, so
-    ``unknown_arguments`` never sees the key.
+    the param, and the ``default`` still applies -- and the stringifying above
+    is why it matters: forwarded, the null reached the serializer as the four
+    characters ``None``, which a strict selection parser refuses as malformed,
+    ending a run over an argument the model had declined to send. Popped either
+    way, so ``unknown_arguments`` never sees the key.
     """
     values: dict[str, Any] = {}
     for query_param in query_params:

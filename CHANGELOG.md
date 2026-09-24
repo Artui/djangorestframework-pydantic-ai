@@ -13,22 +13,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **A read-shaping value the output serializer rejects while rendering is now a
   retry, not a dead run.** A `QueryParam` is the one argument used while the
   result is rendered rather than while the call runs, and the render sat outside
-  the error handling, so strict django-restql refusing a selection (for example
-  `{items{id, name}}` on a list tool, written against the page envelope) ended the
-  run with a raw `ValidationError`. A `ValidationError` or `ServiceValidationError`
-  raised while rendering now reaches `exception_map` / `translate_exception` first,
-  as on the dispatch path, and otherwise becomes a `ModelRetry` naming the
-  argument:
+  the error handling, so a serializer refusing a selection ended the run with a
+  raw `ValidationError`. The likeliest case is a field selection written against
+  a list tool's page envelope, such as `fields=items` or django-restql's
+  `{items{id, name}}`. A `ValidationError` or `ServiceValidationError` raised
+  while rendering now reaches `exception_map` / `translate_exception` first, as on
+  the dispatch path, and otherwise becomes a `ModelRetry` naming the argument:
 
   ```text
-  `query` was rejected while rendering the result: `items` field is not found. On a
+  `fields` was rejected while rendering the result: Unknown field `items`. On a
   paged result it applies to each item in `items`, never to the page envelope
   (`items`, `page`, `totalPages`, `hasNext`).
   ```
 
-  The last sentence is added on a list tool only. With several read-shaping
-  values supplied, all of them are named ("`query` or `fields` was rejected"),
-  since the serializer does not say which one it refused. A consumer's `render_output` override is covered too.
+  What follows the colon is the serializer's own message. The toolset never reads
+  a `QueryParam`'s value, so nothing here depends on one selection library:
+  `fields`, `expand` and `query` are handled alike. The last sentence is added on
+  a list tool only. With several read-shaping values supplied, all of them are
+  named ("`fields` or `query` was rejected"), since the serializer does not say
+  which one it refused. A consumer's `render_output` override is covered too.
 
   **It stays loud when nothing the model sent shaped the render**: no read-shaping
   value supplied, an explicit `null`, or a value seeded from a declared `default`.
@@ -39,8 +42,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **An explicit `null` for a read-shaping argument is treated as omitted.** The
   declared `default` applies, and nothing reaches the query string without one.
   `QueryParam` documents a `null` this way, but the value was forwarded and
-  stringified, so the serializer received the four characters `None`, which strict
-  django-restql refuses to parse.
+  stringified, so the serializer received the four characters `None`, which a
+  selection parser refuses as malformed.
 
 ### Changed
 
