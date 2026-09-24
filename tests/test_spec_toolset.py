@@ -20,6 +20,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, connections
 from django.db.models import Q
 from django.test import RequestFactory
+from django_restql.mixins import DynamicFieldsMixin
 from pydantic_ai import Agent, ModelRetry, ToolFailed
 from pydantic_ai.messages import (
     ModelResponse,
@@ -32,6 +33,7 @@ from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.usage import RunUsage
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.request import Request
 from rest_framework_services import (
@@ -91,6 +93,16 @@ from tests.testapp.serializers import (
     AgentWidgetSerializer,
     WidgetInputSerializer,
     WidgetSerializer,
+)
+
+# Written out rather than imported: they are the text the model reads, and a
+# test comparing the module's constant to itself would pass whatever it said.
+_SCOPE_DESCRIPTION = (
+    "On a paged result it applies to each item in `items`, never to the page envelope "
+    "(`items`, `page`, `totalPages`, `hasNext`)."
+)
+_SCOPE_INSTRUCTION = (
+    "On a tool that returns a page, they apply to each item in `items`, never to the page itself."
 )
 
 # --- specs under test --------------------------------------------------------
@@ -299,7 +311,7 @@ def test_derive_instructions_matches_get_instructions_input():
             _BASE_INSTRUCTIONS,
             _LIST_INSTRUCTION,
             "- Some tools accept read-shaping parameters (`query`) that adjust the shape "
-            "of the returned data without filtering it.",
+            "of the returned data without filtering it. " + _SCOPE_INSTRUCTION,
         ]
     )
 
@@ -783,9 +795,9 @@ def test_an_invalid_item_is_a_retry_keyed_under_the_argument_by_its_index():
 @pytest.mark.django_db(transaction=True)
 async def test_the_model_reads_an_item_error_as_argument_index_and_field():
     """What the retry prompt actually carries, read off a real run rather than off
-    the exception: the argument, the item's index as a bare integer beside the
-    quoted field names, and the field's own message. The model corrects the one
-    item and the call goes through."""
+    the exception: one line naming the argument, the item's index and the field,
+    then the field's own message -- text, not the repr of DRF's ``ErrorDetail``
+    objects. The model corrects the one item and the call goes through."""
     user = await User.objects.acreate(username="u")
     toolset = SpecToolset({"create_widgets": bulk_spec()})
     agent = Agent(
@@ -807,8 +819,7 @@ async def test_the_model_reads_an_item_error_as_argument_index_and_field():
         if isinstance(part, RetryPromptPart)
     ]
     assert len(retries) == 1
-    assert "{'items': {1: {'price': [" in retries[0].content
-    assert "This field is required." in retries[0].content
+    assert retries[0].content == "items[1].price: This field is required."
     assert _tool_return(result).outcome == "success"
     assert await Widget.objects.filter(owner=user).acount() == 2
 
@@ -1102,14 +1113,20 @@ def _echo_list_spec(**kwargs):
 
 
 async def test_toolset_wide_query_params_appear_in_every_tool_schema():
+    """Both tools carry the param; only the one returning a page is told that it
+    applies to each item rather than to the envelope, after the declared text."""
     toolset = SpecToolset(
         {"list_widgets": list_spec(), "get_widget": retrieve_spec()},
         query_params=[QueryParam("fields", description="restql field selection")],
     )
     tools = await toolset.get_tools(None)
-    for name in ("list_widgets", "get_widget"):
-        props = tools[name].tool_def.parameters_json_schema["properties"]
-        assert props["fields"] == {"type": "string", "description": "restql field selection"}
+    list_props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
+    get_props = tools["get_widget"].tool_def.parameters_json_schema["properties"]
+    assert list_props["fields"] == {
+        "type": "string",
+        "description": "restql field selection " + _SCOPE_DESCRIPTION,
+    }
+    assert get_props["fields"] == {"type": "string", "description": "restql field selection"}
 
 
 async def test_per_tool_query_params_only_apply_to_that_tool():
@@ -1118,8 +1135,10 @@ async def test_per_tool_query_params_only_apply_to_that_tool():
         tool_query_params={"list_widgets": [QueryParam("expand", type="boolean")]},
     )
     tools = await toolset.get_tools(None)
+    # No declared description, so the scope sentence is the whole of it.
     assert tools["list_widgets"].tool_def.parameters_json_schema["properties"]["expand"] == {
-        "type": "boolean"
+        "type": "boolean",
+        "description": _SCOPE_DESCRIPTION,
     }
     get_widget_props = tools["get_widget"].tool_def.parameters_json_schema.get("properties", {})
     assert "expand" not in get_widget_props
@@ -1133,7 +1152,7 @@ async def test_per_tool_query_param_overrides_toolset_wide_by_name():
     )
     tools = await toolset.get_tools(None)
     props = tools["list_widgets"].tool_def.parameters_json_schema["properties"]
-    assert props["fields"]["description"] == "specific"
+    assert props["fields"]["description"] == "specific " + _SCOPE_DESCRIPTION
 
 
 async def test_query_param_default_appears_in_schema():
@@ -1195,6 +1214,27 @@ def test_query_param_omitted_without_default_seeds_nothing():
     Widget.objects.create(name="a", price=1, owner=user)
     result = _dispatch(_echo_list_spec(), user, {}, query_params=(QueryParam("fields"),))
     assert _rows(result) == [{"name": "a", "fields": None}]
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("declared", "seen"),
+    [(QueryParam("fields", default="id"), "id"), (QueryParam("fields"), None)],
+    ids=["default applies", "no default"],
+)
+def test_an_explicit_null_query_param_is_treated_as_omitted(declared, seen):
+    """``{"fields": null}`` is a model declining to fill the param. It must not
+    reach the serializer as the string ``"None"``, and a default still applies."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    result = _dispatch(
+        _echo_list_spec(),
+        user,
+        {"fields": None},
+        query_params=(declared,),
+        unknown_arguments=UnknownArguments.REJECT,
+    )
+    assert _rows(result) == [{"name": "a", "fields": seen}]
 
 
 @pytest.mark.django_db
@@ -5006,3 +5046,457 @@ async def test_an_instructions_override_never_derives_at_all():
 
     assert await toolset.get_instructions(None) == "just do it"
     assert "_derived_instructions" not in toolset.__dict__
+
+
+# --- a read-shaping value the render rejects ----------------------------------
+#
+# A read-shaping param is the one caller input read while the output renders
+# rather than while the call dispatches: a ``fields`` or ``query`` selection is
+# parsed inside the output serializer's ``to_representation``. So a selection it
+# rejects fails after the dispatch arms have closed, and used to end the run with
+# a raw DRF ``ValidationError``. These pin what the model gets back instead, and
+# the cases where nothing it sent could have caused the error and the error stays
+# loud. The toolset never reads the value, so the producers are mixed on purpose:
+# real django-restql, the strict selector most likely to be in use, and a
+# serializer that parses its own ``fields`` and words its own refusal.
+
+
+class _StrictRestqlWidget(DynamicFieldsMixin, serializers.ModelSerializer):
+    """Real django-restql at its upstream default: an unknown field raises."""
+
+    class Meta:
+        model = Widget
+        fields = ["id", "name"]
+
+
+def _rejecting(exc: BaseException) -> type[serializers.Serializer]:
+    """A serializer that refuses to render, whatever the query string holds.
+
+    For the cases about *who* shaped the render, where the serializer has to
+    fail with nothing supplied as well -- which real restql, correctly, does not.
+    """
+
+    class Rejecting(serializers.Serializer):
+        def to_representation(self, instance: Any) -> Any:
+            raise exc
+
+    return Rejecting
+
+
+def _restql_not_found(name: str) -> DRFValidationError:
+    """Exactly what django-restql 0.18.0's ``is_field_found`` raises from
+    ``to_representation``, so a stand-in built on it describes a producer that
+    exists rather than one the tests agree with by construction."""
+    return DRFValidationError(f"`{name}` field is not found", code="not_found")
+
+
+class _OwnFieldsWidget(serializers.ModelSerializer):
+    """A selection with no library behind it: ``?fields=id,name``, parsed here.
+
+    Refuses an unknown name in its own words and with its own code, so a test
+    through it shows the retry carries whatever the serializer says rather than
+    anything shaped for django-restql.
+    """
+
+    class Meta:
+        model = Widget
+        fields = ["id", "name"]
+
+    def to_representation(self, instance: Any) -> Any:
+        data = super().to_representation(instance)
+        raw = self.context["request"].query_params.get("fields")
+        if not raw:
+            return data
+        wanted = [name.strip() for name in raw.split(",")]
+        for name in wanted:
+            if name not in data:
+                raise DRFValidationError(f"Unknown field `{name}`.", code="unknown_field")
+        return {name: data[name] for name in wanted}
+
+
+def _ordered_widgets(user):
+    """The acting user's widgets, in a stable order a page can be asserted on."""
+    return Widget.objects.filter(owner=user).order_by("pk")
+
+
+def _paged_spec(serializer: type) -> SelectorSpec:
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=_ordered_widgets,
+        output_serializer=serializer,
+        permission_classes=[AllowAny],
+    )
+
+
+def _single_spec(serializer: type) -> SelectorSpec:
+    return SelectorSpec(
+        kind=SelectorKind.RETRIEVE,
+        selector=get_widget,
+        output_serializer=serializer,
+        permission_classes=[AllowAny],
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_selection_written_against_the_envelope_is_one_retry_then_the_page():
+    """The reported case, through a real run and real restql: ``{items{id, name}}``
+    matches the documented page shape exactly, and restql reads it against one
+    row. The model is told which argument, why, and what it applies to, and its
+    second call gets the page."""
+    user = await User.objects.acreate(username="alice")
+    first = await Widget.objects.acreate(owner=user, name="a")
+    second = await Widget.objects.acreate(owner=user, name="b")
+    queries = iter(["{items{id, name}}", "{id, name}"])
+
+    def model(messages: list[Any], info: Any) -> ModelResponse:
+        if any(isinstance(part, ToolReturnPart) for part in messages[-1].parts):
+            return ModelResponse(parts=[TextPart("done")])
+        return ModelResponse(parts=[ToolCallPart("list_widgets", {"query": next(queries)})])
+
+    toolset = SpecToolset(
+        {"list_widgets": _paged_spec(_StrictRestqlWidget)}, query_params=[QueryParam("query")]
+    )
+    result = await Agent(FunctionModel(model), deps_type=AgentDeps, toolsets=[toolset]).run(
+        "go", deps=AgentDeps(user=user)
+    )
+
+    retries = [
+        part
+        for message in result.all_messages()
+        for part in message.parts
+        if isinstance(part, RetryPromptPart)
+    ]
+    assert [retry.content for retry in retries] == [
+        "`query` was rejected while rendering the result: `items` field is not found. "
+        + _SCOPE_DESCRIPTION
+    ]
+    page = _tool_return(result).content
+    assert page["items"] == [{"id": first.pk, "name": "a"}, {"id": second.pk, "name": "b"}]
+    assert page["hasNext"] is False
+
+
+@pytest.mark.django_db
+def test_an_unknown_row_field_is_a_retry_not_a_dead_run():
+    """Not specific to the envelope: any field strict restql cannot find."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(
+            _paged_spec(_StrictRestqlWidget),
+            user,
+            {"query": "{name, bogus}"},
+            query_params=(QueryParam("query"),),
+        )
+
+    assert retry.value.message == (
+        "`query` was rejected while rendering the result: `bogus` field is not found. "
+        + _SCOPE_DESCRIPTION
+    )
+
+
+@pytest.mark.django_db
+def test_a_tool_that_does_not_page_is_not_told_about_a_page():
+    """Retrieve renders one row and has no envelope to misread."""
+    user = User.objects.create(username="u")
+    widget = Widget.objects.create(owner=user, name="a")
+
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(
+            _single_spec(_StrictRestqlWidget),
+            user,
+            {"pk": widget.pk, "query": "{bogus}"},
+            query_params=(QueryParam("query"),),
+        )
+
+    assert retry.value.message == (
+        "`query` was rejected while rendering the result: `bogus` field is not found."
+    )
+
+
+@pytest.mark.django_db
+def test_a_selection_no_library_parses_is_retried_in_the_serializers_own_words():
+    """Nothing here is restql: a ``fields`` param, parsed by the serializer itself.
+
+    The retry names the param the model sent and then quotes the serializer
+    verbatim, full stop included and not doubled, which is the whole contract a
+    consumer's own selection relies on. A valid selection still shapes the rows.
+    """
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+    fields = (QueryParam("fields"),)
+
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(_paged_spec(_OwnFieldsWidget), user, {"fields": "items"}, query_params=fields)
+
+    assert retry.value.message == (
+        "`fields` was rejected while rendering the result: Unknown field `items`. "
+        + _SCOPE_DESCRIPTION
+    )
+    page = _dispatch(_paged_spec(_OwnFieldsWidget), user, {"fields": "name"}, query_params=fields)
+    assert page["items"] == [{"name": "a"}]
+
+
+@pytest.mark.django_db
+def test_render_error_with_no_query_param_supplied_still_raises():
+    """Nothing the model sent shaped this render, so nothing it could send would
+    change it: a retry would spend the budget on a server bug and hide it."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+
+    with pytest.raises(DRFValidationError, match="`bogus` field is not found"):
+        _dispatch(
+            _paged_spec(_rejecting(_restql_not_found("bogus"))),
+            user,
+            {},
+            query_params=(QueryParam("query"),),
+        )
+
+
+@pytest.mark.django_db
+def test_render_error_from_a_seeded_default_still_raises():
+    """A default is seeded when the model omits the argument, so after the pop it
+    looks exactly like a value the model sent. It is configuration, and a bad one
+    has to stay loud. Real restql, so the default is the only thing wrong."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+
+    with pytest.raises(DRFValidationError, match="`bogus` field is not found"):
+        _dispatch(
+            _paged_spec(_StrictRestqlWidget),
+            user,
+            {},
+            query_params=(QueryParam("query", default="{name, bogus}"),),
+        )
+
+
+@pytest.mark.django_db
+def test_an_explicit_null_selection_renders_every_field():
+    """Real restql: a forwarded null arrived as ``?query=None``, which it cannot
+    parse, so a model declining the param ended the run."""
+    user = User.objects.create(username="u")
+    widget = Widget.objects.create(owner=user, name="a")
+
+    result = _dispatch(
+        _paged_spec(_StrictRestqlWidget),
+        user,
+        {"query": None},
+        query_params=(QueryParam("query"),),
+    )
+
+    assert _rows(result) == [{"id": widget.pk, "name": "a"}]
+
+
+@pytest.mark.django_db
+def test_render_error_with_an_explicit_null_still_raises():
+    """``{"query": null}`` is how a model says it chose not to fill the param."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+
+    with pytest.raises(DRFValidationError, match="`bogus` field is not found"):
+        _dispatch(
+            _paged_spec(_rejecting(_restql_not_found("bogus"))),
+            user,
+            {"query": None},
+            query_params=(QueryParam("query"),),
+        )
+
+
+@pytest.mark.django_db
+def test_a_render_error_that_is_not_a_validation_error_stays_loud():
+    """An ``AttributeError`` in a serializer is a server bug whatever was sent."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+
+    with pytest.raises(AttributeError, match="no such attribute"):
+        _dispatch(
+            _paged_spec(_rejecting(AttributeError("no such attribute"))),
+            user,
+            {"query": "{name}"},
+            query_params=(QueryParam("query"),),
+        )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "args", [{"query": "{bogus}"}, {}], ids=["query supplied", "nothing supplied"]
+)
+def test_translate_exception_sees_a_render_error_before_the_default_arm(args):
+    """The consumer's map runs first on this path as on the dispatch path, and its
+    handler's value is the tool's result as-is -- whether or not the model shaped
+    the render, because the map is the consumer's decision, not the default's."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+
+    result = _dispatch(
+        _paged_spec(_rejecting(_restql_not_found("bogus"))),
+        user,
+        args,
+        query_params=(QueryParam("query"),),
+        toolset_kwargs={
+            "exception_map": {DRFValidationError: lambda exc: {"translated": exc.detail[0]}}
+        },
+    )
+
+    assert result == {"translated": "`bogus` field is not found"}
+
+
+@pytest.mark.django_db
+def test_a_render_output_override_is_covered_too():
+    """The ``try`` holds the call to the seam, not the default behind it, so a
+    consumer rendering its own way gets the same containment -- here with a
+    service validation error, the other type the arm takes."""
+
+    class OwnRender(SpecToolset):
+        def render_output(self, spec: Any, value: Any, *, ctx: Any, **kwargs: Any) -> Any:
+            raise ServiceValidationError("the selection names no field this tool has")
+
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+    spec = _paged_spec(WidgetSerializer)
+    toolset = OwnRender({"list_widgets": spec}, query_params=[QueryParam("query")])
+
+    with pytest.raises(ModelRetry) as retry:
+        toolset._call_spec(
+            spec,
+            user,
+            {"query": "{name}"},
+            ctx=ctx_for(user),
+            query_params=(QueryParam("query"),),
+        )
+
+    assert retry.value.message == (
+        "`query` was rejected while rendering the result: the selection names no field "
+        "this tool has. " + _SCOPE_DESCRIPTION
+    )
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("args", "subject"),
+    [
+        ({"query": "{bogus}", "fields": "bogus"}, "`query` or `fields` was"),
+        (
+            {"query": "{bogus}", "fields": "bogus", "expand": "true"},
+            "`query`, `fields` or `expand` was",
+        ),
+    ],
+    ids=["two", "three"],
+)
+def test_several_supplied_values_are_all_named(args, subject):
+    """The serializer does not say which one it refused, so singling one out
+    would be a guess presented as a fact. Declaration order, so the sentence
+    reads the same on every call."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(owner=user, name="a")
+
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(
+            _paged_spec(_rejecting(_restql_not_found("bogus"))),
+            user,
+            args,
+            query_params=(QueryParam("query"), QueryParam("fields"), QueryParam("expand")),
+        )
+
+    assert retry.value.message == (
+        f"{subject} rejected while rendering the result: `bogus` field is not found. "
+        + _SCOPE_DESCRIPTION
+    )
+
+
+@pytest.mark.django_db
+def test_a_detail_that_ends_a_sentence_is_not_given_a_second_full_stop():
+    """restql's messages carry none and DRF's do; the retry reads right either way."""
+    user = User.objects.create(username="u")
+    widget = Widget.objects.create(owner=user, name="a")
+
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(
+            _single_spec(_rejecting(DRFValidationError({"name": ["Not selectable."]}))),
+            user,
+            {"pk": widget.pk, "fields": "name"},
+            query_params=(QueryParam("fields"),),
+        )
+
+    assert retry.value.message == (
+        "`fields` was rejected while rendering the result: name: Not selectable."
+    )
+
+
+# --- the scope sentence in the instructions -----------------------------------
+
+
+async def test_the_read_shaping_line_says_what_a_param_applies_to_on_a_page():
+    toolset = SpecToolset({"list": list_spec()}, query_params=[QueryParam("query")])
+
+    instructions = await toolset.get_instructions(None)
+
+    assert (
+        "- Some tools accept read-shaping parameters (`query`) that adjust the shape of the "
+        "returned data without filtering it. " + _SCOPE_INSTRUCTION
+    ) in instructions
+
+
+async def test_the_scope_sentence_needs_a_list_tool_that_declares_a_query_param():
+    """A list tool and a ``QueryParam`` both present is not enough: declared only
+    on a retrieve tool, the param never meets a page, and the block adds a line
+    only when some tool can act on it."""
+    toolset = SpecToolset(
+        {"list": list_spec(), "get": retrieve_spec()},
+        tool_query_params={"get": [QueryParam("fields")]},
+    )
+
+    instructions = await toolset.get_instructions(None)
+
+    assert "read-shaping parameters (`fields`)" in instructions
+    assert _SCOPE_INSTRUCTION not in instructions
+
+
+# --- validation details read as text ------------------------------------------
+
+
+def _raises(exc: BaseException):
+    def service():
+        raise exc
+
+    return ServiceSpec(service=service, atomic=False)
+
+
+@pytest.mark.parametrize(
+    ("detail", "expected"),
+    [
+        (
+            {"name": ["This field is required."], "price": ["A valid integer is required."]},
+            "name: This field is required.\nprice: A valid integer is required.",
+        ),
+        (["First problem.", "Second problem."], "First problem.\nSecond problem."),
+        (
+            {"address": {"city": ["This field is required."], "zip": ["Too long.", "Digits."]}},
+            "address.city: This field is required.\naddress.zip: Too long.\naddress.zip: Digits.",
+        ),
+        (
+            {"non_field_errors": ["The fields name, owner must make a unique set."]},
+            "The fields name, owner must make a unique set.",
+        ),
+        ({"tags": {0: ["Not a valid string."]}}, "tags[0]: Not a valid string."),
+        ([{}, {"name": ["This field is required."]}], "[1].name: This field is required."),
+        ("Just a sentence.", "Just a sentence."),
+    ],
+    ids=["dict", "list", "nested dict", "non-field", "positional key", "rows", "string"],
+)
+def test_a_validation_retry_reads_as_text_not_a_repr(detail, expected):
+    """``str`` of a DRF detail is the repr of its ``ErrorDetail`` objects; the
+    model gets one ``path: message`` line per message instead, with the ``code``
+    left out and DRF's non-field key not mistaken for an argument's name."""
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(_raises(DRFValidationError(detail)), object(), {})
+
+    assert retry.value.message == expected
+
+
+def test_a_service_validation_error_reads_the_same_way():
+    """``ServiceValidationError`` carries the same shapes, un-coerced."""
+    with pytest.raises(ModelRetry) as retry:
+        _dispatch(_raises(ServiceValidationError({"price": ["Must be positive."]})), object(), {})
+
+    assert retry.value.message == "price: Must be positive."

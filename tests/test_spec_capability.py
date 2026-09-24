@@ -259,7 +259,9 @@ async def test_a_bound_forwards_all_the_way_to_what_the_model_is_told():
     schema = tools["list"].tool_def.parameters_json_schema["properties"]
 
     assert schema["limit"]["maximum"] == 50
-    assert schema["query"]["description"] == "field selection"
+    # The declared text leads; a list tool appends what the param applies to on
+    # a page, which the toolset's own tests pin word for word.
+    assert schema["query"]["description"].startswith("field selection ")
 
 
 # --- agent-run integration ---------------------------------------------------

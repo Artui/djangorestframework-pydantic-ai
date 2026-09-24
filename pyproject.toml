@@ -126,6 +126,10 @@ dev = [
     # too, and two different windows on one distribution reads as a disagreement
     # about which is the real claim.
     "pydantic-ai-slim>=2.16,<3",
+    # The real read-shaping serializer, for the tests that prove a selection it
+    # rejects while rendering comes back to the model as a retry. A stand-in
+    # alone would only prove agreement with whatever the stand-in raises.
+    "django-restql>=0.18",
 ]
 docs = [
     "mkdocs>=1.6",
@@ -138,6 +142,15 @@ DJANGO_SETTINGS_MODULE = "tests.conftest_settings"
 asyncio_mode = "auto"
 addopts = "--cov=rest_framework_pydantic_ai --cov-report=term-missing --cov-fail-under=100"
 testpaths = ["tests"]
+# django-restql's parser dependency, pypeg2, writes regexes with invalid escape
+# sequences, which the compiler reports the first time it byte-compiles the
+# module: a SyntaxWarning from Python 3.12, a DeprecationWarning before. A
+# compile-time warning is attributed to the file's path rather than to a module
+# name, so the pattern matches the path -- a plain `pypeg2` never fires.
+filterwarnings = [
+    'ignore::SyntaxWarning:.*[/\\]pypeg2[/\\]',
+    'ignore::DeprecationWarning:.*[/\\]pypeg2[/\\]',
+]
 
 [tool.coverage.run]
 branch = true
@@ -200,7 +213,7 @@ root = ["./rest_framework_pydantic_ai"]
 # rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.31.0"
+current_version = "0.32.0"
 allow_dirty = false
 commit = false
 tag = false

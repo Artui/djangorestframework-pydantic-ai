@@ -49,6 +49,7 @@ from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
 from pydantic_core import SchemaValidator, core_schema
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.exceptions import ValidationError as DRFValidationError
+from rest_framework.settings import api_settings
 from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
     DEFAULT_PAGE_SIZE,
@@ -1679,6 +1680,30 @@ Ours is a model reading a tool's output schema, so the sentence is the per-field
 half of ``_HANDLE_INSTRUCTION`` — same advice, at the field that needs it.
 """
 
+_PAGED_QUERY_PARAM_SCOPE = (
+    "On a paged result it applies to each item in `items`, never to the page envelope "
+    "(`items`, `page`, `totalPages`, `hasNext`)."
+)
+"""What a read-shaping param applies to on a tool that returns a page.
+
+Appended to each ``QueryParam``'s description on a list tool, and to the retry a
+render-time rejection on one produces. The envelope is the likeliest target for
+a bad selection because it is exactly the shape the tool documents returning --
+``{items{id, name}}`` is a natural reading of it -- while the serializer that
+reads the param only ever sees one row. Worded here and not in drf-services for
+the reason ``_HANDLE_DESCRIPTION`` gives: what a reader should be told depends
+on the reader. The MCP transport carries the same sentence as its own copy.
+"""
+
+_PAGED_QUERY_PARAM_INSTRUCTION = (
+    "On a tool that returns a page, they apply to each item in `items`, never to the page itself."
+)
+"""The instructions-block half of ``_PAGED_QUERY_PARAM_SCOPE``.
+
+Added to the read-shaping line only when some list tool declares a ``QueryParam``
+-- the block's rule that a line appears only when some tool can act on it.
+"""
+
 
 _UNAVAILABLE_INSTRUCTION = (
     "- These operations exist but cannot be performed right now, so they are not among your "
@@ -1778,10 +1803,18 @@ def _derive_instructions(
     query_param_names = sorted({qp.name for params in tool_query_params.values() for qp in params})
     if query_param_names:
         joined = ", ".join(f"`{name}`" for name in query_param_names)
-        lines.append(
+        line = (
             f"- Some tools accept read-shaping parameters ({joined}) that adjust the shape "
             "of the returned data without filtering it."
         )
+        # Keyed on a list tool *declaring* one, not on a list tool and a
+        # ``QueryParam`` both being present: a toolset whose only read-shaping
+        # param is on a retrieve tool returns no page for it to be misread against.
+        if any(
+            _is_list_selector(spec) and tool_query_params.get(name) for name, spec in specs.items()
+        ):
+            line = f"{line} {_PAGED_QUERY_PARAM_INSTRUCTION}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -1940,14 +1973,15 @@ def _input_schema(
     """
     schema = cast("dict[str, Any]", spec_to_json_schema(spec, phase="input", registry=registry))
     extra: dict[str, Any] = {}
-    if _is_list_selector(spec):
+    paged = _is_list_selector(spec)
+    if paged:
         extra.update(_LIST_PARAM_SCHEMA)
         if max_page_size is not None:
             # Advertised as well as clamped: a schema with no ``maximum`` invites
             # a request for 100 000 rows, and telling the model is cheaper than
             # correcting it.
             extra["limit"] = {**_LIST_PARAM_SCHEMA["limit"], "maximum": max_page_size}
-    extra.update({qp.name: qp.json_schema() for qp in query_params})
+    extra.update({qp.name: _query_param_schema(qp, paged=paged) for qp in query_params})
     extra.update({uk.name: uk.json_schema() for uk in url_kwargs})
     required: list[str] = list(schema.get("required", []))
     required.extend(uk.name for uk in url_kwargs if uk.required and uk.name not in required)
@@ -1961,6 +1995,26 @@ def _input_schema(
     if required:
         merged["required"] = required
     return merged
+
+
+def _query_param_schema(query_param: QueryParam, *, paged: bool) -> dict[str, Any]:
+    """One ``QueryParam``'s property, told what it applies to when the tool pages.
+
+    Every list selector here returns a page, and the declared description is
+    written by someone thinking of a row -- "fields to return" -- while
+    the model reads it beside a documented ``{"items": [...], ...}`` result. The
+    scope sentence closes that gap at the parameter, where the model is choosing
+    a value. Appended after the declared text, which stays first because it is
+    the part that says what the param *is*; with no declared text it is the
+    whole description.
+    """
+    schema = query_param.json_schema()
+    if paged:
+        declared = schema.get("description")
+        schema["description"] = (
+            f"{declared} {_PAGED_QUERY_PARAM_SCOPE}" if declared else _PAGED_QUERY_PARAM_SCOPE
+        )
+    return schema
 
 
 def _is_list_selector(spec: Spec) -> bool:
@@ -2086,6 +2140,14 @@ def _call_spec(
     extras_for: _ExtrasBuilder = output_extras or _output_extras
     bound: _ResultBounder = enforce_result_bytes or _enforce_result_bytes
     page_args = _pop_pagination(spec, args, registry=json_schema_registry)
+    # **Read before the pop, because the pop erases the answer.** It seeds a
+    # declared ``default`` for every name the caller left out, so afterwards a
+    # value nobody sent is indistinguishable from one the model chose. The render
+    # arm below needs exactly that distinction: a default that breaks the render
+    # is a configuration bug and has to stay loud, while a value the model sent
+    # is something it can correct. An explicit ``None`` counts as omitted, which
+    # is how ``QueryParam``'s own contract says a transport reads a null.
+    supplied_query_params = _supplied_query_params(query_params, args)
     # Both channels pop before dispatch so their values never reach the spec as
     # inputs, where ``unknown_arguments`` (REJECT by default) would flag them.
     # That is what makes the provider-only case work: a ``project_pk`` a scoping
@@ -2155,8 +2217,9 @@ def _call_spec(
             # ``ServiceValidationError`` is a ``ServiceError`` subclass, so it
             # must be matched here, before the business-error case below. Both
             # mean "the arguments were wrong", so the model retries with the
-            # detail.
-            raise ModelRetry(str(exc.detail)) from exc
+            # detail -- flattened to text, because ``str`` of a DRF detail is the
+            # Python repr of its ``ErrorDetail`` objects.
+            raise ModelRetry(_format_validation_detail(exc.detail)) from exc
         if isinstance(exc, AdditionalInputRequired):
             # **Must precede the ``ServiceError`` case below** — this is a
             # subclass of it, and the generic handler would report a request for
@@ -2217,22 +2280,62 @@ def _call_spec(
         )
         value = page.items
     many = result.kind == "list"
-    rendered = render(
-        spec,
-        value,
-        projection=projection,
-        many=many,
-        request=context.request,
-        view=context.view,
-        # **The carrier, not the three fields read above.** ``result.kind`` and
-        # ``result.value`` were all this function ever took off the dispatch, so
-        # ``service_result`` (an upsert's ``created``), ``instance`` (the
-        # pre-mutation target) and ``data`` (the validated input) reached no seam
-        # at all -- and ``output_extras`` documents itself as the escape hatch for
-        # exactly the first of those. Handing over the whole result closes the
-        # three together and costs nothing: it is already in scope.
-        extras=extras_for(spec, value, many=many, dispatch_result=result),
-    )
+    # **The carrier, not the three fields read above.** ``result.kind`` and
+    # ``result.value`` were all this function ever took off the dispatch, so
+    # ``service_result`` (an upsert's ``created``), ``instance`` (the
+    # pre-mutation target) and ``data`` (the validated input) reached no seam at
+    # all -- and ``output_extras`` documents itself as the escape hatch for
+    # exactly the first of those. Handing over the whole result closes the three
+    # together and costs nothing: it is already in scope.
+    #
+    # Built ahead of the render rather than as its argument so the ``try`` below
+    # holds the render and nothing else. Nothing here reads the query string,
+    # so an error out of it is never the caller's to correct.
+    extras = extras_for(spec, value, many=many, dispatch_result=result)
+    try:
+        rendered = render(
+            spec,
+            value,
+            projection=projection,
+            many=many,
+            request=context.request,
+            view=context.view,
+            extras=extras,
+        )
+    except (DRFValidationError, ServiceValidationError) as exc:
+        # **A read-shaping param is the one caller input used while rendering**,
+        # not while dispatching -- a ``fields`` or ``query`` selection is read
+        # by the output serializer's ``to_representation`` -- so a bad one fails
+        # here, after the ``try`` above has closed, and used to escape the run
+        # as a raw ``ValidationError``. Wrapped around the call rather than
+        # inside ``_render_output`` so a consumer's ``render_output`` override
+        # is covered too.
+        #
+        # The consumer's map first, and its handler's value returned as-is,
+        # exactly as on the dispatch path: one ``translate_exception`` should not
+        # have to know which half of the call an error came from.
+        handler = translate_exception(exc) if translate_exception is not None else None
+        if handler is not None:
+            return handler(exc)
+        # **Only when the caller shaped the render.** With no read-shaping value
+        # sent, nothing the model could change would change the outcome -- a
+        # serializer that raises unprompted, or a declared default it rejects --
+        # so a retry would spend the budget on a server bug and hide it.
+        # Validation errors only, for the same reason: an ``AttributeError`` in
+        # a serializer is a server bug whatever the caller sent.
+        #
+        # One arc to coverage, and its parts live in how the names were
+        # gathered, so what holds each is named here. Deleting this condition
+        # fails ``test_render_error_with_no_query_param_supplied_still_raises``,
+        # ``test_render_error_from_a_seeded_default_still_raises`` and
+        # ``test_render_error_with_an_explicit_null_still_raises``; gathering the
+        # names after the pop fails the second alone, and counting a null as
+        # supplied the third alone.
+        if not supplied_query_params:
+            raise
+        raise ModelRetry(
+            _render_rejection_message(supplied_query_params, exc.detail, paged=page is not None)
+        ) from exc
     if page is not None:
         # **After the render, never before.** The projection lands on the rows;
         # ``items`` / ``page`` / ``totalPages`` / ``hasNext`` are the envelope's
@@ -2344,6 +2447,93 @@ def _refusal_message(exc: ActionUnavailable) -> str:
     return f"{exc.message} (code: {exc.code})"
 
 
+def _format_validation_detail(detail: Any) -> str:
+    """A DRF or service validation detail as text a model can act on.
+
+    ``str(exc.detail)`` is what the retry carried before, and for a DRF error that
+    is the Python repr of its ``ErrorDetail`` objects --
+    ``{'name': [ErrorDetail(string='This field is required.', code='required')]}``
+    -- which spends the model's attention on a class name and a ``code`` it has no
+    use for, around the one sentence it needs.
+
+    One line per message, each prefixed with the path to the argument it is about:
+    ``name: This field is required.``, a nested serializer's field as
+    ``address.city: ...``, a position in a list as ``tags[0]: ...``. A message not
+    about any one argument -- a bare string, a list of strings, or DRF's
+    ``non_field_errors`` -- is the line on its own, because printing that key
+    would read as the name of an argument to fix. The ``code`` is dropped: it is
+    for programs, and a program reads it off the exception in
+    [`translate_exception`][rest_framework_pydantic_ai.SpecToolset.translate_exception].
+    """
+    return "\n".join(_validation_detail_lines(detail, path=""))
+
+
+def _validation_detail_lines(detail: Any, *, path: str) -> Iterator[str]:
+    """Walk a detail depth-first, yielding ``path: message`` for every leaf."""
+    if isinstance(detail, Mapping):
+        for key, value in detail.items():
+            yield from _validation_detail_lines(value, path=_validation_detail_path(path, key))
+    elif isinstance(detail, list | tuple):
+        for index, value in enumerate(detail):
+            # A message in a list belongs to the list's own path -- ``name: [a, b]``
+            # is two messages about ``name`` -- while a nested structure is one
+            # entry of several (a ``many=True`` serializer's rows, which DRF
+            # aligns by position with ``{}`` for a valid one) and needs its
+            # position to be found again.
+            nested = isinstance(value, Mapping | list | tuple)
+            yield from _validation_detail_lines(
+                value, path=_validation_detail_path(path, index) if nested else path
+            )
+    else:
+        yield f"{path}: {detail}" if path else str(detail)
+
+
+def _validation_detail_path(path: str, key: Any) -> str:
+    """Extend ``path`` by one step: ``[i]`` for a position, ``.name`` for a field.
+
+    An ``int`` key is a position whether it came from a list or from the dict a
+    DRF ``ListField`` / ``DictField`` keys its child errors by. The non-field key
+    adds nothing, so its messages print against the object that holds them.
+    """
+    if isinstance(key, int):
+        return f"{path}[{key}]"
+    if key == api_settings.NON_FIELD_ERRORS_KEY:
+        return path
+    return f"{path}.{key}" if path else str(key)
+
+
+def _render_rejection_message(names: Sequence[str], detail: Any, *, paged: bool) -> str:
+    """The retry for a render the caller's read-shaping values broke.
+
+    For example ``"`fields` was rejected while rendering the result: Unknown
+    field `items`."`` Names the argument first, because the detail alone -- the
+    serializer's own wording -- says nothing about *which* argument the model has to
+    change, and "while rendering the result" tells it the rest of the call was
+    accepted.
+
+    **Several supplied names are all named, joined with "or".** The serializer
+    does not say which one it refused, so singling one out would be a guess
+    presented as a fact, and "and ... were" would claim all of them were. The
+    MCP transport words it the same way.
+
+    On a paged tool the scope sentence follows, because the likeliest way to
+    write a bad selection there is against the page envelope, which is exactly
+    the shape the tool's result documents -- saying so turns that into one retry.
+    """
+    quoted = [f"`{name}`" for name in names]
+    subject = quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} or {quoted[-1]}"
+    message = (
+        f"{subject} was rejected while rendering the result: {_format_validation_detail(detail)}"
+    )
+    # A serializer's message may or may not carry a full stop (DRF's own do,
+    # django-restql's do not); the sentence should end in exactly one either way.
+    if not message.endswith((".", "!", "?")):
+        message += "."
+    if paged:
+        message = f"{message} {_PAGED_QUERY_PARAM_SCOPE}"
+    return message
+
+
 def _pop_pagination(
     spec: Spec, args: dict[str, Any], *, registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY
 ) -> _PageArgs | None:
@@ -2442,17 +2632,39 @@ def _declares_default(default: Any) -> bool:
     return default is not None and default is not UNSET
 
 
+def _supplied_query_params(
+    query_params: Sequence[QueryParam], args: Mapping[str, Any]
+) -> list[str]:
+    """The declared read-shaping names the caller actually sent a value for.
+
+    In declaration order, so a message naming several reads the same way on
+    every call. A ``None`` is not a value: ``{"fields": null}`` is the shape a
+    model emits for a param it chose not to fill, and ``QueryParam`` documents
+    that a transport treats it as omitted.
+    """
+    return [qp.name for qp in query_params if args.get(qp.name) is not None]
+
+
 def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) -> dict[str, Any]:
     """Strip the registered query params from ``args`` into a plain ``dict``.
 
     A declared param the model supplied is popped; one it omitted contributes its
     ``default`` if set, else nothing. The result is handed to
     ``build_offline_context(query_params=…)`` (which stringifies as on HTTP).
+
+    **An explicit ``None`` is omitted, not forwarded.** ``QueryParam`` documents
+    it that way -- ``{"fields": null}`` is how a model says it chose not to fill
+    the param, and the ``default`` still applies -- and the stringifying above
+    is why it matters: forwarded, the null reached the serializer as the four
+    characters ``None``, which a strict selection parser refuses as malformed,
+    ending a run over an argument the model had declined to send. Popped either
+    way, so ``unknown_arguments`` never sees the key.
     """
     values: dict[str, Any] = {}
     for query_param in query_params:
-        if query_param.name in args:
-            values[query_param.name] = args.pop(query_param.name)
+        supplied: Any = args.pop(query_param.name, None)
+        if supplied is not None:
+            values[query_param.name] = supplied
         elif _declares_default(query_param.default):
             values[query_param.name] = query_param.default
     return values
