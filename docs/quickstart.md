@@ -429,7 +429,8 @@ toolset = SpecToolset(
 ```
 
 A registered param is popped before dispatch, so `unknown_arguments` never flags
-it; a declared `default` is seeded when the model omits the arg. (Names can't be
+it; a declared `default` is seeded when the model omits the arg or sends it as
+`null`, which never reaches the query string itself. (Names can't be
 `page` / `limit` / `ordering` — those are reserved transport keys. `ordering` is
 reserved even when a `filter_set` owns it: a registered channel pops the value at
 call time, so the FilterSet would never see it.)

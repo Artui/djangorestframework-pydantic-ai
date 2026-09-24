@@ -2650,11 +2650,20 @@ def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) 
     A declared param the model supplied is popped; one it omitted contributes its
     ``default`` if set, else nothing. The result is handed to
     ``build_offline_context(query_params=…)`` (which stringifies as on HTTP).
+
+    **An explicit ``None`` is omitted, not forwarded.** ``QueryParam`` documents
+    it that way -- ``{"fields": null}`` is how a model says it chose not to fill
+    the param, and the ``default`` still applies -- and the stringifying above is
+    why it matters: forwarded, the null reached the serializer as the four
+    characters ``None``, which strict django-restql refuses to parse, ending a
+    run over an argument the model had declined to send. Popped either way, so
+    ``unknown_arguments`` never sees the key.
     """
     values: dict[str, Any] = {}
     for query_param in query_params:
-        if query_param.name in args:
-            values[query_param.name] = args.pop(query_param.name)
+        supplied: Any = args.pop(query_param.name, None)
+        if supplied is not None:
+            values[query_param.name] = supplied
         elif _declares_default(query_param.default):
             values[query_param.name] = query_param.default
     return values

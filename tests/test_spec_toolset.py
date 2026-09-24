@@ -1217,6 +1217,27 @@ def test_query_param_omitted_without_default_seeds_nothing():
 
 
 @pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("declared", "seen"),
+    [(QueryParam("fields", default="id"), "id"), (QueryParam("fields"), None)],
+    ids=["default applies", "no default"],
+)
+def test_an_explicit_null_query_param_is_treated_as_omitted(declared, seen):
+    """``{"fields": null}`` is a model declining to fill the param. It must not
+    reach the serializer as the string ``"None"``, and a default still applies."""
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    result = _dispatch(
+        _echo_list_spec(),
+        user,
+        {"fields": None},
+        query_params=(declared,),
+        unknown_arguments=UnknownArguments.REJECT,
+    )
+    assert _rows(result) == [{"name": "a", "fields": seen}]
+
+
+@pytest.mark.django_db
 def test_query_param_is_popped_before_dispatch_so_reject_ignores_it():
     # A closed-input list selector under REJECT: an undeclared arg would raise
     # ModelRetry. The query param must be popped before dispatch, so this passes.
@@ -5197,6 +5218,23 @@ def test_render_error_from_a_seeded_default_still_raises():
             {},
             query_params=(QueryParam("query", default="{name, bogus}"),),
         )
+
+
+@pytest.mark.django_db
+def test_an_explicit_null_selection_renders_every_field():
+    """Real restql: a forwarded null arrived as ``?query=None``, which it cannot
+    parse, so a model declining the param ended the run."""
+    user = User.objects.create(username="u")
+    widget = Widget.objects.create(owner=user, name="a")
+
+    result = _dispatch(
+        _paged_spec(_StrictRestqlWidget),
+        user,
+        {"query": None},
+        query_params=(QueryParam("query"),),
+    )
+
+    assert _rows(result) == [{"id": widget.pk, "name": "a"}]
 
 
 @pytest.mark.django_db
