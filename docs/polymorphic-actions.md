@@ -40,7 +40,10 @@ toolset = SpecToolset(
 ```
 
 Each expanded entry is an ordinary service tool: its parameter schema comes
-from that variant's `input_serializer`, and a call dispatches through the usual
+from that variant's `input_serializer`, with the parameters of the variant's
+target lookup beside its fields (see
+[What a tool asks the model for](quickstart.md#what-a-tool-asks-the-model-for)),
+and a call dispatches through the usual
 `input_serializer → run_service(atomic) → output` pipeline with the same
 `permission_classes` checks. Nothing about `PolymorphicServiceSpec` reaches the
 model — the discriminator is a server-side HTTP concern, and the agent sees a

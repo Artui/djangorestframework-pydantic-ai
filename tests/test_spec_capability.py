@@ -9,6 +9,8 @@ from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from rest_framework.permissions import AllowAny
 from rest_framework_services import (
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_POOL_SEEDS,
     SelectorKind,
     SelectorSpec,
     ServiceSpec,
@@ -17,8 +19,8 @@ from rest_framework_services import (
 from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecCapability, SpecToolset, UrlKwarg
 from rest_framework_pydantic_ai.spec_toolset import (
     _BASE_INSTRUCTIONS,
-    _LIST_INSTRUCTION,
     UnguardedSpecWarning,
+    _list_instruction,
 )
 from tests.testapp.models import Widget
 from tests.testapp.serializers import WidgetSerializer
@@ -169,6 +171,35 @@ async def test_url_kwargs_forward_to_the_built_toolset():
     assert "parent_pk" in tools["list"].tool_def.parameters_json_schema["properties"]
 
 
+async def test_pool_seeds_forward_to_the_built_toolset():
+    """Behaviour rather than signature: the forwarding tests below check that the
+    keyword exists on both, which a constructor accepting it and dropping it
+    would pass. Driven through a real run, so the seed is resolved against the
+    user the run carries."""
+    seen = {}
+
+    def stamp(tenant: str) -> dict[str, str]:
+        """Stamp the caller's tenant."""
+        seen["tenant"] = tenant
+        return {"tenant": tenant}
+
+    def model_fn(messages, info):
+        if any(part.part_kind == "tool-return" for part in messages[-1].parts):
+            return ModelResponse(parts=[TextPart("done")])
+        return ModelResponse(parts=[ToolCallPart(tool_name="stamp", args={})])
+
+    cap = SpecCapability(
+        {"stamp": ServiceSpec(service=stamp, atomic=False, permission_classes=[AllowAny])},
+        pool_seeds=DEFAULT_POOL_SEEDS.extend(tenant=lambda user: f"tenant-of-{user}"),
+    )
+    agent = Agent(FunctionModel(model_fn), deps_type=AgentDeps, capabilities=[cap])
+
+    result = await agent.run("go", deps=AgentDeps(user="acme"))
+
+    assert result.output == "done"
+    assert seen == {"tenant": "tenant-of-acme"}
+
+
 # --- forwarding --------------------------------------------------------------
 #
 # The capability re-declares the toolset's constructor rather than taking
@@ -314,6 +345,6 @@ async def test_capability_instructions_reach_the_model_exactly_once():
     assert result.output == "done"
     instr = captured["instructions"]
     assert instr is not None
-    assert _LIST_INSTRUCTION in instr
+    assert _list_instruction(DEFAULT_PAGE_SIZE) in instr
     # The conventions come from the toolset only — not doubled by the capability.
     assert instr.count(_BASE_INSTRUCTIONS) == 1
