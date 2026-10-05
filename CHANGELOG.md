@@ -39,12 +39,60 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `MCPServer(pool_seeds=)` in djangorestframework-mcp-server 0.50.0, so one spec
   behaves alike on both routes.
 
-  A selector declaring a seed as a parameter still has it advertised in its
-  tool's input schema, because drf-services reflects a selector's parameters
-  skipping only `request`, `user` and `view`. A value the model sends for it is
-  ignored.
+  No tool's input schema advertises a registered seed either; see the next
+  entry.
+
+- **A tool's input schema asks for what a call needs, and nothing the toolset
+  fills.** It is built with drf-services' `spec_to_json_schema(supplied=...)`,
+  told the names the toolset fills in the pool a selector is called with:
+  drf-services' own seeds, every name in `pool_seeds`, a `UrlKwarg` that
+  declares a `default`, and the keys a `kwargs=` provider returns when its
+  return annotation is a `TypedDict`. A selector parameter of one of those names
+  is not advertised, so one named after a registered seed no longer offers the
+  model an argument the call ignores; a defaulted `UrlKwarg` is still advertised
+  as its own optional argument, as before. Every other selector parameter
+  without a default is now required: `get_widget(user, pk)` lists `pk` in
+  `required`, where it was optional. The exception is a parameter the provider
+  may fill without saying it will, which stays advertised and optional: any
+  parameter, for a provider with no `TypedDict` return annotation or whose
+  annotations do not resolve, and a `TypedDict` key annotated to admit
+  `UnsetType`, which the provider may decline with `UNSET`, leaving the model's
+  value through.
+
+- **A service tool advertises its target lookup.** A single-item service's
+  schema was its input serializer's fields alone, so a tool changing one row
+  never told the model about the `pk` naming which row. The parameters of the
+  lookup dispatch resolves its target through, its `collection_selector_spec`
+  when it declares one and its `instance_selector_spec` otherwise, are now
+  reflected beside those fields by the same rules, and a lookup parameter
+  without a default is required. Where one shares a name with a serializer field, the
+  serializer's property is advertised and the name is required if either
+  requires it. A `many=True` service reads no target and is unchanged.
 
 ### Fixed
+
+- **A call missing a required argument is a `ModelRetry`, not a crash.** A
+  selector called without a parameter it has no default for, the tool's own or
+  the lookup a service resolves its target through, raised `TypeError` out of
+  the run. The call now answers `ModelRetry` naming each such parameter left
+  out, ``Missing required argument(s): `pk`.``, the sentence a required
+  `UrlKwarg` already got, so the model supplies it on the next turn. A
+  serializer field is not part of that check: the serializer reports a missing
+  one when the call runs, so a service call missing both `pk` and a field is
+  told about `pk` first and about the field on the turn after. A parameter a
+  `kwargs=` provider may fill is not checked either, since only the pool the
+  call assembles can say whether it arrived. So when the provider declines it
+  with `UNSET`, or an untyped provider leaves it out, and the model has not
+  sent it, the selector still raises `TypeError` out of the run; where a
+  provider may decline a key the model may also leave out, give the
+  parameter a default.
+
+- **An `allow_none` retrieve's `return_schema` admits `null`.** Such a tool
+  returns `None` when nothing matches, and its schema declared an object. The
+  root `type` is now `["object", "null"]`, through drf-services'
+  `output_to_json_schema(allow_none=...)`. A service's `return_schema` is
+  unchanged whatever its `output_selector_spec` declares, because dispatch
+  ignores `allow_none` on a nested spec.
 
 - **A list tool's `limit` states the default it is actually served.** The
   description was formatted once, at import, from `DEFAULT_PAGE_SIZE`, so
@@ -57,6 +105,31 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instructions' pagination line carried the same number and now states the
   same default, in the full block and in the block for a step that leaves a
   tool out. An `instructions=` override is untouched.
+
+### Changed
+
+- **A selector parameter that only a `build_context` override fills is now
+  required of the model.** An override filling one through `kwargs` (which
+  become `view.kwargs`) is code the schema cannot read, so the parameter is
+  advertised as required, like any other without a default, and a call leaving
+  it out is handed back as `ModelRetry` before the override runs. It used to be
+  advertised as optional, and the override's value replaced whatever the model
+  sent. To keep the override filling it, mark the selector parameter with
+  drf-services' `NotClientInput`, as in
+  `project_pk: Annotated[int, NotClientInput]`, which leaves the name out of
+  the schema and, by default and on a selector without a `filter_set` or
+  `**kwargs`, hands back a call that sends it as an unexpected argument (the
+  marker hides the name rather than blocking it, so the override has to write
+  it on every call); or, where a seed resolver can resolve the value, register it in
+  `pool_seeds=` and resolve it there instead. A `UrlKwarg` with a `default`
+  keeps the call from being refused too, but leaves the name advertised as an
+  optional argument whose value the override replaces, as before.
+
+- **Floored at `djangorestframework-services>=0.55.0` (was `>=0.54.0`), and it is a
+  hard floor.** `spec_to_json_schema(supplied=...)` and
+  `output_to_json_schema(allow_none=...)` first exist there, and the toolset
+  passes both while it builds its tool definitions at construction, so below it
+  a toolset cannot be built at all.
 
 ## [0.32.0] — 2026-09-24
 

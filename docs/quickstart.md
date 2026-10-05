@@ -50,7 +50,9 @@ toolset = SpecToolset(
 ```
 
 Each key is the tool name. The description comes from the selector/service
-docstring, the parameter schema from the spec's input serializer, the
+docstring, the parameter schema from the selector's parameters or the service's
+input serializer and target lookup (see
+[What a tool asks the model for](#what-a-tool-asks-the-model-for)), the
 `return_schema` from its output serializer, and the `readOnlyHint` annotation
 from the spec kind (selectors read, services mutate). List selectors
 additionally accept `page` and `limit` tool args, plus `ordering` where the
@@ -138,6 +140,140 @@ agent = Agent(model, toolsets=[SpecToolset(specs).include_return_schemas()])
 
 A spec with no `output_serializer` gets `None` rather than a guessed shape.
 
+A retrieve selector declaring `allow_none=True` returns `None` when nothing
+matches, so its `return_schema` admits it: the root `type` is
+`["object", "null"]`. A service's `return_schema` stays an object whatever its
+`output_selector_spec` declares, because dispatch ignores `allow_none` on a
+nested spec.
+
+## What a tool asks the model for
+
+A tool's parameter schema is the model's only account of what to send, and a
+selector's signature cannot say on its own which parameters the model sends and
+which the toolset fills. So the toolset says so when it builds the schema
+(through drf-services' `spec_to_json_schema(supplied=...)`):
+
+- **A name the toolset fills is not advertised.** That is drf-services' own
+  pool seeds (`request`, `user`, `progress` and the rest), every name registered
+  in [`pool_seeds`](#project-pool-seeds), and the keys a `kwargs=` provider
+  returns when its return annotation is a `TypedDict`, less any annotated to
+  admit `UnsetType` (below). A [`UrlKwarg`](#url-derived-values-route-captures)
+  that declares a `default` fills its name too, so the selector's parameter of
+  that name is not required, but the `UrlKwarg` itself stays advertised, as the
+  optional argument it always is.
+- **Every other parameter without a default is required.** `get_widget(user, pk)`
+  is advertised as `{"properties": {"pk": {}}, "required": ["pk"]}`. A parameter
+  with a default stays optional, and `InputRequired` still makes one required.
+- **A `kwargs=` provider without a `TypedDict` return annotation may fill any
+  parameter**, a plain `dict` or a lambda included, so for its spec nothing is
+  required merely for lacking a default, though `InputRequired` still requires
+  one. So may a provider whose annotations do not resolve, the parameters'
+  as well as the return's, and a `TypedDict` whose own key annotations do not
+  resolve: a name imported only under `TYPE_CHECKING` leaves the provider
+  untyped. Annotate the provider to have the rest required:
+
+```python
+from typing import TypedDict
+
+
+class ProjectScope(TypedDict):
+    ceiling: int
+
+
+def scope(view) -> ProjectScope:
+    # ceiling is filled here, so the model is never asked for it.
+    return {"ceiling": ceiling_for(view.kwargs["project_pk"])}
+
+
+list_spec = SelectorSpec(kind=SelectorKind.LIST, selector=priced_under, kwargs=scope)
+```
+
+- **A key annotated to admit `UnsetType` is not one the toolset fills.** A
+  provider may decline a key by returning drf-services' `UNSET` for it, which
+  drops the key from the pool and lets the model's value through, so
+  `ceiling: int | UnsetType` keeps `ceiling` advertised for the model to send,
+  and optional, since the provider may fill it instead. The provider's other
+  keys are still not asked for. If the provider declines the key and the model
+  has not sent it either, nothing fills the parameter and the selector raises
+  `TypeError` out of the run, as it does when an untyped provider leaves a
+  parameter unfilled, since a call is not checked for a name a provider may
+  fill. Where a provider may decline a key the model may also leave out, give
+  the selector's parameter a default.
+- **A name a
+  [`build_context`](reference.md#rest_framework_pydantic_ai.SpecToolset)
+  override fills has to be declared.** An override is code the schema cannot
+  read, so a selector parameter it fills through `kwargs` (which become
+  `view.kwargs`) is advertised as required like any other parameter without a
+  default, and a call leaving it out is handed back before the override runs.
+  Mark the selector parameter with drf-services' `NotClientInput`: the name is
+  left out of the schema and the override fills it. The marker hides the name
+  rather than blocking it. A call that sends it anyway is handed back as an
+  [unexpected argument](#unexpected-arguments) by default, but only where the
+  selector's input set is closed (no `filter_set`, no `**kwargs`); otherwise
+  the value reaches the selector's pool, so the override has to write the key
+  on every call.
+  Where the value can be resolved from what a seed resolver receives, register
+  it as a [pool seed](#project-pool-seeds) and resolve it there instead:
+
+```python
+from typing import Annotated
+
+from rest_framework_services import NotClientInput, SelectorKind, SelectorSpec
+
+
+def list_tasks(user, project_pk: Annotated[int, NotClientInput]):
+    """List the user's tasks in the run's project."""
+    return Task.objects.filter(project_id=project_pk, assignee=user)
+
+
+class ProjectScopedToolset(SpecToolset):
+    def build_context(self, user, params, *, ctx, kwargs=None, **rest):
+        scoped = {**(kwargs or {}), "project_pk": current_project_pk(ctx)}
+        return super().build_context(user, params, ctx=ctx, kwargs=scoped, **rest)
+
+
+# project_pk is marked NotClientInput and filled by the override, so the model
+# is never asked for it, and a call that sends one is refused.
+toolset = ProjectScopedToolset(
+    {
+        "list_tasks": SelectorSpec(
+            kind=SelectorKind.LIST, selector=list_tasks, output_serializer=TaskSerializer
+        )
+    }
+)
+```
+
+A `UrlKwarg` with a `default` also keeps a call that leaves the name out from
+being refused, but it does not keep the name from the model. It stays
+advertised, as an optional argument the model can see and send, and the
+override's value replaces whatever the model sent, with nothing said to the
+model: a model that asks for one project is served another's rows.
+
+**A service tool also advertises its target lookup.** drf-services hands the
+arguments it validates against the input serializer to the selector that
+resolves the row or the set, too, so that selector's parameters are reflected
+beside the serializer's fields by the same rules. It is the
+`collection_selector_spec` when the service declares one, and the
+`instance_selector_spec` otherwise: dispatch never runs the instance lookup
+beside a collection one, so a service declaring both is not asked for the
+instance lookup's `pk`. A rename tool whose instance selector is
+`task_by_pk(user, *, pk)` asks for `pk` as well as the new title, and requires
+it. Where a lookup parameter and a serializer field share a name, the
+serializer's property is the one advertised, since the serializer validates
+the value, and the name is required if either requires it, since the lookup
+cannot run without it whatever a `partial` serializer says. A `many=True`
+service reads no target, so its schema stays the list alone.
+
+**A call that leaves out a required selector parameter is handed back**, the
+tool's own or its target lookup's, as `ModelRetry` naming each one left out,
+as in ``Missing required argument(s): `pk`.``, the same sentence a required
+`UrlKwarg` gets, so the model corrects the call on its next turn. It used to
+reach the selector, which raised `TypeError` out of the run. A required
+serializer field is checked by the serializer once the call runs, so a service
+call missing both `pk` and a field is told about `pk` first, and about the
+field on the turn after. A name a provider may fill is not checked before the
+call, since only the pool the call assembles can say whether it arrived.
+
 ## Custom identity
 
 If your project carries identity on a richer deps object, hand the toolset a
@@ -179,16 +315,14 @@ A registered name is reserved the way `user` and `request` are:
   does. Dispatch strips a reserved name from the route captures it hands a
   selector, so an accepted `UrlKwarg` would offer the model an argument that is
   then dropped on every call.
+- **No schema advertises it.** A selector or target lookup declaring the seed
+  as a parameter does not offer it to the model, so the model is not asked for
+  a value the call would ignore. See
+  [What a tool asks the model for](#what-a-tool-asks-the-model-for).
 
 The registry applies to the whole toolset, with no per-tool or per-call form. A
 seed is ambient to the deployment, and what varies from call to call belongs in
 the resolver, which declares `user` or `request` to receive them.
-
-One gap remains, and it is in the schema rather than the call: a selector that
-declares a seed as a parameter still has it advertised in its tool's input
-schema. drf-services reflects a selector's parameters skipping only `request`,
-`user` and `view`, and knows nothing of a registry. A model that sends the
-value is ignored rather than refused, as above.
 
 ## What a permission class sees
 
@@ -309,6 +443,10 @@ from rest_framework_services import UnknownArguments
 # silently drop unexpected keys instead of rejecting them
 toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 ```
+
+`IGNORE` drops a key no parameter declares. A parameter marked `NotClientInput`
+is still declared, only left out of the schema, so a value the model sends for
+it reaches the selector under `IGNORE`.
 
 ## A list as input
 
@@ -576,7 +714,10 @@ it is advertised:
 
 Like `QueryParam`, a registered kwarg is popped before dispatch (so
 `unknown_arguments` never flags it) and its `default` is seeded when the model
-omits it. A name can't be `page` / `limit` / `ordering`, nor one of drf-services'
+omits it. A kwarg with a `default` therefore fills a selector parameter of the
+same name, and the tool does not require it; one without a default reaches the
+selector only when the model sends it, so the selector's own signature still
+decides whether the tool requires it. A name can't be `page` / `limit` / `ordering`, nor one of drf-services'
 pool seeds (`request` / `user` / `data` / `instance` / `serializer` /
 `collection` / `progress` — a caller must not be able to route a value onto
 those) or a name
@@ -683,6 +824,7 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | A dispatch past `dispatch_timeout` | `ToolFailed` — abandoned, with the sentence telling the model to narrow and call again |
 | A rendered result over `max_result_bytes` | `ToolFailed` — refused rather than truncated, since a partial payload looks complete |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
+| A required argument left out: a selector parameter with no default, or a service's target lookup such as `pk` | `ModelRetry` naming each such parameter left out; a missing serializer field is reported by the serializer when the call runs — see [What a tool asks the model for](#what-a-tool-asks-the-model-for) |
 | An invalid item in a `many=True` list | `ModelRetry` with the errors keyed under the list's argument, then the item's index — see [A list as input](#a-list-as-input) |
 | An argument sent beside a `many=True` list | `ModelRetry` naming it, whatever `unknown_arguments` says |
 | Non-integer `page` / `limit` | `ModelRetry` — naming what is accepted |
