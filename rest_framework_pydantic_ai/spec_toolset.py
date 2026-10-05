@@ -53,6 +53,7 @@ from rest_framework.settings import api_settings
 from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
     DEFAULT_PAGE_SIZE,
+    DEFAULT_POOL_SEEDS,
     UNSET,
     ActionUnavailable,
     AdditionalInputRequired,
@@ -63,6 +64,7 @@ from rest_framework_services import (
     JsonSchemaRegistry,
     OfflineContract,
     OutputPage,
+    PoolSeeds,
     SelectorKind,
     SelectorSpec,
     ServiceError,
@@ -230,29 +232,63 @@ _TOOL_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 # serializer at dispatch time.
 _TOOL_ARGS_VALIDATOR = SchemaValidator(schema=core_schema.any_schema())
 
-# Tool args a list selector accepts on top of its filter fields. Ordering is not
-# here: it belongs to the spec whenever the spec's own schema advertises it (see
-# ``_spec_ordering_argument``).
-_LIST_PARAM_SCHEMA: dict[str, Any] = {
-    "page": {
-        "type": "integer",
-        "minimum": 1,
-        "description": "1-based page number.",
-    },
-    "limit": {
-        "type": "integer",
-        "minimum": 1,
-        "description": (
-            f"Maximum number of items per page. Defaults to {DEFAULT_PAGE_SIZE}; "
-            "the result reports `totalPages` and `hasNext`."
-        ),
-    },
+# The ``page`` tool arg a list selector accepts on top of its filter fields;
+# ``limit`` is ``_limit_param_schema``, because its wording depends on the
+# toolset's ceiling. Ordering is not here: it belongs to the spec whenever the
+# spec's own schema advertises it (see ``_spec_ordering_argument``).
+_PAGE_PARAM_SCHEMA: dict[str, Any] = {
+    "type": "integer",
+    "minimum": 1,
+    "description": "1-based page number.",
 }
 # ``page`` no longer says "requires `limit`", because it no longer does: every
 # list result is a page, so an omitted ``limit`` is the default page size rather
 # than "everything". The pair used to be advertised and then not honoured — the
 # schema claimed pagination while the payload was a bare list — and the wording
 # was the last place that claim was still qualified.
+
+
+def _served_page_size(max_page_size: int | None) -> int:
+    """The rows a list tool serves to a call that names no ``limit``.
+
+    ``paginate_output``'s own rule, stated here because the schema and the
+    instructions are written at construction, long before any call: an omitted
+    ``limit`` is ``DEFAULT_PAGE_SIZE``, then clamped *down* to the ceiling and
+    never raised to it. So ``max_page_size=3`` serves 3 and ``max_page_size=500``
+    still serves 100. The number used to be formatted into a module-level string
+    from ``DEFAULT_PAGE_SIZE`` alone, and a toolset with a lower ceiling told the
+    model "Defaults to 100" beside ``maximum: 3``.
+
+    It describes the default ``shape_page``. An override that serves a different
+    page size to an omitted ``limit`` has to say so in its own descriptions.
+    ``test_the_limit_description_states_the_default_a_call_is_served`` holds the
+    lower bound against what a call is served, and
+    ``test_a_ceiling_above_the_default_page_size_leaves_the_stated_default_alone``
+    holds the ``min``: replacing it with the ceiling fails that one.
+    """
+    if max_page_size is None:
+        return DEFAULT_PAGE_SIZE
+    return min(DEFAULT_PAGE_SIZE, max_page_size)
+
+
+def _limit_param_schema(max_page_size: int | None) -> dict[str, Any]:
+    """A list tool's ``limit`` arg: the default it is served, and its ceiling.
+
+    The ceiling is advertised as well as clamped: a schema with no ``maximum``
+    invites a request for 100 000 rows, and telling the model is cheaper than
+    correcting it.
+    """
+    schema: dict[str, Any] = {
+        "type": "integer",
+        "minimum": 1,
+        "description": (
+            f"Maximum number of items per page. Defaults to {_served_page_size(max_page_size)}; "
+            "the result reports `totalPages` and `hasNext`."
+        ),
+    }
+    if max_page_size is not None:
+        schema["maximum"] = max_page_size
+    return schema
 
 
 @dataclass(frozen=True)
@@ -482,12 +518,29 @@ class SpecToolset(AbstractToolset[Any]):
             the field the model is most likely to get wrong. Build one by
             extending the shared default:
             ``DEFAULT_JSON_SCHEMA_REGISTRY.extend(fields=[(MoneyField, {"type": "string"})])``.
+        pool_seeds: The project's own always-available pool seeds -- a
+            [`PoolSeeds`][rest_framework_services.types.pool_seeds.PoolSeeds]
+            registry of names such as a tenant, a locale or a clock, which over
+            HTTP hang off ``request`` and off it have no channel. Handed to every
+            dispatch this toolset makes, so a service, a selector or an
+            affordance's condition declaring one receives it as it would from
+            ``dispatch_spec(pool_seeds=)`` called directly; and to the per-step
+            check that leaves out an operation whose condition is unmet, so the
+            catalog and the instructions are decided against the same seeds the
+            call is refused with. A registered name is also reserved: the model
+            cannot supply it, an argument of that name is neither spread nor
+            refused as unknown, and a ``QueryParam`` / ``UrlKwarg`` declaring it
+            is refused here with ``ImproperlyConfigured``. Toolset-wide, with no
+            per-tool or per-call form: a seed is ambient to the deployment, and
+            what varies per call belongs in its resolver, which declares
+            ``user`` / ``request`` to receive them.
 
     Raises:
         ImproperlyConfigured: A spec has no ``permission_classes`` and
-            ``require_permissions`` is set, or a ``QueryParam`` / ``UrlKwarg`` on
+            ``require_permissions`` is set, a ``QueryParam`` / ``UrlKwarg`` on
             a ``many=True`` spec's tool -- declared here or on its entry's
-            ``OfflineContract`` -- shares the name its list travels under.
+            ``OfflineContract`` -- shares the name its list travels under, or
+            one is named after a registered pool seed.
         ValueError: A tool name is outside ``^[a-zA-Z0-9_-]{1,64}$``, a per-tool
             mapping names a tool this toolset does not expose, or one name is
             registered on both parameter channels.
@@ -518,6 +571,7 @@ class SpecToolset(AbstractToolset[Any]):
         get_http_request: HttpRequestExtractor | None = None,
         exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
         json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+        pool_seeds: PoolSeeds = DEFAULT_POOL_SEEDS,
         thread_sensitive: bool = True,
         executor: ThreadPoolExecutor | None = None,
     ) -> None:
@@ -541,6 +595,7 @@ class SpecToolset(AbstractToolset[Any]):
         self._exception_map: dict[type[BaseException], ExceptionHandler] = dict(exception_map or {})
         self._unknown_arguments: UnknownArguments = unknown_arguments
         self._json_schema_registry = json_schema_registry
+        self._pool_seeds = pool_seeds
         self._host = host
         self._max_retries = max_retries
         self._max_page_size = max_page_size
@@ -586,8 +641,12 @@ class SpecToolset(AbstractToolset[Any]):
         # override, which the shared check would read as a duplicate in the
         # pre-merge concatenation. Post-merge is also what reaches the schema.
         for name in self._specs:
-            _validate_channel_declarations(name, self._tool_query_params[name], "query_params")
-            _validate_channel_declarations(name, self._tool_url_kwargs[name], "url_kwargs")
+            _validate_channel_declarations(
+                name, self._tool_query_params[name], "query_params", seeds=pool_seeds
+            )
+            _validate_channel_declarations(
+                name, self._tool_url_kwargs[name], "url_kwargs", seeds=pool_seeds
+            )
         # Also post-merge, for the same reason and one more: a contract's
         # declarations exist only in the merged tuples.
         _validate_many_argument_channels(
@@ -801,10 +860,10 @@ class SpecToolset(AbstractToolset[Any]):
     def _derived_instructions(self) -> str:
         """The conventions block, built once and kept.
 
-        A pure function of four attributes ``__init__`` assigns and nothing
+        A pure function of five attributes ``__init__`` assigns and nothing
         reassigns -- the specs, the merged query-param declarations, the
-        projections and the schema registry -- so recomputing it is recomputing
-        the same string. Pydantic-AI asks for instructions on **every model
+        projections, the schema registry and the page ceiling -- so recomputing
+        it is recomputing the same string. Pydantic-AI asks for instructions on **every model
         step**, and the derivation walks each list spec through
         ``spec_to_json_schema`` to find what that spec calls its sort.
 
@@ -825,6 +884,7 @@ class SpecToolset(AbstractToolset[Any]):
             self._tool_query_params,
             self._projections,
             registry=self._json_schema_registry,
+            page_size=_served_page_size(self._max_page_size),
         )
 
     def _derive_instructions_without(self, omitted: frozenset[str]) -> str:
@@ -843,6 +903,7 @@ class SpecToolset(AbstractToolset[Any]):
             {name: self._tool_query_params[name] for name in offered},
             {name: self._projections[name] for name in offered},
             registry=self._json_schema_registry,
+            page_size=_served_page_size(self._max_page_size),
         )
 
     async def _unavailable_operations(self, ctx: RunContext[Any]) -> dict[str, Affordance]:
@@ -893,8 +954,14 @@ class SpecToolset(AbstractToolset[Any]):
         configured ``http_request`` or a synthetic one -- and whatever an
         override puts on it. It is built with no arguments and no action,
         because a listing has neither: the query string is empty, which is also
-        what a tool declaring no ``QueryParam`` dispatches with. No ``seeds=``
-        is passed on either side, since this toolset registers none, so the
+        what a tool declaring no ``QueryParam`` dispatches with. The toolset's
+        ``pool_seeds`` are handed over twice, as drf-services asks: resolved into
+        the pool by ``base_pool(seeds=)``, and admitted into what the condition
+        is shown by ``unmet_operation_affordance(reserved=)``, which hands a
+        condition only the reserved names. Drop either and a condition reading a
+        registered seed fails to bind here while the call, given the same seeds
+        by ``dispatch_spec(pool_seeds=)``, answers it -- both halves are held by
+        ``test_a_condition_reading_a_registered_seed_is_asked_with_it``. So the
         condition sees the names ``dispatch_spec`` would give it.
 
         One request and one pool serve every spec asked, because a condition
@@ -906,10 +973,12 @@ class SpecToolset(AbstractToolset[Any]):
             # path gives: ``None`` would leave a configured ``http_request``'s
             # own query string live on the request the condition reads.
             context = self.build_context(user, {}, ctx=ctx, query_params={}, host=self._host)
-            pool = base_pool(user=user, request=context.request)
+            pool = base_pool(user=user, request=context.request, seeds=self._pool_seeds)
             unavailable: dict[str, Affordance] = {}
             for name in self._conditioned:
-                unmet = unmet_operation_affordance(self._specs[name], pool)
+                unmet = unmet_operation_affordance(
+                    self._specs[name], pool, reserved=self._pool_seeds.reserved
+                )
                 if unmet is not None:
                     unavailable[name] = unmet
             return unavailable
@@ -956,6 +1025,7 @@ class SpecToolset(AbstractToolset[Any]):
                     # it has to ask it against the same registry, or the two
                     # could answer differently for one spec.
                     json_schema_registry=self._json_schema_registry,
+                    pool_seeds=self._pool_seeds,
                 ),
                 self._dispatch_timeout,
                 label=name,
@@ -1508,7 +1578,9 @@ def _validate_many_argument_channels(
                 )
 
 
-def _validate_channel_declarations(tool_name: str, declarations: Sequence[Any], kind: str) -> None:
+def _validate_channel_declarations(
+    tool_name: str, declarations: Sequence[Any], kind: str, *, seeds: PoolSeeds
+) -> None:
     """Apply drf-services' shared channel checks to one tool's merged tuple.
 
     Those cover the dispatcher's pool seeds (``request`` / ``user`` / ``data`` /
@@ -1517,12 +1589,18 @@ def _validate_channel_declarations(tool_name: str, declarations: Sequence[Any], 
     names stay ours to contribute, belonging to the adapter rather than the
     dispatcher: the ``page`` / ``limit`` / ``ordering`` the MCP transport
     reserves too.
+
+    **A registered pool seed is reserved like a built-in one**, so its name is
+    passed in beside those. Dispatch strips a reserved name from the URL kwargs
+    it hands a selector, so a ``UrlKwarg`` named after a seed would be accepted
+    here, advertised to the model, and then silently dropped on every call.
+    ``test_a_channel_named_after_a_registered_seed_is_refused`` holds it.
     """
     validate_channel_names(
         label=f"SpecToolset tool {tool_name!r}",
         kind=kind,
         declarations=declarations,
-        reserved=_RESERVED_PARAM_NAMES,
+        reserved=_RESERVED_PARAM_NAMES | seeds.names,
     )
 
 
@@ -1654,13 +1732,23 @@ _BASE_INSTRUCTIONS = (
     "- Only pass documented parameters; unknown arguments are rejected."
 )
 
-_LIST_INSTRUCTION = (
-    "- Read-only tools that return a collection always return one page, shaped "
-    '{"items": [...], "page": 1, "totalPages": N, "hasNext": true|false}. They accept optional '
-    f"`limit` (items per page, default {DEFAULT_PAGE_SIZE}) and `page` (1-based). When "
-    "`hasNext` is true there are more items than you were shown: ask for the next `page`, or "
-    "narrow the request with a filter — never answer as if the page were the whole collection."
-)
+
+def _list_instruction(page_size: int) -> str:
+    """The pagination line, stating the page size an omitted ``limit`` is served.
+
+    A function of the toolset's ceiling for the reason ``_served_page_size``
+    gives: the same number on every tool's ``limit`` and here, so the model is
+    not told one default in its instructions and another on the tool.
+    """
+    return (
+        "- Read-only tools that return a collection always return one page, shaped "
+        '{"items": [...], "page": 1, "totalPages": N, "hasNext": true|false}. They accept '
+        f"optional `limit` (items per page, default {page_size}) and `page` (1-based). When "
+        "`hasNext` is true there are more items than you were shown: ask for the next `page`, "
+        "or narrow the request with a filter — never answer as if the page were the whole "
+        "collection."
+    )
+
 
 _HANDLE_INSTRUCTION = (
     "- Some tools return opaque identifier fields, described as such in the tool's "
@@ -1772,6 +1860,7 @@ def _derive_instructions(
     projections: Mapping[str, AudienceProjection] | None = None,
     *,
     registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+    page_size: int = DEFAULT_PAGE_SIZE,
 ) -> str:
     """Build the conventions block from the specs / query params / ordering.
 
@@ -1786,7 +1875,7 @@ def _derive_instructions(
     """
     lines = [_BASE_INSTRUCTIONS]
     if any(_is_list_selector(spec) for spec in specs.values()):
-        lines.append(_LIST_INSTRUCTION)
+        lines.append(_list_instruction(page_size))
     # Deduplicated, in first-seen order: one toolset can carry several tools
     # whose sorts are declared under different names.
     ordering_names: list[str] = []
@@ -1975,12 +2064,8 @@ def _input_schema(
     extra: dict[str, Any] = {}
     paged = _is_list_selector(spec)
     if paged:
-        extra.update(_LIST_PARAM_SCHEMA)
-        if max_page_size is not None:
-            # Advertised as well as clamped: a schema with no ``maximum`` invites
-            # a request for 100 000 rows, and telling the model is cheaper than
-            # correcting it.
-            extra["limit"] = {**_LIST_PARAM_SCHEMA["limit"], "maximum": max_page_size}
+        extra["page"] = _PAGE_PARAM_SCHEMA
+        extra["limit"] = _limit_param_schema(max_page_size)
     extra.update({qp.name: _query_param_schema(qp, paged=paged) for qp in query_params})
     extra.update({uk.name: uk.json_schema() for uk in url_kwargs})
     required: list[str] = list(schema.get("required", []))
@@ -2104,6 +2189,7 @@ def _call_spec(
     progress: ProgressReporter | None = None,
     host: str | None = None,
     json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+    pool_seeds: PoolSeeds = DEFAULT_POOL_SEEDS,
     build_context: _ContextBuilder = build_offline_context,
     translate_exception: _ExceptionTranslator | None = None,
     shape_page: _PageShaper | None = None,
@@ -2203,6 +2289,11 @@ def _call_spec(
             # ``spec.many`` branch this function would then have to keep in step
             # with drf-services' idea of which specs take a list.
             many_as_argument=True,
+            # The project's registered seeds: resolved into the pool, reserved
+            # against the model's arguments, exempt from unknown-argument
+            # accounting, and shown to the affordances this call enforces --
+            # all of it drf-services', keyed off the one registry handed here.
+            pool_seeds=pool_seeds,
         )
     except BaseException as exc:
         # **One arm, not a chain, because the consumer's map has to be consulted

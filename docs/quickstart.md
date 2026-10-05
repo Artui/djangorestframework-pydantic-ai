@@ -107,8 +107,12 @@ while the payload was a bare slice, so a model asking for a collection received
 what was missing — the model can ask for `page: 2`, or narrow the request with a
 filter, instead of answering from a page it took for the whole set.
 
-`max_page_size` lowers the default and advertises itself as JSON-Schema
-`maximum` on `limit`:
+`max_page_size` caps `limit` and advertises itself as JSON-Schema `maximum`
+on it. A call naming no `limit` is served the smaller of 100 and the ceiling, and
+that is the default both the `limit` description and the toolset's instructions
+state, so with the toolset below the model reads "Defaults to 25" beside
+`maximum: 25`. A ceiling above 100 raises what a call may ask for, not what it
+gets by asking for nothing: the stated default stays 100.
 
 ```python
 toolset = SpecToolset(specs, max_page_size=25)
@@ -142,6 +146,49 @@ If your project carries identity on a richer deps object, hand the toolset a
 ```python
 toolset = SpecToolset(specs, get_user=lambda ctx: ctx.deps.principal.user)
 ```
+
+## Project pool seeds
+
+Over HTTP a service reads its tenant, locale or clock off `request`. Off HTTP
+there is no request carrying any of that, and drf-services'
+[`PoolSeeds`][rest_framework_services.types.pool_seeds.PoolSeeds] is the channel
+for it. Hand the registry to the toolset as `pool_seeds=`:
+
+```python
+from rest_framework_services import DEFAULT_POOL_SEEDS
+
+seeds = DEFAULT_POOL_SEEDS.extend(tenant=lambda user: user.profile.tenant)
+toolset = SpecToolset(specs, pool_seeds=seeds)
+```
+
+Every dispatch the toolset makes is handed the registry. A service, a selector
+or an affordance's condition that declares `tenant` therefore receives the
+resolver's value, as it would from `dispatch_spec(pool_seeds=seeds)` called
+directly. The per-step check that
+[leaves out an unavailable operation](#an-operation-that-is-unavailable-right-now-is-left-out)
+asks its conditions against the same seeds, so a step's catalog and the call's
+own refusal answer alike.
+
+A registered name is reserved the way `user` and `request` are:
+
+- **The model cannot supply it.** An argument of that name is not passed on and
+  is not refused as unknown either, so the callable always sees the resolver's
+  value.
+- **A channel cannot declare it.** A `QueryParam` or `UrlKwarg` with that name
+  raises `ImproperlyConfigured` when the toolset is built, as one named `user`
+  does. Dispatch strips a reserved name from the route captures it hands a
+  selector, so an accepted `UrlKwarg` would offer the model an argument that is
+  then dropped on every call.
+
+The registry applies to the whole toolset, with no per-tool or per-call form. A
+seed is ambient to the deployment, and what varies from call to call belongs in
+the resolver, which declares `user` or `request` to receive them.
+
+One gap remains, and it is in the schema rather than the call: a selector that
+declares a seed as a parameter still has it advertised in its tool's input
+schema. drf-services reflects a selector's parameters skipping only `request`,
+`user` and `view`, and knows nothing of a registry. A model that sends the
+value is ignored rather than refused, as above.
 
 ## What a permission class sees
 
@@ -206,7 +253,7 @@ A spec's `Affordance` answered without a row, a callable `when` such as
 is asked on every model step, and a tool whose condition is unmet is left out of
 that step's catalog. The arguments against filtering by permission do not apply
 to it. The condition reads only the seeds (the user, the request and any
-registered seed), never an argument, so it cannot hide a tool the caller could
+[registered seed](#project-pool-seeds)), never an argument, so it cannot hide a tool the caller could
 have invoked with other arguments. Only the specs declaring one are asked, and a
 toolset declaring none pays nothing. And the model can still tell the user about
 the missing tool, because the instructions for that step end by naming each tool
@@ -531,8 +578,9 @@ Like `QueryParam`, a registered kwarg is popped before dispatch (so
 `unknown_arguments` never flags it) and its `default` is seeded when the model
 omits it. A name can't be `page` / `limit` / `ordering`, nor one of drf-services'
 pool seeds (`request` / `user` / `data` / `instance` / `serializer` /
-`collection` — a caller must not be able to route a value onto those), nor be
-registered as both a `QueryParam` and a `UrlKwarg` on the same tool.
+`collection` — a caller must not be able to route a value onto those) or a name
+registered in [`pool_seeds`](#project-pool-seeds), nor be registered as both a
+`QueryParam` and a `UrlKwarg` on the same tool.
 
 A capture the spec genuinely cannot run without takes `required=True`:
 

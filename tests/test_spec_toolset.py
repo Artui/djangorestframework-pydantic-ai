@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 import warnings
@@ -39,6 +40,7 @@ from rest_framework.request import Request
 from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
     DEFAULT_PAGE_SIZE,
+    DEFAULT_POOL_SEEDS,
     MARKING,
     UNSET,
     ActionUnavailable,
@@ -46,6 +48,7 @@ from rest_framework_services import (
     Affordance,
     FieldMarking,
     OfflineContract,
+    PoolSeeds,
     SelectorKind,
     SelectorSpec,
     ServiceConflict,
@@ -66,7 +69,6 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _BASE_INSTRUCTIONS,
     _HANDLE_DESCRIPTION,
     _HANDLE_INSTRUCTION,
-    _LIST_INSTRUCTION,
     _UNAVAILABLE_INSTRUCTION,
     UndescribedToolWarning,
     UnguardedSpecWarning,
@@ -76,6 +78,7 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _derive_instructions,
     _input_schema,
     _is_list_selector,
+    _list_instruction,
     _output_extras,
     _pop_query_params,
     _pop_url_kwargs,
@@ -266,15 +269,15 @@ async def test_instructions_carry_the_error_contract():
 
 async def test_pagination_line_present_only_with_a_list_selector():
     with_list = await SpecToolset({"list": list_spec()}).get_instructions(None)
-    assert _LIST_INSTRUCTION in with_list
+    assert _list_instruction(DEFAULT_PAGE_SIZE) in with_list
 
     # A retrieve selector is a SelectorSpec but not LIST — no pagination line.
     retrieve_only = await SpecToolset({"get": retrieve_spec()}).get_instructions(None)
-    assert _LIST_INSTRUCTION not in retrieve_only
+    assert _list_instruction(DEFAULT_PAGE_SIZE) not in retrieve_only
 
     # A service spec is not a SelectorSpec at all — no pagination line.
     service_only = await SpecToolset({"go": create_spec()}).get_instructions(None)
-    assert _LIST_INSTRUCTION not in service_only
+    assert _list_instruction(DEFAULT_PAGE_SIZE) not in service_only
 
 
 async def test_read_shaping_line_lists_declared_query_params_sorted():
@@ -309,7 +312,7 @@ def test_derive_instructions_matches_get_instructions_input():
     assert _derive_instructions(toolset._specs, toolset._tool_query_params) == "\n".join(
         [
             _BASE_INSTRUCTIONS,
-            _LIST_INSTRUCTION,
+            _list_instruction(DEFAULT_PAGE_SIZE),
             "- Some tools accept read-shaping parameters (`query`) that adjust the shape "
             "of the returned data without filtering it. " + _SCOPE_INSTRUCTION,
         ]
@@ -1292,7 +1295,7 @@ async def test_toolset_instructions_reach_the_model_when_attached_directly():
     assert result.output == "done"
     assert captured["instructions"] is not None
     assert _BASE_INSTRUCTIONS in captured["instructions"]
-    assert _LIST_INSTRUCTION in captured["instructions"]
+    assert _list_instruction(DEFAULT_PAGE_SIZE) in captured["instructions"]
 
 
 class _ModeInputSerializer(serializers.Serializer):
@@ -3430,7 +3433,7 @@ async def test_the_instructions_name_an_unavailable_operation_and_describe_only_
 
     assert closed.endswith(f"{_UNAVAILABLE_INSTRUCTION}\n  - `approve`: The books are closed.")
     assert "`fields`" not in closed
-    assert _LIST_INSTRUCTION in closed
+    assert _list_instruction(DEFAULT_PAGE_SIZE) in closed
     assert "ping" not in closed
     assert "Never shown." not in closed
     assert "list_widgets" not in closed
@@ -3708,6 +3711,119 @@ async def test_a_model_calling_an_omitted_tool_gets_the_unknown_tool_retry():
     assert "Unknown tool name: 'approve'" in retries[0]
 
 
+# --- registered pool seeds ----------------------------------------------------
+#
+# ``pool_seeds=`` is a project's own always-available seeds: what hangs off
+# ``request`` over HTTP and has no channel off it. A spec reading one has to see
+# it wherever the toolset dispatches or asks a condition, or it works when
+# ``dispatch_spec`` is called directly and fails through the toolset.
+
+
+def _tenant_seeds() -> PoolSeeds:
+    """A ``tenant`` seed derived from the acting user, as a project's would be."""
+    return DEFAULT_POOL_SEEDS.extend(tenant=lambda user: f"tenant-of-{user.username}")
+
+
+class _TenantSerializer(serializers.Serializer):
+    tenant = serializers.CharField()
+
+
+async def test_a_registered_seed_reaches_a_service_called_through_the_toolset():
+    def stamp(tenant: str) -> dict[str, str]:
+        """Stamp the caller's tenant."""
+        return {"tenant": tenant}
+
+    toolset = SpecToolset(
+        {"stamp": ServiceSpec(service=stamp, atomic=False, permission_classes=[AllowAny])},
+        pool_seeds=_tenant_seeds(),
+    )
+
+    result = await _call(toolset, "stamp", User(username="acme"))
+
+    assert result == {"tenant": "tenant-of-acme"}
+
+
+async def test_a_registered_seed_outranks_a_model_argument_of_the_same_name():
+    """On a selector nothing validates the spread, so reservation is the guard.
+
+    The model names ``tenant`` itself and gets the project's value back, and the
+    argument is not refused as unknown either: the registry is what tells
+    dispatch the name is the transport's, and it reaches dispatch only if the
+    toolset hands it over. Without it the model's ``globex`` is what the
+    selector reads -- a caller choosing the tenant it is scoped to.
+    """
+
+    def tenant_rows(tenant: str) -> list[dict[str, str]]:
+        """The caller's tenant, as a one-row collection."""
+        return [{"tenant": tenant}]
+
+    toolset = SpecToolset(
+        {
+            "rows": SelectorSpec(
+                kind=SelectorKind.LIST,
+                selector=tenant_rows,
+                output_serializer=_TenantSerializer,
+                permission_classes=[AllowAny],
+            )
+        },
+        pool_seeds=_tenant_seeds(),
+    )
+
+    result = await _call(toolset, "rows", User(username="acme"), {"tenant": "globex"})
+
+    assert _rows(result) == [{"tenant": "tenant-of-acme"}]
+    # Still advertised: drf-services reflects a selector's parameters skipping
+    # only ``request`` / ``user`` / ``view``, and knows nothing of a registry.
+    # Pinned so the day it does, this line fails and the docs saying so move.
+    assert "tenant" in toolset._tool_defs["rows"].parameters_json_schema["properties"]
+
+
+def _books_seeds() -> PoolSeeds:
+    """Books are open for the user named ``open`` and nobody else."""
+    return DEFAULT_POOL_SEEDS.extend(books_open=lambda user: user.username == "open")
+
+
+@pytest.mark.parametrize(("username", "listed"), [("open", True), ("closed", False)])
+async def test_a_condition_reading_a_registered_seed_is_asked_with_it(username, listed):
+    """The listing and the call ask the condition against the same seeds.
+
+    The listing's pool needs the registry twice over -- resolved into the pool
+    by ``base_pool(seeds=)``, and admitted into what the condition is shown by
+    ``unmet_operation_affordance(reserved=)`` -- and dropping either one makes
+    the condition fail to bind here rather than answer. The call's own
+    enforcement is ``dispatch_spec(pool_seeds=)``, asked for the user it lists.
+    """
+    toolset = SpecToolset(
+        {"approve": _conditioned_spec(lambda books_open: books_open)},
+        pool_seeds=_books_seeds(),
+    )
+    ctx = ctx_for(User(username=username))
+
+    tools = await toolset.get_tools(ctx)
+    instructions = await toolset.get_instructions(ctx)
+
+    assert ("approve" in tools) is listed
+    assert ("`approve`: The books are closed." in instructions) is not listed
+    if listed:
+        assert await toolset.call_tool("approve", {}, ctx, tools["approve"]) == {"approved": True}
+
+
+@pytest.mark.parametrize(
+    "channel",
+    [{"query_params": [QueryParam("tenant")]}, {"url_kwargs": [UrlKwarg("tenant")]}],
+    ids=["query_params", "url_kwargs"],
+)
+def test_a_channel_named_after_a_registered_seed_is_refused(channel):
+    """A registered seed is reserved like a built-in one, so a channel cannot name it.
+
+    Accepted, a ``UrlKwarg`` named after one would be stripped by dispatch
+    before the selector saw it, and the model would be told about an argument
+    that is silently dropped.
+    """
+    with pytest.raises(ImproperlyConfigured, match="tenant"):
+        SpecToolset({"list": list_spec()}, pool_seeds=_tenant_seeds(), **channel)
+
+
 # --- the pagination envelope --------------------------------------------------
 #
 # Every list-selector result is a page. The input contract said so all along --
@@ -3839,6 +3955,89 @@ async def test_the_page_argument_no_longer_claims_to_require_limit():
 
     assert "requires" not in props["page"]["description"]
     assert str(DEFAULT_PAGE_SIZE) in props["limit"]["description"]
+
+
+def _stated_default(description: str) -> int:
+    """The page size a ``limit`` description says an omitted ``limit`` gets."""
+    match = re.search(r"Defaults to (\d+);", description)
+    assert match is not None, description
+    return int(match.group(1))
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_the_limit_description_states_the_default_a_call_is_served():
+    """Read off the schema, then checked against what a call with no ``limit`` gets.
+
+    The description was a module-level string formatted with
+    ``DEFAULT_PAGE_SIZE``, so a toolset with ``max_page_size=3`` told the model
+    "Defaults to 100" beside ``maximum: 3`` while serving three rows -- a
+    default the tool could not serve, next to a ceiling contradicting it.
+    """
+    user = await User.objects.acreate(username="u")
+    for n in range(5):
+        await Widget.objects.acreate(name=f"w{n}", price=n, owner=user)
+    toolset = SpecToolset({"list": list_spec()}, max_page_size=3)
+    tools = await toolset.get_tools(ctx_for(user))
+    limit = tools["list"].tool_def.parameters_json_schema["properties"]["limit"]
+
+    # One toolset answers both questions, through ``call_tool``: the ceiling
+    # reaches the slice from the constructor, as it does in a run.
+    served = _rows(await _call(toolset, "list", user))
+
+    assert limit["maximum"] == 3
+    assert _stated_default(limit["description"]) == len(served) == 3
+
+
+async def test_a_ceiling_above_the_default_page_size_leaves_the_stated_default_alone():
+    """The served default is the smaller of the two, not the ceiling.
+
+    ``paginate_output`` clamps an omitted ``limit`` *down* to the ceiling and
+    never raises it, so a toolset allowing 500 rows a page still serves 100
+    to a call naming none. Stating the ceiling as the default would be the same
+    defect in the other direction.
+    """
+    ceiling = DEFAULT_PAGE_SIZE * 5
+    toolset = SpecToolset({"list": list_spec()}, max_page_size=ceiling)
+
+    tools = await toolset.get_tools(None)
+    limit = tools["list"].tool_def.parameters_json_schema["properties"]["limit"]
+    instructions = await toolset.get_instructions(None)
+
+    assert limit["maximum"] == ceiling
+    assert _stated_default(limit["description"]) == DEFAULT_PAGE_SIZE
+    assert f"default {DEFAULT_PAGE_SIZE})" in instructions
+    assert str(ceiling) not in instructions
+
+
+async def test_the_pagination_instruction_states_the_default_a_ceiling_serves():
+    """The conventions block carried the same module-level number.
+
+    It is the toolset-wide statement of the same contract, and a model reading
+    "default 100" in its instructions and "Defaults to 3" on the tool has been
+    told two things.
+    """
+    instructions = await SpecToolset({"list": list_spec()}, max_page_size=3).get_instructions(None)
+
+    assert instructions is not None
+    assert "`limit` (items per page, default 3)" in instructions
+    assert f"default {DEFAULT_PAGE_SIZE}" not in instructions
+
+
+async def test_a_step_leaving_a_tool_out_states_the_same_default():
+    """The per-step block is derived on its own path, so it needs the ceiling too.
+
+    A step whose catalog omits an operation rebuilds the conventions from the
+    tools it does offer, and that derivation is a second call site that could
+    fall back to ``DEFAULT_PAGE_SIZE`` while the cached full block did not.
+    """
+    toolset = SpecToolset(
+        {"list": list_spec(), "approve": _conditioned_spec(lambda: False)}, max_page_size=3
+    )
+
+    instructions = await toolset.get_instructions(ctx_for(User(username="u")))
+
+    assert "`approve`: The books are closed." in instructions
+    assert "`limit` (items per page, default 3)" in instructions
 
 
 # --- ToolDefinition.return_schema ---------------------------------------------

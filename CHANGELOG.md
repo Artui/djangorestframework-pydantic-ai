@@ -6,6 +6,54 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`SpecToolset(pool_seeds=...)` hands a project's registered pool seeds to
+  dispatch.** drf-services' `PoolSeeds` is how a project supplies a tenant, a locale or a clock off HTTP, where there is no
+  `request` to hang them on, and `dispatch_spec(pool_seeds=)` accepts one. The
+  toolset had no way to pass it, so a service, a selector or an affordance's
+  condition that declared a registered seed worked when `dispatch_spec` was
+  called directly and failed through the toolset. The registry now reaches:
+
+  - **every dispatch the toolset makes**, so the callable receives the
+    resolver's value. The name is reserved there as drf-services defines it: a
+    model argument of that name is neither passed on nor refused as unknown;
+  - **the per-step check that leaves out an unavailable operation**, through
+    `base_pool(seeds=)` and `unmet_operation_affordance(reserved=)`, so a
+    condition reading a seed is asked with it when the catalog is built as it is
+    at the call;
+  - **construction**: a `QueryParam` or `UrlKwarg` named after a registered seed
+    raises `ImproperlyConfigured`, as one named `user` does. Dispatch strips a
+    reserved name from the route captures it hands a selector, so the
+    declaration would otherwise be advertised and then dropped on every call.
+
+  It defaults to drf-services' empty `DEFAULT_POOL_SEEDS`, so a toolset passing
+  nothing behaves as before. It is toolset-wide, with no per-tool or per-call
+  form: what varies per call belongs in the resolver, which declares `user` or
+  `request` to receive them. `SpecCapability` accepts and forwards it. The
+  parameter has the same name, type, default and reach as
+  `MCPServer(pool_seeds=)` in djangorestframework-mcp-server, so one spec
+  behaves alike on both routes.
+
+  A selector declaring a seed as a parameter still has it advertised in its
+  tool's input schema, because drf-services reflects a selector's parameters
+  skipping only `request`, `user` and `view`. A value the model sends for it is
+  ignored.
+
+### Fixed
+
+- **A list tool's `limit` states the default it is actually served.** The
+  description was formatted once, at import, from `DEFAULT_PAGE_SIZE`, so
+  `SpecToolset(specs, max_page_size=3)` described `limit` as "Defaults to 100"
+  beside `maximum: 3` while a call naming no `limit` was served 3 rows. It now
+  states the smaller of `DEFAULT_PAGE_SIZE` and `max_page_size`, which is what
+  drf-services' `paginate_output` serves: "Defaults to 3" there, and still
+  "Defaults to 100" under a ceiling of 500, since a ceiling caps what a call may
+  ask for and never raises what it gets by asking for nothing. The derived
+  instructions' pagination line carried the same number and now states the
+  same default, in the full block and in the block for a step that leaves a
+  tool out. An `instructions=` override is untouched.
+
 ## [0.32.0] — 2026-09-24
 
 ### Fixed

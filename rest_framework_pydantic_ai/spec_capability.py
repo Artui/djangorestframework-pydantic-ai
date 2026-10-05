@@ -10,7 +10,9 @@ from django.http import HttpRequest
 from pydantic_ai.capabilities import AbstractCapability
 from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
+    DEFAULT_POOL_SEEDS,
     JsonSchemaRegistry,
+    PoolSeeds,
     UnknownArguments,
 )
 
@@ -108,6 +110,7 @@ class SpecCapability(AbstractCapability[Any]):
         get_http_request: HttpRequestExtractor | None = None,
         exception_map: Mapping[type[BaseException], ExceptionHandler] | None = None,
         json_schema_registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+        pool_seeds: PoolSeeds = DEFAULT_POOL_SEEDS,
         thread_sensitive: bool = True,
         executor: ThreadPoolExecutor | None = None,
     ) -> None:
@@ -134,6 +137,7 @@ class SpecCapability(AbstractCapability[Any]):
             get_http_request=get_http_request,
             exception_map=exception_map,
             json_schema_registry=json_schema_registry,
+            pool_seeds=pool_seeds,
             thread_sensitive=thread_sensitive,
             executor=executor,
         )
