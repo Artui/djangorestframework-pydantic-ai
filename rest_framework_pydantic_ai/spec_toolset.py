@@ -455,9 +455,12 @@ class SpecToolset(AbstractToolset[Any]):
         tool_max_result_bytes: ``max_result_bytes`` per tool. An explicit
             ``None`` opts that tool out; an absent key inherits the default.
         max_page_size: Clamps a list tool's ``limit`` *and* advertises the
-            ceiling as JSON-Schema ``maximum``. Lowers the default page size
-            with it, so an omitted ``limit`` becomes the ceiling rather than
-            ``DEFAULT_PAGE_SIZE``. Unset, a list tool still returns at most
+            ceiling as JSON-Schema ``maximum``. It lowers the default page size
+            only when it is below ``DEFAULT_PAGE_SIZE``: an omitted ``limit`` is
+            served ``min(DEFAULT_PAGE_SIZE, max_page_size)``, and that is the
+            default the ``limit`` description and the instructions state. A
+            ceiling above it raises what a call may ask for, not what it gets by
+            asking for nothing. Unset, a list tool still returns at most
             ``DEFAULT_PAGE_SIZE`` rows per page — the unbounded read is the one
             that hurts, and it is what a model produces by not thinking about
             pagination.

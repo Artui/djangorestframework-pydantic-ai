@@ -578,7 +578,8 @@ Like `QueryParam`, a registered kwarg is popped before dispatch (so
 `unknown_arguments` never flags it) and its `default` is seeded when the model
 omits it. A name can't be `page` / `limit` / `ordering`, nor one of drf-services'
 pool seeds (`request` / `user` / `data` / `instance` / `serializer` /
-`collection` — a caller must not be able to route a value onto those) or a name
+`collection` / `progress` — a caller must not be able to route a value onto
+those) or a name
 registered in [`pool_seeds`](#project-pool-seeds), nor be registered as both a
 `QueryParam` and a `UrlKwarg` on the same tool.
 

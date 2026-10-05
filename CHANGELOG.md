@@ -25,16 +25,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     condition reading a seed is asked with it when the catalog is built as it is
     at the call;
   - **construction**: a `QueryParam` or `UrlKwarg` named after a registered seed
-    raises `ImproperlyConfigured`, as one named `user` does. Dispatch strips a
-    reserved name from the route captures it hands a selector, so the
-    declaration would otherwise be advertised and then dropped on every call.
+    raises `ImproperlyConfigured`. A seed-named `UrlKwarg` would otherwise be
+    advertised and then dropped on every call, because dispatch strips a
+    reserved name from the route captures it hands a selector. A seed-named
+    `QueryParam` is refused because a registered seed is reserved like a
+    built-in one, and a `QueryParam` named `user` is refused the same way.
 
   It defaults to drf-services' empty `DEFAULT_POOL_SEEDS`, so a toolset passing
   nothing behaves as before. It is toolset-wide, with no per-tool or per-call
   form: what varies per call belongs in the resolver, which declares `user` or
   `request` to receive them. `SpecCapability` accepts and forwards it. The
   parameter has the same name, type, default and reach as
-  `MCPServer(pool_seeds=)` in djangorestframework-mcp-server, so one spec
+  `MCPServer(pool_seeds=)` in djangorestframework-mcp-server 0.50.0, so one spec
   behaves alike on both routes.
 
   A selector declaring a seed as a parameter still has it advertised in its

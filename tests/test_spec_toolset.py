@@ -3746,11 +3746,14 @@ async def test_a_registered_seed_reaches_a_service_called_through_the_toolset():
 async def test_a_registered_seed_outranks_a_model_argument_of_the_same_name():
     """On a selector nothing validates the spread, so reservation is the guard.
 
-    The model names ``tenant`` itself and gets the project's value back, and the
-    argument is not refused as unknown either: the registry is what tells
-    dispatch the name is the transport's, and it reaches dispatch only if the
-    toolset hands it over. Without it the model's ``globex`` is what the
-    selector reads -- a caller choosing the tenant it is scoped to.
+    The model names ``tenant`` itself and gets the project's value back: the
+    registry is what tells dispatch the name is the transport's, and it reaches
+    dispatch only if the toolset hands it over. Without it the model's
+    ``globex`` is what the selector reads -- a caller choosing the tenant it is
+    scoped to. That the argument is not refused as unknown cannot be shown
+    here, since this selector declares ``tenant`` and so knows the name anyway;
+    ``test_a_seed_named_argument_is_not_refused_by_a_spec_that_never_declares_it``
+    holds that half.
     """
 
     def tenant_rows(tenant: str) -> list[dict[str, str]]:
@@ -3806,6 +3809,36 @@ async def test_a_condition_reading_a_registered_seed_is_asked_with_it(username, 
     assert ("`approve`: The books are closed." in instructions) is not listed
     if listed:
         assert await toolset.call_tool("approve", {}, ctx, tools["approve"]) == {"approved": True}
+
+
+async def test_a_seed_named_argument_is_not_refused_by_a_spec_that_never_declares_it():
+    """Exempt from unknown-argument accounting, not merely outranked.
+
+    The selector-based test above cannot show this: its callable declares
+    ``tenant``, so the name is a known argument whatever the registry says. Here
+    nothing declares it, so under the default ``REJECT`` the only thing standing
+    between the model's ``tenant`` and a retry is the registry reaching
+    dispatch. The first half is the probe: the same call through a toolset with
+    no registry is refused, so the success below is the registry's doing.
+    """
+
+    def ping() -> dict[str, bool]:
+        """Ping."""
+        return {"ok": True}
+
+    def toolset(**kwargs: Any) -> SpecToolset:
+        return SpecToolset(
+            {"ping": ServiceSpec(service=ping, atomic=False, permission_classes=[AllowAny])},
+            **kwargs,
+        )
+
+    user = User(username="acme")
+    with pytest.raises(ModelRetry, match=r"Unexpected argument\(s\): 'tenant'"):
+        await _call(toolset(), "ping", user, {"tenant": "globex"})
+
+    result = await _call(toolset(pool_seeds=_tenant_seeds()), "ping", user, {"tenant": "globex"})
+
+    assert result == {"ok": True}
 
 
 @pytest.mark.parametrize(
