@@ -535,7 +535,10 @@ and <code>PolymorphicServiceSpec.specs</code> is a public <code>Mapping[str, Ser
 </span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>Each expanded entry is an ordinary service tool: its parameter schema comes
-from that variant's <code>input_serializer</code>, and a call dispatches through the usual
+from that variant's <code>input_serializer</code>, with the parameters of the variant's
+target lookup beside its fields (see
+<a href="../quickstart/#what-a-tool-asks-the-model-for">What a tool asks the model for</a>),
+and a call dispatches through the usual
 <code>input_serializer → run_service(atomic) → output</code> pipeline with the same
 <code>permission_classes</code> checks. Nothing about <code>PolymorphicServiceSpec</code> reaches the
 model — the discriminator is a server-side HTTP concern, and the agent sees a

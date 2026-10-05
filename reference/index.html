@@ -1288,6 +1288,23 @@ docstring, the parameter schema comes from <code>spec_to_json_schema</code> (wit
 list selector's <code>page</code> / <code>limit</code> args merged in), the <code>return_schema</code>
 comes from the same spec's projected output path, and the <code>readOnlyHint</code>
 annotation is derived from the spec kind (selectors read, services mutate).</p>
+<p><strong>The parameter schema asks for what a call needs and nothing the toolset
+fills.</strong> A selector parameter named after a pool seed, a defaulted
+<code>UrlKwarg</code> or a key a typed <code>kwargs=</code> provider returns is not
+advertised; every other selector parameter without a default is required,
+except one the provider <em>may</em> fill, which stays advertised but optional:
+any parameter, beside a provider whose return annotation is not a
+<code>TypedDict</code> that resolves, and a key annotated to admit <code>UnsetType</code>,
+which the provider may decline. A name a <code>build_context</code> override fills
+is invisible here, so it has to be declared (see <code>build_context</code>). A
+single-item service also advertises its target lookup -- the parameters of
+its <code>collection_selector_spec</code>, or failing that its
+<code>instance_selector_spec</code>, such as a <code>pk</code> -- beside its input
+serializer's fields, the serializer's property winning a shared name. A
+call leaving out a required selector parameter is handed back as
+<code>ModelRetry</code> naming each one left out, before anything runs. A required
+serializer field is the serializer's to report, once the call runs, so a
+call missing both hears about the field on its next turn.</p>
 <p><strong>A list selector's result is a page, always.</strong> It comes back as
 <code>{"items": [...], "page": 1, "totalPages": N, "hasNext": bool}</code> — never a
 bare list — with at most
@@ -1687,9 +1704,12 @@ complete.</p>
             <td>
               <div class="doc-md-description">
                 <p>Clamps a list tool's <code>limit</code> <em>and</em> advertises the
-ceiling as JSON-Schema <code>maximum</code>. Lowers the default page size
-with it, so an omitted <code>limit</code> becomes the ceiling rather than
-<code>DEFAULT_PAGE_SIZE</code>. Unset, a list tool still returns at most
+ceiling as JSON-Schema <code>maximum</code>. It lowers the default page size
+only when it is below <code>DEFAULT_PAGE_SIZE</code>: an omitted <code>limit</code> is
+served <code>min(DEFAULT_PAGE_SIZE, max_page_size)</code>, and that is the
+default the <code>limit</code> description and the instructions state. A
+ceiling above it raises what a call may ask for, not what it gets by
+asking for nothing. Unset, a list tool still returns at most
 <code>DEFAULT_PAGE_SIZE</code> rows per page — the unbounded read is the one
 that hurts, and it is what a model produces by not thinking about
 pagination.</p>
@@ -1889,6 +1909,38 @@ extending the shared default:
                   <code><a class="autorefs autorefs-external" title="rest_framework_services.DEFAULT_JSON_SCHEMA_REGISTRY" href="https://artui.github.io/djangorestframework-services/reference/jsonschema/#rest_framework_services.types.json_schema_registry.DEFAULT_JSON_SCHEMA_REGISTRY">DEFAULT_JSON_SCHEMA_REGISTRY</a></code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>pool_seeds</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="rest_framework_services.PoolSeeds" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.pool_seeds.PoolSeeds">PoolSeeds</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The project's own always-available pool seeds -- a
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.pool_seeds.PoolSeeds"><code>PoolSeeds</code></a>
+registry of names such as a tenant, a locale or a clock, which over
+HTTP hang off <code>request</code> and off it have no channel. Handed to every
+dispatch this toolset makes, so a service, a selector or an
+affordance's condition declaring one receives it as it would from
+<code>dispatch_spec(pool_seeds=)</code> called directly; and to the per-step
+check that leaves out an operation whose condition is unmet, so the
+catalog and the instructions are decided against the same seeds the
+call is refused with. A registered name is also reserved: the model
+cannot supply it, an argument of that name is neither spread nor
+refused as unknown, no tool's input schema advertises it, and a
+<code>QueryParam</code> / <code>UrlKwarg</code> declaring it is refused here with
+<code>ImproperlyConfigured</code>. Toolset-wide, with no
+per-tool or per-call form: a seed is ambient to the deployment, and
+what varies per call belongs in its resolver, which declares
+<code>user</code> / <code>request</code> to receive them.</p>
+              </div>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="rest_framework_services.DEFAULT_POOL_SEEDS" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.pool_seeds.DEFAULT_POOL_SEEDS">DEFAULT_POOL_SEEDS</a></code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -1909,9 +1961,10 @@ extending the shared default:
             <td>
               <div class="doc-md-description">
                 <p>A spec has no <code>permission_classes</code> and
-<code>require_permissions</code> is set, or a <code>QueryParam</code> / <code>UrlKwarg</code> on
+<code>require_permissions</code> is set, a <code>QueryParam</code> / <code>UrlKwarg</code> on
 a <code>many=True</code> spec's tool -- declared here or on its entry's
-<code>OfflineContract</code> -- shares the name its list travels under.</p>
+<code>OfflineContract</code> -- shares the name its list travels under, or
+one is named after a registered pool seed.</p>
               </div>
             </td>
           </tr>
@@ -2243,6 +2296,35 @@ being able to read off HTTP, and left unset it reads as <code>None</code> for
 every spec alike. Rewrite it in an override (it arrives in <code>**kwargs</code>
 in the forwarding form) when a permission class branches on the viewset
 action names it knows.</p>
+<p><strong>A name an override fills has to be declared.</strong> The tool schema is
+built from what the toolset can read, and an override is code: a
+selector parameter it fills through <code>kwargs</code> (which become
+<code>view.kwargs</code>) is, to the schema, a parameter without a default like
+any other, so it is advertised as required, and a call leaving it out is
+handed back as <code>ModelRetry</code> before the override runs. Mark the
+selector parameter with drf-services' <code>NotClientInput</code>
+(<code>project_pk: Annotated[int, NotClientInput]</code>): the name is left out
+of the schema, so the model is never asked for it, and the override
+fills it. The marker hides the name rather than blocking it: under the
+default <code>unknown_arguments</code> a call that sends it anyway is handed back
+as an unexpected argument only where the selector's input set is closed
+(no <code>filter_set</code>, no <code>**kwargs</code>), and otherwise the value reaches the
+pool, so the override has to write the key on every call. Where the value can be
+resolved from what a seed resolver receives, register it in
+<code>pool_seeds=</code> and resolve it there instead, since dispatch fills a
+seed from its resolver and drops a route capture of the same name.</p>
+<p>A <code>UrlKwarg</code> with a <code>default</code> also keeps a call that leaves the name
+out from being refused, but it is not a way to keep the name from the
+model: it stays advertised, as an optional argument the model can see
+and send, and the override's value replaces whatever the model sent,
+with nothing said to the model. A model asking for project 5 is served
+project 42's rows.
+<code>test_a_name_a_build_context_override_fills_is_kept_from_the_model</code>
+holds the marker,
+<code>test_a_name_a_build_context_override_fills_is_declared_to_the_toolset</code>
+the seed and the defaulted <code>UrlKwarg</code>, and
+<code>test_a_name_only_a_build_context_override_fills_is_asked_of_the_model</code>
+the undeclared case.</p>
 <p><strong>Also called when the catalog is listed</strong>, once per <code>get_tools</code> and
 once per <code>get_instructions</code>, whenever some spec declares an
 <code>Affordance</code> answered without a row: that condition is asked against
