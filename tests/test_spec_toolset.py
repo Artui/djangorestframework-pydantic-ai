@@ -69,12 +69,15 @@ from rest_framework_services import (
 )
 from typing_extensions import NotRequired, TypedDict, Unpack
 
-from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecToolset, UrlKwarg, spec_toolset
+from rest_framework_pydantic_ai import (
+    AgentConventions,
+    AgentDeps,
+    QueryParam,
+    SpecToolset,
+    UrlKwarg,
+    spec_toolset,
+)
 from rest_framework_pydantic_ai.spec_toolset import (
-    _BASE_INSTRUCTIONS,
-    _HANDLE_DESCRIPTION,
-    _HANDLE_INSTRUCTION,
-    _UNAVAILABLE_INSTRUCTION,
     UndescribedToolWarning,
     UnguardedSpecWarning,
     _build_tool_def,
@@ -83,8 +86,6 @@ from rest_framework_pydantic_ai.spec_toolset import (
     _derive_instructions,
     _input_schema,
     _is_list_selector,
-    _list_instruction,
-    _ordering_instruction,
     _output_extras,
     _pop_filter_ordering,
     _pop_query_params,
@@ -114,6 +115,20 @@ _SCOPE_DESCRIPTION = (
 _SCOPE_INSTRUCTION = (
     "On a tool that returns a page, they apply to each item in `items`, never to the page itself."
 )
+
+
+# The wording the toolset says by default, for the tests about *whether* a line
+# is said. What each default says is pinned as text in ``test_default_wording.py``.
+_DEFAULTS = AgentConventions()
+
+
+def _pagination_line(page_size: int) -> str:
+    return _DEFAULTS.pagination.format(page_size=page_size)
+
+
+def _ordering_line(names: list[str]) -> str:
+    return _DEFAULTS.ordering.format(names=", ".join(f"`{name}`" for name in names))
+
 
 # --- specs under test --------------------------------------------------------
 
@@ -256,7 +271,7 @@ def _rows(result: Any) -> list[Any]:
 async def test_instructions_carry_the_error_contract():
     instr = await SpecToolset({"go": create_spec()}).get_instructions(None)
     assert instr is not None
-    assert _BASE_INSTRUCTIONS in instr
+    assert _DEFAULTS.base in instr
     # The block has to describe the shape the toolset actually produces. It named
     # an ``{"error": …}`` payload while every terminal arm raised ``ToolFailed``,
     # which is an instruction telling the model to look for a key that is never
@@ -276,15 +291,15 @@ async def test_instructions_carry_the_error_contract():
 
 async def test_pagination_line_present_only_with_a_list_selector():
     with_list = await SpecToolset({"list": list_spec()}).get_instructions(None)
-    assert _list_instruction(DEFAULT_PAGE_SIZE) in with_list
+    assert _pagination_line(DEFAULT_PAGE_SIZE) in with_list
 
     # A retrieve selector is a SelectorSpec but not LIST — no pagination line.
     retrieve_only = await SpecToolset({"get": retrieve_spec()}).get_instructions(None)
-    assert _list_instruction(DEFAULT_PAGE_SIZE) not in retrieve_only
+    assert _pagination_line(DEFAULT_PAGE_SIZE) not in retrieve_only
 
     # A service spec is not a SelectorSpec at all — no pagination line.
     service_only = await SpecToolset({"go": create_spec()}).get_instructions(None)
-    assert _list_instruction(DEFAULT_PAGE_SIZE) not in service_only
+    assert _pagination_line(DEFAULT_PAGE_SIZE) not in service_only
 
 
 async def test_read_shaping_line_lists_declared_query_params_sorted():
@@ -318,8 +333,8 @@ def test_derive_instructions_matches_get_instructions_input():
     # The public ``get_instructions`` derives from exactly these two mappings.
     assert _derive_instructions(toolset._specs, toolset._tool_query_params) == "\n".join(
         [
-            _BASE_INSTRUCTIONS,
-            _list_instruction(DEFAULT_PAGE_SIZE),
+            _DEFAULTS.base,
+            _pagination_line(DEFAULT_PAGE_SIZE),
             "- Some tools accept read-shaping parameters (`query`) that adjust the shape "
             "of the returned data without filtering it. " + _SCOPE_INSTRUCTION,
         ]
@@ -1301,8 +1316,8 @@ async def test_toolset_instructions_reach_the_model_when_attached_directly():
     result = await agent.run("go", deps=AgentDeps(user="alice"))
     assert result.output == "done"
     assert captured["instructions"] is not None
-    assert _BASE_INSTRUCTIONS in captured["instructions"]
-    assert _list_instruction(DEFAULT_PAGE_SIZE) in captured["instructions"]
+    assert _DEFAULTS.base in captured["instructions"]
+    assert _pagination_line(DEFAULT_PAGE_SIZE) in captured["instructions"]
 
 
 class _ModeInputSerializer(serializers.Serializer):
@@ -2550,9 +2565,9 @@ async def test_an_ordering_the_toolset_fills_gets_no_usage_line(
 
     instructions = await toolset.get_instructions(ctx_for(User(username="u")))
 
-    assert (_UNAVAILABLE_INSTRUCTION in instructions) is not books_open
-    assert _list_instruction(DEFAULT_PAGE_SIZE) in instructions
-    assert _ordering_instruction(["ordering"]) not in instructions
+    assert (_DEFAULTS.unavailable_heading in instructions) is not books_open
+    assert _pagination_line(DEFAULT_PAGE_SIZE) in instructions
+    assert _ordering_line(["ordering"]) not in instructions
 
 
 def test_an_ordering_the_toolset_fills_is_not_routed_to_the_filter_set():
@@ -3110,11 +3125,11 @@ async def test_call_tool_uses_the_projection_built_at_construction():
 
 async def test_handle_instruction_present_only_when_a_tool_has_a_handle():
     with_handle = await SpecToolset({"widgets": agent_list_spec()}).get_instructions(None)
-    assert _HANDLE_INSTRUCTION in with_handle
+    assert _DEFAULTS.handles in with_handle
 
     # An unmarked serializer teaches the model nothing about handles.
     without = await SpecToolset({"list": list_spec()}).get_instructions(None)
-    assert _HANDLE_INSTRUCTION not in without
+    assert _DEFAULTS.handles not in without
 
 
 @pytest.mark.parametrize("no_default", [None, UNSET])
@@ -3546,9 +3561,9 @@ async def test_the_instructions_name_an_unavailable_operation_and_describe_only_
 
     closed = await toolset.get_instructions(ctx)
 
-    assert closed.endswith(f"{_UNAVAILABLE_INSTRUCTION}\n  - `approve`: The books are closed.")
+    assert closed.endswith(f"{_DEFAULTS.unavailable_heading}\n  - `approve`: The books are closed.")
     assert "`fields`" not in closed
-    assert _list_instruction(DEFAULT_PAGE_SIZE) in closed
+    assert _pagination_line(DEFAULT_PAGE_SIZE) in closed
     assert "ping" not in closed
     assert "Never shown." not in closed
     assert "list_widgets" not in closed
@@ -3558,7 +3573,7 @@ async def test_the_instructions_name_an_unavailable_operation_and_describe_only_
 
     assert opened == toolset._derived_instructions
     assert "`fields`" in opened
-    assert _UNAVAILABLE_INSTRUCTION not in opened
+    assert _DEFAULTS.unavailable_heading not in opened
 
 
 async def test_an_instructions_override_is_kept_and_the_unavailable_operations_follow_it():
@@ -3570,7 +3585,7 @@ async def test_an_instructions_override_is_kept_and_the_unavailable_operations_f
     ctx = ctx_for(User(username="u"))
 
     assert await toolset.get_instructions(ctx) == (
-        f"House rules.\n{_UNAVAILABLE_INSTRUCTION}\n  - `approve`: The books are closed."
+        f"House rules.\n{_DEFAULTS.unavailable_heading}\n  - `approve`: The books are closed."
     )
     books["open"] = True
     assert await toolset.get_instructions(ctx) == "House rules."
@@ -5249,7 +5264,7 @@ async def test_an_unlabelled_handle_gets_this_transports_own_wording():
     tools = await SpecToolset({"get": spec}).get_tools(None)
 
     description = tools["get"].tool_def.return_schema["properties"]["id"]["description"]
-    assert description == _HANDLE_DESCRIPTION
+    assert description == _DEFAULTS.handle_field_description
 
 
 async def test_the_return_schema_is_not_pushed_at_the_model_by_default():
@@ -5466,7 +5481,7 @@ async def test_a_spec_declaring_no_affordances_keeps_its_return_schema_byte_for_
         kind=kind,
         paginate=paginate,
         projection=audience_projection_for_spec(spec),
-        handle_description=_HANDLE_DESCRIPTION,
+        handle_description=_DEFAULTS.handle_field_description,
     )
 
     assert json.dumps(tools["t"].tool_def.return_schema) == json.dumps(before)

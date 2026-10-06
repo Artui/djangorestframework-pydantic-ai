@@ -1,6 +1,6 @@
 # Reference
 
-The public API is five symbols, all importable from the package root, plus a
+The public API is six symbols, all importable from the package root, plus a
 `testing` module of doubles for driving a toolset through a real run loop.
 
 ## `SpecToolset`
@@ -10,6 +10,10 @@ The public API is five symbols, all importable from the package root, plus a
 ## `SpecCapability`
 
 ::: rest_framework_pydantic_ai.SpecCapability
+
+## `AgentConventions`
+
+::: rest_framework_pydantic_ai.AgentConventions
 
 ## `QueryParam`
 

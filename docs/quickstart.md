@@ -402,7 +402,9 @@ The rest of the instructions are derived from the tools that step offers, so no
 line describes a tool it lacks. An `instructions=` override replaces those
 conventions but not this list, which is appended after the override: which
 tools a given step lacks is not something an override written in advance can
-say.
+say. The heading is the `unavailable_heading` field of
+[`conventions=`](#changing-what-the-model-is-told), and setting it to `None`
+drops the heading and the list, with an override or without one.
 
 A few things follow from how it is asked:
 
@@ -429,6 +431,103 @@ whatever was listed, a call against a listing that went stale is refused as
 [below](#a-refused-affordance-names-its-code), and a model calling a tool that
 was left out gets pydantic-ai's unknown-tool retry, which names the tools that do
 exist.
+
+## Changing what the model is told
+
+Every line of the instructions block, the heading of the unavailable list
+included, is a field of
+[`AgentConventions`](reference.md#rest_framework_pydantic_ai.AgentConventions),
+and so are three sentences outside it: the description a handle field gets when
+it declares none, the sentence scoping a paged tool's read-shaping parameters,
+and the retry for a missing argument. `conventions=` changes them one line at a
+time. Each field defaults to the toolset's own wording, so `AgentConventions()`
+changes nothing, and leaving `conventions=` unset is the same as passing it.
+
+Nothing else the toolset writes is a field. The descriptions of the arguments it
+adds, such as `limit` and `page`, stay fixed, and so do its other retries: a
+`limit` or `page` that is not a positive integer, an `ordering` the tool does not
+take, a service asking for more input, and the opening of a
+[render retry](#a-selection-the-serializer-rejects), whose closing scope
+sentence is the one part that is a field.
+
+```python
+from rest_framework_pydantic_ai import AgentConventions, SpecToolset
+
+toolset = SpecToolset(
+    specs,
+    conventions=AgentConventions(
+        # {page_size} is the page an omitted `limit` is served; a literal brace is doubled.
+        pagination=(
+            "- Collections come back one page at a time, as "
+            '{{"items": [...], "page": 1, "totalPages": N, "hasNext": true|false}}, '
+            "{page_size} items unless you pass `limit`. Ask for the next `page` while "
+            "`hasNext` is true."
+        ),
+        handles=None,  # this audience never sees identifiers, so say nothing about them
+    ),
+)
+```
+
+**A field changes what a line says, never whether it appears.** The toolset still
+decides that, exactly as before: the `pagination` line above is still absent from
+a toolset with no list tool, and the block is still re-derived on each step an
+[unmet condition](#an-operation-that-is-unavailable-right-now-is-left-out) leaves
+a tool out, so an overridden line goes with the tool it describes. `None` drops a
+line wherever it would have been said.
+
+| Field | Where it lands | Said when | Placeholders |
+| --- | --- | --- | --- |
+| `base` | instructions, first | always | none |
+| `pagination` | instructions | some tool returns a page | `{page_size}` |
+| `ordering` | instructions | some tool advertises a sort argument | `{names}` |
+| `handles` | instructions | some tool's output marks a handle | none |
+| `read_shaping` | instructions | some tool declares a `QueryParam` | `{names}` |
+| `read_shaping_on_pages` | instructions, after `read_shaping` | that tool also returns a page | none |
+| `unavailable_heading` | instructions, last, above the tools left out | a condition left a tool out this step | none |
+| `handle_field_description` | a handle field's output schema | the field declares no description of its own | none |
+| `query_param_on_pages` | a `QueryParam`'s description, and the [render retry](#a-selection-the-serializer-rejects) | the tool returns a page | none |
+| `missing_arguments` | the retry for a call missing an argument | a selector parameter or a required `UrlKwarg` is left out | `{names}` |
+
+A few rules follow from what each field is:
+
+- **Every field is a `str.format` template**, placeholders or not, so a literal
+  brace is written twice everywhere. `{names}` is each name in backticks, joined
+  with `, ` (sorted, except `ordering`'s, which follow the tools).
+- **A typo fails at startup.** A placeholder the field does not accept, an
+  unbalanced brace, or a format spec its value cannot take raises
+  `ImproperlyConfigured` naming the field when the `AgentConventions` is built.
+- **`None` on `read_shaping` drops `read_shaping_on_pages` too**, because that
+  sentence continues it; `None` on `unavailable_heading` drops the list beneath
+  it. To drop a line, use `None`, not `""`, which leaves a blank line.
+  `missing_arguments` cannot be `None`, empty or only whitespace: it is the
+  retry's whole text.
+- **`missing_arguments` covers the two checks made before the input serializer
+  runs.** A field the input serializer requires is still reported in the
+  serializer's own words.
+
+**Some lines state facts about behaviour, and an override owns keeping them
+true.** `pagination` and `query_param_on_pages` name the page envelope's keys, and
+`base` says which failures come back as a retry and which as a failed call. The
+toolset goes on behaving as the defaults describe whatever the text says, so a
+rewording that drops or contradicts one of those facts tells the model something
+false.
+
+**`conventions=` and `instructions=`.** `instructions=` replaces the whole
+derived block, so changing one of its lines (`base` through
+`read_shaping_on_pages`) beside it would be ignored, and the toolset refuses the
+pair with `ImproperlyConfigured` naming the fields. The other four land outside
+the block and apply either way, `unavailable_heading` included, since the list of
+unavailable operations is appended after an override too. Prefer `conventions=`
+where it can say what you need: an override is a copy of the block, so it keeps
+advising about pagination on a step with no list tool, and it misses every
+correction a later release makes to the wording.
+
+`SpecCapability` takes the same keyword, and
+[`SpecCapability.from_toolset`](reference.md#rest_framework_pydantic_ai.SpecCapability.from_toolset)
+keeps the conventions of the toolset it wraps. They reach this toolset's tools
+only: the MCP transport, djangorestframework-mcp-server, writes its own schemas
+and retries, so a model reading the same specs over MCP is told what that
+transport is configured to say.
 
 ## Unexpected arguments
 
@@ -640,7 +739,10 @@ each row for an `items` field it does not have. The toolset tells the model this
 
 An `instructions=` override replaces the derived block, and this line with it:
 an override written before this sentence existed does not gain it, so add the
-advice to your own text if your tools page and take a selection.
+advice to your own text if your tools page and take a selection. Changing the
+lines you need with [`conventions=`](#changing-what-the-model-is-told) instead
+keeps this one, and both sentences are fields there (`read_shaping_on_pages` and
+`query_param_on_pages`).
 
 ### A selection the serializer rejects
 
