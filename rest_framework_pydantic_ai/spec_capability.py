@@ -24,6 +24,7 @@ from rest_framework_pydantic_ai.spec_toolset import (
     SpecToolset,
     UserExtractor,
 )
+from rest_framework_pydantic_ai.types.agent_conventions import AgentConventions
 from rest_framework_pydantic_ai.types.query_param import QueryParam
 from rest_framework_pydantic_ai.types.url_kwarg import UrlKwarg
 
@@ -91,6 +92,7 @@ class SpecCapability(AbstractCapability[Any]):
         defer_loading: bool = False,
         description: str | None = None,
         instructions: str | None = None,
+        conventions: AgentConventions | None = None,
         get_user: UserExtractor | None = None,
         get_progress: ProgressExtractor | None = None,
         unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
@@ -118,6 +120,7 @@ class SpecCapability(AbstractCapability[Any]):
             specs,
             id=id,
             instructions=instructions,
+            conventions=conventions,
             get_user=get_user,
             get_progress=get_progress,
             unknown_arguments=unknown_arguments,
@@ -156,9 +159,11 @@ class SpecCapability(AbstractCapability[Any]):
         path).
 
         The capability adopts the toolset's ``id``, and its tools and
-        instructions are the toolset's own — set an ``instructions`` override on
-        the ``SpecToolset`` itself if you need one, so ``from_toolset(ts)`` and
-        ``SpecCapability(specs, …)`` behave identically.
+        instructions are the toolset's own — set an ``instructions`` override or
+        ``conventions`` on the ``SpecToolset`` itself if you need them, so
+        ``from_toolset(ts)`` and ``SpecCapability(specs, …)`` behave identically.
+        A toolset's ``conventions`` are kept because the toolset is: this wraps
+        that instance rather than rebuilding it.
 
         ``description`` means what it does on the constructor: the catalog line
         a deferred capability is chosen by. It has no toolset counterpart to

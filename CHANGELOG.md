@@ -6,6 +6,76 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`AgentConventions`, and `conventions=` on `SpecToolset` and `SpecCapability`:
+  every sentence the toolset writes for the model can be reworded one line at a
+  time.** Until now the only way to change any of it was `instructions=`, which
+  replaces the whole derived block. That is a fork: it freezes a consumer at the
+  text they copied, so they miss every later correction (the read-shaping line
+  0.32.0 added never reached anyone with an override), and it keeps advising about
+  pagination on a step with no list tool. `AgentConventions` is a frozen dataclass
+  with one field per line:
+
+  - in the instructions block, `base`, `pagination` (`{page_size}`), `ordering`
+    (`{names}`), `handles`, `read_shaping` (`{names}`), `read_shaping_on_pages` and
+    `unavailable_heading`;
+  - in a tool's schema, `handle_field_description` (a handle field that declares
+    no description) and `query_param_on_pages` (a paged tool's `QueryParam`
+    description, and the render-time retry on such a tool);
+  - in a retry, `missing_arguments` (`{names}`), the text of the retry for a
+    selector parameter or a required `UrlKwarg` left out.
+
+  Every field defaults to the text this package said before, byte for byte, so a
+  toolset that passes nothing tells the model exactly what it did, and
+  `conventions=None` (the default) is `AgentConventions()`.
+
+  **A field changes what a line says, never whether it appears.** The toolset
+  still decides that, per step: an overridden pagination line is absent from a
+  toolset with no list tool, and an overridden line about a tool goes with that
+  tool when an operation condition leaves it out. `None` drops a line
+  (`read_shaping` takes `read_shaping_on_pages` with it, and `unavailable_heading`
+  the list beneath it); `missing_arguments` cannot be `None`, since it is a retry's
+  whole text. When every line is dropped and nothing is unavailable,
+  `get_instructions` returns `None`.
+
+  **Each field is a `str.format` template, checked when it is built.** A
+  placeholder the field does not accept, an unbalanced brace, or a format spec its
+  value cannot take raises `ImproperlyConfigured` naming the field, so a typo fails
+  at startup rather than inside a prompt. A literal brace is written twice, in
+  every field.
+
+  **`instructions=` beside a `conventions=` that changes a block line is refused**
+  with `ImproperlyConfigured` naming the fields, because the override would ignore
+  them without a word. `unavailable_heading`, `handle_field_description`,
+  `query_param_on_pages` and `missing_arguments` land outside the block and apply
+  with or without an override, so changing only those is allowed.
+
+  `SpecCapability.from_toolset` keeps the conventions of the toolset it wraps,
+  which is how they reach a host that wraps a pre-built `SpecToolset`. Some lines
+  state facts about behaviour, such as the page envelope's keys or which failures
+  are retried, and the toolset keeps behaving as the defaults describe whatever
+  the text says, so an override that rewords one owns keeping it true.
+
+  Released alongside djangorestframework-mcp-server 0.51.0, which adds its own
+  `AgentConventions` for the wording that transport writes. The two are configured
+  separately and neither requires the other. The retry for a required argument
+  left out before the input serializer runs reads the same on both,
+  ``Missing required argument(s): `pk`.``, which is the wording this package
+  already used and the default here.
+
+### Changed
+
+- **The model-facing wording is no longer held in private constants of
+  `spec_toolset`.** `_BASE_INSTRUCTIONS`, `_HANDLE_INSTRUCTION`,
+  `_HANDLE_DESCRIPTION`, `_UNAVAILABLE_INSTRUCTION`, `_PAGED_QUERY_PARAM_SCOPE`,
+  `_PAGED_QUERY_PARAM_INSTRUCTION` and the `_list_instruction` /
+  `_ordering_instruction` helpers are gone; each sentence is now the default of an
+  `AgentConventions` field. They were private, but a test that imported one to
+  assert what the model is told should read the field instead, for example
+  `AgentConventions().handle_field_description`, or
+  `AgentConventions().pagination.format(page_size=20)`.
+
 ## [0.33.0] — 2026-10-05
 
 ### Added

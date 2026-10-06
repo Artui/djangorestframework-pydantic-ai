@@ -89,6 +89,7 @@ from rest_framework_services.dispatch.unguarded_specs import unguarded_specs
 from rest_framework_services.types.progress_reporter import ProgressReporter
 from rest_framework_services.types.validate_channel_names import validate_channel_names
 
+from rest_framework_pydantic_ai.types.agent_conventions import AgentConventions
 from rest_framework_pydantic_ai.types.query_param import QueryParam
 from rest_framework_pydantic_ai.types.url_kwarg import UrlKwarg
 
@@ -416,6 +417,19 @@ class SpecToolset(AbstractToolset[Any]):
             one out of the catalog: the override replaces conventions, and which
             operations are offered on a given step is state no override written in
             advance could have described.
+
+            Refused beside a ``conventions=`` that changes a line only the
+            derived block says, because the override would ignore it without a
+            word. The fields that land elsewhere -- ``unavailable_heading``,
+            ``handle_field_description``, ``query_param_on_pages`` and
+            ``missing_arguments`` -- apply with or without it.
+        conventions: The wording the model is told, one line per field -- an
+            [`AgentConventions`][rest_framework_pydantic_ai.AgentConventions].
+            ``None`` is ``AgentConventions()``, today's wording. A field changes
+            what its line says and never whether it appears, which the toolset
+            still decides per step; ``None`` on a field drops its line. Unlike
+            ``instructions=``, an override of one line leaves every other line
+            derived, conditional and current.
         get_user: Reads the acting identity off the run context. Defaults to
             ``ctx.deps.user`` (the
             [`AgentDeps`][rest_framework_pydantic_ai.AgentDeps] shape).
@@ -576,8 +590,10 @@ class SpecToolset(AbstractToolset[Any]):
         ImproperlyConfigured: A spec has no ``permission_classes`` and
             ``require_permissions`` is set, a ``QueryParam`` / ``UrlKwarg`` on
             a ``many=True`` spec's tool -- declared here or on its entry's
-            ``OfflineContract`` -- shares the name its list travels under, or
-            one is named after a registered pool seed.
+            ``OfflineContract`` -- shares the name its list travels under, one
+            is named after a registered pool seed, or ``instructions=`` is given
+            beside a ``conventions=`` that changes a line of the block it
+            replaces.
         ValueError: A tool name is outside ``^[a-zA-Z0-9_-]{1,64}$``, a per-tool
             mapping names a tool this toolset does not expose, or one name is
             registered on both parameter channels.
@@ -589,6 +605,7 @@ class SpecToolset(AbstractToolset[Any]):
         *,
         id: str = "drf-specs",
         instructions: str | None = None,
+        conventions: AgentConventions | None = None,
         get_user: UserExtractor | None = None,
         get_progress: ProgressExtractor | None = None,
         unknown_arguments: UnknownArguments = UnknownArguments.REJECT,
@@ -621,6 +638,8 @@ class SpecToolset(AbstractToolset[Any]):
         self._descriptions: dict[str, str] = _validate_descriptions(resolved, descriptions)
         self._id = id
         self._instructions_override = instructions
+        self._conventions = conventions if conventions is not None else _DEFAULT_CONVENTIONS
+        _validate_conventions_beside_instructions(self._conventions, instructions)
         self._specs: dict[str, Spec] = dict(resolved)
         self._get_user: UserExtractor = get_user or _default_get_user
         self._get_progress: ProgressExtractor = get_progress or _default_get_progress
@@ -719,6 +738,7 @@ class SpecToolset(AbstractToolset[Any]):
                 projection=self._projections[name],
                 registry=json_schema_registry,
                 pool_seeds=pool_seeds,
+                conventions=self._conventions,
             )
             for name, spec in self._specs.items()
         }
@@ -740,7 +760,7 @@ class SpecToolset(AbstractToolset[Any]):
         # run that arrives at the same combination. Bounded because the key
         # space is every subset of ``_conditioned``, however few of them a real
         # deployment visits.
-        self._instructions_without: Callable[[frozenset[str]], str] = lru_cache(
+        self._instructions_without: Callable[[frozenset[str]], str | None] = lru_cache(
             maxsize=_INSTRUCTIONS_MEMO_SIZE
         )(self._derive_instructions_without)
 
@@ -876,31 +896,45 @@ class SpecToolset(AbstractToolset[Any]):
         A toolset declaring no such condition is untouched by any of this: it
         asks nothing, and returns the same string every step.
 
+        Each line is worded by the toolset's ``conventions``, which change what a
+        line says and never whether it appears.
+
         Returns:
             The ``instructions`` override when one was given, else a block
             derived from the specs — each line conditional on something in this
             toolset being able to act on it, so the prompt carries no advice that
             cannot fire — followed in either case by the operations unavailable
-            this step, when there are any.
+            this step, when there are any. ``None`` when ``conventions`` dropped
+            every line that would have been said and nothing is unavailable.
         """
         unavailable = await self._unavailable_operations(ctx)
+        block: str | None
         if self._instructions_override is not None:
             block = self._instructions_override
         elif unavailable:
             block = self._instructions_without(frozenset(unavailable))
         else:
             block = self._derived_instructions
-        if not unavailable:
+        heading = self._conventions.unavailable_heading
+        # One arc for two reasons to say nothing more. ``not unavailable`` is held
+        # by every toolset declaring no condition; ``heading is None`` by
+        # ``test_none_drops_a_block_line_and_nothing_else[unavailable_heading]``,
+        # where a tool *is* left out.
+        if not unavailable or heading is None:
             return block
-        return f"{block}\n{_unavailable_instruction(unavailable)}"
+        listed = _unavailable_instruction(unavailable, heading)
+        # A block with every line dropped is ``None``, and the list then stands
+        # alone (``test_with_every_line_dropped_the_unavailable_list_stands_alone``).
+        return listed if block is None else f"{block}\n{listed}"
 
     @cached_property
-    def _derived_instructions(self) -> str:
+    def _derived_instructions(self) -> str | None:
         """The conventions block, built once and kept.
 
-        A pure function of five attributes ``__init__`` assigns and nothing
+        A pure function of six attributes ``__init__`` assigns and nothing
         reassigns -- the specs, the merged query-param declarations, the
-        projections, the schema registry and the page ceiling -- so recomputing
+        projections, the schema registry, the page ceiling and the conventions,
+        which are frozen -- so recomputing
         it is recomputing the same string. Pydantic-AI asks for instructions on **every model
         step**, and the derivation walks each list spec through
         ``spec_to_json_schema`` to find what that spec calls its sort.
@@ -924,9 +958,10 @@ class SpecToolset(AbstractToolset[Any]):
             registry=self._json_schema_registry,
             page_size=_served_page_size(self._max_page_size),
             pool_seeds=self._pool_seeds,
+            conventions=self._conventions,
         )
 
-    def _derive_instructions_without(self, omitted: frozenset[str]) -> str:
+    def _derive_instructions_without(self, omitted: frozenset[str]) -> str | None:
         """The conventions block for the tools a step offers, ``omitted`` aside.
 
         Reached through ``_instructions_without``, the per-instance memo
@@ -944,6 +979,7 @@ class SpecToolset(AbstractToolset[Any]):
             registry=self._json_schema_registry,
             page_size=_served_page_size(self._max_page_size),
             pool_seeds=self._pool_seeds,
+            conventions=self._conventions,
         )
 
     async def _unavailable_operations(self, ctx: RunContext[Any]) -> dict[str, Affordance]:
@@ -1360,7 +1396,9 @@ class SpecToolset(AbstractToolset[Any]):
         """Bind the six seams to this run, then run the shared pipeline.
 
         Separate from the module-level function of the same name because that one
-        has to stay usable without a toolset.
+        has to stay usable without a toolset. The toolset's ``conventions`` are
+        bound here too, beside the seams, so every route into a call words its
+        retries the same way.
         """
         return _call_spec(
             spec,
@@ -1374,6 +1412,7 @@ class SpecToolset(AbstractToolset[Any]):
             enforce_result_bytes=lambda *a, **kwargs: self.enforce_result_bytes(
                 *a, ctx=ctx, **kwargs
             ),
+            conventions=self._conventions,
             **kw,
         )
 
@@ -1782,99 +1821,28 @@ def _default_get_user(ctx: RunContext[Any]) -> Any:
     return ctx.deps.user
 
 
-# The conventions block ``SpecToolset.get_instructions`` teaches the model.
-#
-# The ``(code: <name>)`` sentence is unconditional, unlike the lines
-# ``_derive_instructions`` appends, because no spec can answer whether a refusal
-# will carry one: a declared ``Affordance`` produces it, and so does a service
-# raising ``ActionUnavailable`` by hand, which nothing declares. It is part of the
-# failure contract rather than advice about an argument, and costs one sentence.
-_BASE_INSTRUCTIONS = (
-    "The following tools call Django REST Framework services and selectors.\n"
-    "- A successful call returns the tool's data. A business-rule failure comes back as a "
-    "failed call whose content is a sentence explaining why — that is a final answer, not a "
-    "reason to retry; read it and report it, do not call the same tool the same way again. "
-    "The sentence may end with `(code: <name>)`, naming the rule that refused; it is the same "
-    "code an item's `affordances` answer carries when a tool advertised one.\n"
-    "- An invalid or missing argument comes back as a retry request naming the problem; "
-    "correct the argument and call again.\n"
-    "- A permission error is final: the current user may not perform that call — do not "
-    "retry it.\n"
-    "- Only pass documented parameters; unknown arguments are rejected."
-)
+_DEFAULT_CONVENTIONS = AgentConventions()
+"""The wording a toolset given no ``conventions=`` says, and the module-level default.
 
-
-def _list_instruction(page_size: int) -> str:
-    """The pagination line, stating the page size an omitted ``limit`` is served.
-
-    A function of the toolset's ceiling for the reason ``_served_page_size``
-    gives: the same number on every tool's ``limit`` and here, so the model is
-    not told one default in its instructions and another on the tool.
-    """
-    return (
-        "- Read-only tools that return a collection always return one page, shaped "
-        '{"items": [...], "page": 1, "totalPages": N, "hasNext": true|false}. They accept '
-        f"optional `limit` (items per page, default {page_size}) and `page` (1-based). When "
-        "`hasNext` is true there are more items than you were shown: ask for the next `page`, "
-        "or narrow the request with a filter — never answer as if the page were the whole "
-        "collection."
-    )
-
-
-_HANDLE_INSTRUCTION = (
-    "- Some tools return opaque identifier fields, described as such in the tool's "
-    "output. Pass them to other tools that ask for one; refer to records by their "
-    "name in anything you say, never by the identifier."
-)
-
-_HANDLE_DESCRIPTION = (
-    "An opaque identifier. Pass it to other tools that ask for one; refer to the record "
-    "by its name in anything you say, never by this value."
-)
-"""Fallback wording for a ``HANDLE`` field that declares no description of its own.
-
-drf-services deliberately supplies none: what a reader should *do* with an
-identifier depends on the reader, and only the transport knows its audience.
-Ours is a model reading a tool's output schema, so the sentence is the per-field
-half of ``_HANDLE_INSTRUCTION`` — same advice, at the field that needs it.
+Built once because it is frozen and validated at construction; private because
+``AgentConventions()`` is the public way to say the same thing.
 """
 
-_PAGED_QUERY_PARAM_SCOPE = (
-    "On a paged result it applies to each item in `items`, never to the page envelope "
-    "(`items`, `page`, `totalPages`, `hasNext`)."
+_BLOCK_CONVENTIONS = (
+    "base",
+    "pagination",
+    "ordering",
+    "handles",
+    "read_shaping",
+    "read_shaping_on_pages",
 )
-"""What a read-shaping param applies to on a tool that returns a page.
+"""The fields only the derived block says, so ``instructions=`` would ignore them.
 
-Appended to each ``QueryParam``'s description on a list tool, and to the retry a
-render-time rejection on one produces. The envelope is the likeliest target for
-a bad selection because it is exactly the shape the tool documents returning --
-``{items{id, name}}`` is a natural reading of it -- while the serializer that
-reads the param only ever sees one row. Worded here and not in drf-services for
-the reason ``_HANDLE_DESCRIPTION`` gives: what a reader should be told depends
-on the reader. The MCP transport carries the same sentence as its own copy.
-"""
-
-_PAGED_QUERY_PARAM_INSTRUCTION = (
-    "On a tool that returns a page, they apply to each item in `items`, never to the page itself."
-)
-"""The instructions-block half of ``_PAGED_QUERY_PARAM_SCOPE``.
-
-Added to the read-shaping line only when some list tool declares a ``QueryParam``
--- the block's rule that a line appears only when some tool can act on it.
-"""
-
-
-_UNAVAILABLE_INSTRUCTION = (
-    "- These operations exist but cannot be performed right now, so they are not among your "
-    "tools. If the user asks for one, say it is unavailable at the moment and give the reason "
-    "listed for it, rather than guessing why:"
-)
-"""The heading of the per-step list of operations an unmet condition left out.
-
-Said once, above the names, so each tool left out costs one short line. What it
-has to carry is the thing the catalog's silence cannot: the tool exists, and
-there is a reason it is absent that can be passed on to a person as written --
-a condition's ``reason`` is a sentence written for people and models alike.
+The other four land somewhere an override does not reach: the heading of the
+per-step unavailable list (appended after the override), a handle field's output
+schema, a ``QueryParam``'s schema and the render retry, and the missing-argument
+retry. ``test_the_fixture_reaches_every_field`` and the ``_LANDS`` table beside
+it say where each field lands.
 """
 
 _INSTRUCTIONS_MEMO_SIZE = 32
@@ -1886,38 +1854,67 @@ or closed -- and an evicted entry costs one derivation, tens of microseconds.
 """
 
 
-def _unavailable_instruction(unavailable: Mapping[str, Affordance]) -> str:
+def _validate_conventions_beside_instructions(
+    conventions: AgentConventions, instructions: str | None
+) -> None:
+    """Refuse a block line changed beside the override that replaces the block.
+
+    Ignored configuration fails loudly here, and the block's lines are exactly
+    what ``instructions=`` stands in for. Compared against the defaults field by
+    field, so ``AgentConventions()`` passed explicitly is not a change, and
+    neither is changing only the fields that land outside the block. Every
+    changed field is named at once, so one restart fixes them all.
+    """
+    if instructions is None:
+        return
+    changed = [
+        name
+        for name in _BLOCK_CONVENTIONS
+        if getattr(conventions, name) != getattr(_DEFAULT_CONVENTIONS, name)
+    ]
+    if changed:
+        raise ImproperlyConfigured(
+            f"conventions= changes {', '.join(changed)}, which only the derived instructions "
+            "block says, and instructions= replaces that block, so the change would be "
+            "ignored. Drop instructions= to keep the derived block with your wording, or "
+            "change only unavailable_heading, handle_field_description, query_param_on_pages "
+            "or missing_arguments beside it."
+        )
+
+
+def _render(template: str | None, **values: Any) -> str | None:
+    """One field of ``AgentConventions`` as the model reads it, or ``None`` if dropped.
+
+    Every field is rendered, placeholders or not, so a doubled brace means one
+    brace in all of them alike (``test_a_doubled_brace_reaches_the_model_as_one``).
+    The fields were validated against these exact values' names and types when
+    the conventions were built, so this cannot raise.
+    """
+    return None if template is None else template.format(**values)
+
+
+def _listed(names: Sequence[str]) -> str:
+    """Names as a ``{names}`` placeholder receives them: each in backticks, comma-joined."""
+    return ", ".join(f"`{name}`" for name in names)
+
+
+def _unavailable_instruction(unavailable: Mapping[str, Affordance], heading: str) -> str:
     """The heading, then one line per tool left out: its name and its ``reason``.
 
     In the toolset's declaration order, which is the order ``unavailable`` was
     built in, so the same step always reads the same way. The ``code`` is left
     out on purpose: it is for programs and for tying a refusal to a row's
     ``affordances``, and a model relaying this to a person has no use for it.
+
+    Said once, above the names, so each tool left out costs one short line. What
+    the heading has to carry is the thing the catalog's silence cannot: the tool
+    exists, and there is a reason it is absent that can be passed on to a person
+    as written -- a condition's ``reason`` is a sentence written for people and
+    models alike.
     """
-    lines = [_UNAVAILABLE_INSTRUCTION]
+    lines = [heading.format()]
     lines.extend(f"  - `{name}`: {affordance.reason}" for name, affordance in unavailable.items())
     return "\n".join(lines)
-
-
-def _ordering_instruction(names: Sequence[str]) -> str:
-    """The sort-usage line, naming the arguments the toolset actually advertises.
-
-    **Parameterised because the name is not fixed.** The prose used to say
-    ``ordering`` outright, which was a second hard-coding of the same assumption
-    the dispatch made — so a toolset whose ``OrderingFilter`` is called
-    ``sorting`` would have been handed an instruction naming an argument that
-    does not exist, which is worse than no instruction at all.
-
-    Several names can be live at once: one tool's filter may be ``ordering`` and
-    another's ``sorting``, and a model reading one block for the whole toolset
-    has to be told both.
-    """
-    listed = ", ".join(f"`{name}`" for name in names)
-    return (
-        f"- Some collection tools also accept {listed}. It takes exactly one of the values "
-        "listed in that tool's schema (a sortable name, or the same name prefixed with `-` for "
-        "descending) — not a comma-separated list, and not an arbitrary column."
-    )
 
 
 def _has_handle(projection: AudienceProjection) -> bool:
@@ -1933,7 +1930,8 @@ def _derive_instructions(
     registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
     page_size: int = DEFAULT_PAGE_SIZE,
     pool_seeds: PoolSeeds = DEFAULT_POOL_SEEDS,
-) -> str:
+    conventions: AgentConventions = _DEFAULT_CONVENTIONS,
+) -> str | None:
     """Build the conventions block from the specs / query params / ordering.
 
     Every line is conditional on something being able to act on it: pagination
@@ -1942,43 +1940,63 @@ def _derive_instructions(
     cannot use is not neutral — it is budget spent teaching it about an argument
     that will be rejected.
 
+    **The conditions are decided here and the words come from ``conventions``.**
+    A consumer changes what a line says, never whether it appears, so an
+    overridden pagination line is still absent from a toolset with no list tool
+    and from a step that offers none. A field set to ``None`` drops its line;
+    ``None`` comes back when every line was dropped, so a toolset that says
+    nothing adds nothing to the prompt.
+
     **The specs are the only source of an ordering argument**, so this asks them
     and nothing else: whatever the schema advertises is what the model may send.
     ``pool_seeds`` is the toolset's, so a sort a registered seed fills is asked
     about as the schema was built.
     """
-    lines = [_BASE_INSTRUCTIONS]
+    lines: list[str | None] = [_render(conventions.base)]
     if any(_is_list_selector(spec) for spec in specs.values()):
-        lines.append(_list_instruction(page_size))
+        # The same number each ``limit`` description states, for the reason
+        # ``_served_page_size`` gives.
+        lines.append(_render(conventions.pagination, page_size=page_size))
     # Deduplicated, in first-seen order: one toolset can carry several tools
-    # whose sorts are declared under different names.
+    # whose sorts are declared under different names, and a model reading one
+    # block for the whole toolset has to be told each. Named rather than said as
+    # ``ordering`` outright, because a toolset whose ``OrderingFilter`` is called
+    # ``sorting`` would otherwise be told about an argument that does not exist.
     ordering_names: list[str] = []
     for spec in specs.values():
         advertised = _spec_ordering_argument(spec, pool_seeds=pool_seeds, registry=registry)
         if advertised is not None and advertised not in ordering_names:
             ordering_names.append(advertised)
     if ordering_names:
-        lines.append(_ordering_instruction(ordering_names))
+        lines.append(_render(conventions.ordering, names=_listed(ordering_names)))
     # A toolset with no handle anywhere gains nothing from being told how to
     # treat one, and this block is prepended to every run.
     if any(_has_handle(projection) for projection in (projections or {}).values()):
-        lines.append(_HANDLE_INSTRUCTION)
+        lines.append(_render(conventions.handles))
     query_param_names = sorted({qp.name for params in tool_query_params.values() for qp in params})
     if query_param_names:
-        joined = ", ".join(f"`{name}`" for name in query_param_names)
-        line = (
-            f"- Some tools accept read-shaping parameters ({joined}) that adjust the shape "
-            "of the returned data without filtering it."
-        )
+        line = _render(conventions.read_shaping, names=_listed(query_param_names))
         # Keyed on a list tool *declaring* one, not on a list tool and a
         # ``QueryParam`` both being present: a toolset whose only read-shaping
         # param is on a retrieve tool returns no page for it to be misread against.
-        if any(
-            _is_list_selector(spec) and tool_query_params.get(name) for name, spec in specs.items()
-        ):
-            line = f"{line} {_PAGED_QUERY_PARAM_INSTRUCTION}"
+        scope = (
+            _render(conventions.read_shaping_on_pages)
+            if any(
+                _is_list_selector(spec) and tool_query_params.get(name)
+                for name, spec in specs.items()
+            )
+            else None
+        )
+        # The continuation goes with the line it continues. One arc: ``line is
+        # not None`` is held by ``test_none_drops_a_block_line_and_nothing_else
+        # [read_shaping]``; ``scope is not None`` by its ``[read_shaping_on_pages]``
+        # case and by ``test_an_overridden_line_follows_a_tool_a_condition_leaves_out``,
+        # whose read-shaping param is on a tool that returns no page.
+        if line is not None and scope is not None:
+            line = f"{line} {scope}"
         lines.append(line)
-    return "\n".join(lines)
+    said = [line for line in lines if line is not None]
+    return "\n".join(said) if said else None
 
 
 def _build_tool_def(
@@ -1992,6 +2010,7 @@ def _build_tool_def(
     projection: AudienceProjection | None = None,
     registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
     pool_seeds: PoolSeeds = DEFAULT_POOL_SEEDS,
+    conventions: AgentConventions = _DEFAULT_CONVENTIONS,
 ) -> ToolDefinition:
     """One tool definition: what the model may send, and what it gets back.
 
@@ -2009,9 +2028,17 @@ def _build_tool_def(
         name=name,
         description=description,
         parameters_json_schema=_input_schema(
-            spec, query_params, url_kwargs, max_page_size, registry=registry, pool_seeds=pool_seeds
+            spec,
+            query_params,
+            url_kwargs,
+            max_page_size,
+            registry=registry,
+            pool_seeds=pool_seeds,
+            conventions=conventions,
         ),
-        return_schema=_return_schema(spec, projection=projection, registry=registry),
+        return_schema=_return_schema(
+            spec, projection=projection, registry=registry, conventions=conventions
+        ),
         metadata={"annotations": {"readOnlyHint": isinstance(spec, SelectorSpec)}},
     )
 
@@ -2021,6 +2048,7 @@ def _return_schema(
     *,
     projection: AudienceProjection | None = None,
     registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
+    conventions: AgentConventions = _DEFAULT_CONVENTIONS,
 ) -> dict[str, Any] | None:
     """The shape of what this tool returns, or ``None`` when the spec declares none.
 
@@ -2065,7 +2093,10 @@ def _return_schema(
         kind=SelectorKind.LIST if _takes_a_list(spec) else rendered.kind,
         paginate=_is_list_selector(spec),
         projection=projection,
-        handle_description=_HANDLE_DESCRIPTION,
+        # The fallback for a handle declaring no wording of its own. drf-services
+        # supplies none on purpose, and ``None`` here leaves such a field
+        # undescribed, which is what dropping the line means.
+        handle_description=_render(conventions.handle_field_description),
         registry=registry,
         affordances=rendered.affordances,
         # An ``allow_none`` retrieve that finds nothing returns ``None``, so its
@@ -2116,6 +2147,7 @@ def _input_schema(
     *,
     registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
     pool_seeds: PoolSeeds = DEFAULT_POOL_SEEDS,
+    conventions: AgentConventions = _DEFAULT_CONVENTIONS,
 ) -> dict[str, Any]:
     """The tool's parameter schema, with list-selector pagination + registered
     query params + URL kwargs merged into ``properties``.
@@ -2154,7 +2186,8 @@ def _input_schema(
     if paged:
         extra["page"] = _PAGE_PARAM_SCHEMA
         extra["limit"] = _limit_param_schema(max_page_size)
-    extra.update({qp.name: _query_param_schema(qp, paged=paged) for qp in query_params})
+    scope = _render(conventions.query_param_on_pages) if paged else None
+    extra.update({qp.name: _query_param_schema(qp, scope=scope) for qp in query_params})
     extra.update({uk.name: uk.json_schema() for uk in url_kwargs})
     required: list[str] = list(schema.get("required", []))
     required.extend(uk.name for uk in url_kwargs if uk.required and uk.name not in required)
@@ -2436,7 +2469,7 @@ def _admits_unset(annotation: Any) -> bool:
     return annotation is UnsetType or any(_admits_unset(arg) for arg in get_args(annotation))
 
 
-def _query_param_schema(query_param: QueryParam, *, paged: bool) -> dict[str, Any]:
+def _query_param_schema(query_param: QueryParam, *, scope: str | None) -> dict[str, Any]:
     """One ``QueryParam``'s property, told what it applies to when the tool pages.
 
     Every list selector here returns a page, and the declared description is
@@ -2446,13 +2479,15 @@ def _query_param_schema(query_param: QueryParam, *, paged: bool) -> dict[str, An
     a value. Appended after the declared text, which stays first because it is
     the part that says what the param *is*; with no declared text it is the
     whole description.
+
+    ``scope`` is ``None`` on a tool that does not page, and on one that does when
+    the conventions dropped the sentence; either way the declaration stands as
+    written.
     """
     schema = query_param.json_schema()
-    if paged:
+    if scope is not None:
         declared = schema.get("description")
-        schema["description"] = (
-            f"{declared} {_PAGED_QUERY_PARAM_SCOPE}" if declared else _PAGED_QUERY_PARAM_SCOPE
-        )
+        schema["description"] = f"{declared} {scope}" if declared else scope
     return schema
 
 
@@ -2566,6 +2601,7 @@ def _call_spec(
     render_output: _OutputRenderer | None = None,
     output_extras: _ExtrasBuilder | None = None,
     enforce_result_bytes: _ResultBounder | None = None,
+    conventions: AgentConventions = _DEFAULT_CONVENTIONS,
 ) -> Any:
     """Run ``spec`` under an off-HTTP context and render the result.
 
@@ -2590,6 +2626,9 @@ def _call_spec(
 
     ``action`` becomes ``view.action`` on the synthetic view, so a permission
     class reading it sees the tool name rather than ``None``.
+
+    ``conventions`` words the two retries this function writes itself: a missing
+    argument, and a read-shaping value the render rejected on a paged tool.
     """
     shape: _PageShaper = shape_page or _shape_list
     render: _OutputRenderer = render_output or _render_output
@@ -2615,7 +2654,7 @@ def _call_spec(
         if name not in args
     ]
     if missing:
-        raise _missing_arguments(missing)
+        raise _missing_arguments(missing, conventions)
     page_args = _pop_pagination(spec, args, pool_seeds=pool_seeds, registry=json_schema_registry)
     # **Read before the pop, because the pop erases the answer.** It seeds a
     # declared ``default`` for every name the caller left out, so afterwards a
@@ -2630,7 +2669,7 @@ def _call_spec(
     # That is what makes the provider-only case work: a ``project_pk`` a scoping
     # provider reads off ``view.kwargs`` is never a spec input.
     query_param_values = _pop_query_params(query_params, args)
-    url_kwarg_values = _pop_url_kwargs(url_kwargs, args)
+    url_kwarg_values = _pop_url_kwargs(url_kwargs, args, conventions=conventions)
     # Last of the pops, because the filter data it returns is built from whatever
     # ``args`` is left holding once every other channel has taken its own.
     filter_data = _pop_filter_ordering(
@@ -2818,7 +2857,11 @@ def _call_spec(
         if not supplied_query_params:
             raise
         raise ModelRetry(
-            _render_rejection_message(supplied_query_params, exc.detail, paged=page is not None)
+            _render_rejection_message(
+                supplied_query_params,
+                exc.detail,
+                scope=_render(conventions.query_param_on_pages) if page is not None else None,
+            )
         ) from exc
     if page is not None:
         # **After the render, never before.** The projection lands on the rows;
@@ -2986,7 +3029,7 @@ def _validation_detail_path(path: str, key: Any) -> str:
     return f"{path}.{key}" if path else str(key)
 
 
-def _render_rejection_message(names: Sequence[str], detail: Any, *, paged: bool) -> str:
+def _render_rejection_message(names: Sequence[str], detail: Any, *, scope: str | None) -> str:
     """The retry for a render the caller's read-shaping values broke.
 
     For example ``"`fields` was rejected while rendering the result: Unknown
@@ -3003,6 +3046,8 @@ def _render_rejection_message(names: Sequence[str], detail: Any, *, paged: bool)
     On a paged tool the scope sentence follows, because the likeliest way to
     write a bad selection there is against the page envelope, which is exactly
     the shape the tool's result documents -- saying so turns that into one retry.
+    ``scope`` is that sentence as the conventions word it, ``None`` on a tool that
+    does not page or where the conventions dropped it.
     """
     quoted = [f"`{name}`" for name in names]
     subject = quoted[0] if len(quoted) == 1 else f"{', '.join(quoted[:-1])} or {quoted[-1]}"
@@ -3013,8 +3058,8 @@ def _render_rejection_message(names: Sequence[str], detail: Any, *, paged: bool)
     # django-restql's do not); the sentence should end in exactly one either way.
     if not message.endswith((".", "!", "?")):
         message += "."
-    if paged:
-        message = f"{message} {_PAGED_QUERY_PARAM_SCOPE}"
+    if scope is not None:
+        message = f"{message} {scope}"
     return message
 
 
@@ -3162,7 +3207,12 @@ def _pop_query_params(query_params: Sequence[QueryParam], args: dict[str, Any]) 
     return values
 
 
-def _pop_url_kwargs(url_kwargs: Sequence[UrlKwarg], args: dict[str, Any]) -> dict[str, Any]:
+def _pop_url_kwargs(
+    url_kwargs: Sequence[UrlKwarg],
+    args: dict[str, Any],
+    *,
+    conventions: AgentConventions = _DEFAULT_CONVENTIONS,
+) -> dict[str, Any]:
     """Strip the registered URL kwargs from ``args`` into a plain ``dict``.
 
     A declared kwarg the model supplied is popped; one it omitted contributes its
@@ -3186,21 +3236,21 @@ def _pop_url_kwargs(url_kwargs: Sequence[UrlKwarg], args: dict[str, Any]) -> dic
         elif url_kwarg.required:
             missing.append(url_kwarg.name)
     if missing:
-        raise _missing_arguments(missing)
+        raise _missing_arguments(missing, conventions)
     return values
 
 
-def _missing_arguments(names: Sequence[str]) -> ModelRetry:
+def _missing_arguments(names: Sequence[str], conventions: AgentConventions) -> ModelRetry:
     """The retry for a call that left out arguments it cannot run without.
 
     One sentence for both checks that ask -- a required ``UrlKwarg`` and a
     parameter the tool's schema requires -- so the model reads the same wording
-    whichever it omitted. Sorted, so a message naming several reads the same way
-    on every call (the ``several`` case of
-    ``test_a_selector_call_missing_a_required_argument_is_handed_back``).
+    whichever it omitted, worded by ``conventions.missing_arguments``. Sorted, so
+    a message naming several reads the same way on every call (the ``several``
+    case of ``test_a_selector_call_missing_a_required_argument_is_handed_back``).
+    The field cannot be ``None``: a retry has to say something.
     """
-    listed = ", ".join(f"`{name}`" for name in sorted(names))
-    return ModelRetry(f"Missing required argument(s): {listed}.")
+    return ModelRetry(conventions.missing_arguments.format(names=_listed(sorted(names))))
 
 
 def _coerce_positive_int(value: Any, name: str) -> int | None:

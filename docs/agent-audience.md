@@ -55,6 +55,12 @@ actually returns a handle:
 > output. Pass them to other tools that ask for one; refer to records by their
 > name in anything you say, never by the identifier.
 
+A handle that declares no description of its own is described in the output
+schema with the field-level half of the same advice. Both sentences are yours to
+reword, or drop, through
+[`conventions=`](quickstart.md#changing-what-the-model-is-told): `handles` and
+`handle_field_description`.
+
 ## One tool that needs what its siblings hide
 
 The serializer is the declaration and stays authoritative. The exception is a

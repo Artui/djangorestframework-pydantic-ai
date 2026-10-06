@@ -16,14 +16,26 @@ from rest_framework_services import (
     ServiceSpec,
 )
 
-from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecCapability, SpecToolset, UrlKwarg
-from rest_framework_pydantic_ai.spec_toolset import (
-    _BASE_INSTRUCTIONS,
-    UnguardedSpecWarning,
-    _list_instruction,
+from rest_framework_pydantic_ai import (
+    AgentConventions,
+    AgentDeps,
+    QueryParam,
+    SpecCapability,
+    SpecToolset,
+    UrlKwarg,
 )
+from rest_framework_pydantic_ai.spec_toolset import UnguardedSpecWarning
 from tests.testapp.models import Widget
 from tests.testapp.serializers import WidgetSerializer
+
+# The wording the toolset says by default, for the tests about *whether* a line
+# is said. What each default says is pinned as text in ``test_default_wording.py``.
+_DEFAULTS = AgentConventions()
+
+
+def _pagination_line(page_size: int) -> str:
+    return _DEFAULTS.pagination.format(page_size=page_size)
+
 
 # --- specs under test --------------------------------------------------------
 
@@ -345,6 +357,6 @@ async def test_capability_instructions_reach_the_model_exactly_once():
     assert result.output == "done"
     instr = captured["instructions"]
     assert instr is not None
-    assert _list_instruction(DEFAULT_PAGE_SIZE) in instr
+    assert _pagination_line(DEFAULT_PAGE_SIZE) in instr
     # The conventions come from the toolset only — not doubled by the capability.
-    assert instr.count(_BASE_INSTRUCTIONS) == 1
+    assert instr.count(_DEFAULTS.base) == 1
