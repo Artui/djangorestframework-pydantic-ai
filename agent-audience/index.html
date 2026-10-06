@@ -677,6 +677,11 @@ actually returns a handle:</p>
 output. Pass them to other tools that ask for one; refer to records by their
 name in anything you say, never by the identifier.</p>
 </blockquote>
+<p>A handle that declares no description of its own is described in the output
+schema with the field-level half of the same advice. Both sentences are yours to
+reword, or drop, through
+<a href="../quickstart/#changing-what-the-model-is-told"><code>conventions=</code></a>: <code>handles</code> and
+<code>handle_field_description</code>.</p>
 <h2 id="one-tool-that-needs-what-its-siblings-hide">One tool that needs what its siblings hide<a class="headerlink" href="#one-tool-that-needs-what-its-siblings-hide" title="Permanent link">&para;</a></h2>
 <p>The serializer is the declaration and stays authoritative. The exception is a
 tool whose whole job is handing back something the others drop — a lookup
