@@ -293,6 +293,16 @@ async def test_none_drops_a_block_line_and_nothing_else(name, gone):
     _assert_only(dropped, default, {"instructions": default["instructions"].replace(gone, "")})
 
 
+async def test_an_empty_line_leaves_a_blank_line_where_none_drops_it():
+    """What the quickstart warns about: ``""`` is a line with nothing on it."""
+    default = await _surfaces()
+    blank = await _surfaces(conventions=AgentConventions(handles=""))
+
+    gone = f"\n{_DEFAULTS.handles}\n"
+    assert default["instructions"].count(gone) == 1
+    _assert_only(blank, default, {"instructions": default["instructions"].replace(gone, "\n\n")})
+
+
 async def test_none_drops_the_handle_description_from_the_output_schema():
     default = await _surfaces()
     dropped = await _surfaces(conventions=AgentConventions(handle_field_description=None))
@@ -333,16 +343,36 @@ async def test_a_declared_param_description_keeps_its_place_ahead_of_a_changed_s
 
 
 async def test_a_doubled_brace_reaches_the_model_as_one():
-    """Every field is rendered as a template, placeholders or not, so ``{{`` means ``{``."""
+    """Every field is rendered as a template, placeholders or not, so ``{{`` means ``{``.
+
+    Each field taking no placeholder is set here, because those are the ones a
+    site could pass through unrendered and still say something: the base, the
+    handle and scope lines and the unavailable heading in the instructions, the
+    scope sentence in the list tool's schema and in its render retry, and the
+    handle's fallback description.
+    """
     surfaces = await _surfaces(
         conventions=AgentConventions(
+            base="Tools {{base}}.",
             handles="- Ids look like {{this}}.",
+            read_shaping_on_pages="Per row {{scope}}.",
+            unavailable_heading="Closed {{now}}:",
             handle_field_description="An id, {{opaque}}.",
+            query_param_on_pages="Per item {{row}}.",
             missing_arguments="Send {{{names}}}.",
         )
     )
 
-    assert "\n- Ids look like {this}.\n" in surfaces["instructions"]
+    instructions = surfaces["instructions"]
+    assert instructions.startswith("Tools {base}.\n")
+    assert "\n- Ids look like {this}.\n" in instructions
+    assert f"{_DEFAULTS.read_shaping.format(names='`fields`')} Per row {{scope}}." in instructions
+    assert instructions.endswith(f"\nClosed {{now}}:{_UNAVAILABLE_ITEM}")
+    accepted = json.loads(surfaces["params:list_widgets"])
+    assert accepted["properties"]["fields"]["description"] == "Per item {row}."
+    assert surfaces["render_retry"] == (
+        "`fields` was rejected while rendering the result: Unknown field `items`. Per item {row}."
+    )
     assert json.loads(surfaces["return:get_widget"])["properties"]["id"]["description"] == (
         "An id, {opaque}."
     )
@@ -422,6 +452,39 @@ async def test_a_block_with_every_line_dropped_is_no_instructions_at_all():
     assert await toolset.get_instructions(_ctx()) is None
 
 
+@pytest.mark.parametrize("route", ["toolsets", "capability", "capability_from_toolset"])
+async def test_an_agent_takes_no_instructions_from_a_toolset_that_says_nothing(route):
+    """``None`` from ``get_instructions`` adds nothing to the prompt, by every route.
+
+    Every line of the block dropped and nothing unavailable, so the toolset's own
+    answer is ``None``; a real ``Agent`` has to accept that and send the model
+    only its own instructions, with no blank line where the block would have been.
+    """
+    options: dict[str, Any] = {
+        "tool_query_params": {"list_widgets": [QueryParam("fields")]},
+        "conventions": AgentConventions(**dict.fromkeys([*_BLOCK, "unavailable_heading"])),
+    }
+    specs = {name: spec for name, spec in _every_line().items() if name != "approve"}
+    toolset = SpecToolset(specs, **options)
+    assert await toolset.get_instructions(_ctx()) is None
+    attached: dict[str, Any] = {
+        "toolsets": {"toolsets": [toolset]},
+        "capability": {"capabilities": [SpecCapability(specs, **options)]},
+        "capability_from_toolset": {"capabilities": [SpecCapability.from_toolset(toolset)]},
+    }[route]
+    captured: dict[str, Any] = {}
+    agent = Agent(
+        instruction_capturing_model(captured),
+        deps_type=AgentDeps,
+        instructions="Agent rules.",
+        **attached,
+    )
+
+    await agent.run("go", deps=AgentDeps(user=None))
+
+    assert captured["instructions"] == "Agent rules."
+
+
 async def test_with_every_line_dropped_the_unavailable_list_stands_alone():
     """No leading blank line where the block would have been."""
     toolset = SpecToolset(
@@ -467,6 +530,21 @@ def test_the_default_conventions_beside_an_instructions_override_are_fine():
     )
 
     assert toolset.id == "drf-specs"
+
+
+async def test_a_dropped_heading_drops_the_unavailable_list_after_an_override_too():
+    """The list is appended after ``instructions=`` only while it has a heading to go under."""
+    kept = SpecToolset(_every_line(), instructions="House rules.")
+    dropped = SpecToolset(
+        _every_line(),
+        instructions="House rules.",
+        conventions=AgentConventions(unavailable_heading=None),
+    )
+
+    assert await kept.get_instructions(_ctx()) == (
+        f"House rules.\n{_DEFAULTS.unavailable_heading}{_UNAVAILABLE_ITEM}"
+    )
+    assert await dropped.get_instructions(_ctx()) == "House rules."
 
 
 def test_the_refusal_reaches_through_the_capability():

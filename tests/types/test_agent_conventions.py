@@ -50,6 +50,22 @@ def test_the_missing_argument_retry_cannot_be_none():
         AgentConventions(missing_arguments=None)
 
 
+@pytest.mark.parametrize("name", sorted(agent_conventions._NEVER_NONE))
+@pytest.mark.parametrize("value", ["", "   ", "\n\t "], ids=["empty", "spaces", "whitespace"])
+def test_a_field_that_cannot_be_none_cannot_be_blank_either(name, value):
+    """``""`` would send the model the same empty retry the ``None`` refusal exists to stop."""
+    with pytest.raises(ImproperlyConfigured) as refused:
+        AgentConventions(**{name: value})
+
+    assert str(refused.value).startswith(f"AgentConventions.{name} cannot be empty")
+
+
+@pytest.mark.parametrize("name", sorted(set(_FIELDS) - agent_conventions._NEVER_NONE))
+def test_an_empty_line_is_accepted_wherever_none_is(name):
+    """Blank is refused only where ``None`` is: elsewhere it is a (blank) line, not an error."""
+    assert getattr(AgentConventions(**{name: ""}), name) == ""
+
+
 @pytest.mark.parametrize(
     ("name", "template", "named"),
     [

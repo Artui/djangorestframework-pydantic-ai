@@ -11,8 +11,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - **`AgentConventions`, and `conventions=` on `SpecToolset` and `SpecCapability`:
-  every sentence the toolset writes for the model can be reworded one line at a
-  time.** Until now the only way to change any of it was `instructions=`, which
+  the instructions block, a handle's fallback description, the read-shaping scope
+  sentence and the missing-argument retry can be reworded one line at a time.**
+  Until now the only way to change any of it was `instructions=`, which
   replaces the whole derived block. That is a fork: it freezes a consumer at the
   text they copied, so they miss every later correction (the read-shaping line
   0.32.0 added never reached anyone with an override), and it keeps advising about
@@ -28,6 +29,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - in a retry, `missing_arguments` (`{names}`), the text of the retry for a
     selector parameter or a required `UrlKwarg` left out.
 
+  Nothing else the toolset writes is a field. The descriptions of the arguments it
+  adds, such as `limit` and `page`, and its other retries stay fixed English: a
+  `limit` or `page` that is not a positive integer, an `ordering` the tool does not
+  take, a service asking for more input, and the opening of the render-time retry,
+  whose closing scope sentence is `query_param_on_pages`.
+
   Every field defaults to the text this package said before, byte for byte, so a
   toolset that passes nothing tells the model exactly what it did, and
   `conventions=None` (the default) is `AgentConventions()`.
@@ -37,9 +44,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   toolset with no list tool, and an overridden line about a tool goes with that
   tool when an operation condition leaves it out. `None` drops a line
   (`read_shaping` takes `read_shaping_on_pages` with it, and `unavailable_heading`
-  the list beneath it); `missing_arguments` cannot be `None`, since it is a retry's
-  whole text. When every line is dropped and nothing is unavailable,
-  `get_instructions` returns `None`.
+  the list beneath it, after an `instructions=` override too), where `""` leaves
+  a blank line; `missing_arguments` cannot be `None`, empty or only whitespace,
+  since it is a retry's whole text. When every line is dropped and nothing is
+  unavailable, `get_instructions` returns `None`, which an `Agent` takes as no
+  instructions from the toolset, attached directly or through a capability.
 
   **Each field is a `str.format` template, checked when it is built.** A
   placeholder the field does not accept, an unbalanced brace, or a format spec its
@@ -68,8 +77,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **The model-facing wording is no longer held in private constants of
-  `spec_toolset`.** `_BASE_INSTRUCTIONS`, `_HANDLE_INSTRUCTION`,
+- **The instructions block and the handle and scope sentences are no longer held
+  in private constants of `spec_toolset`.** `_BASE_INSTRUCTIONS`, `_HANDLE_INSTRUCTION`,
   `_HANDLE_DESCRIPTION`, `_UNAVAILABLE_INSTRUCTION`, `_PAGED_QUERY_PARAM_SCOPE`,
   `_PAGED_QUERY_PARAM_INSTRUCTION` and the `_list_instruction` /
   `_ordering_instruction` helpers are gone; each sentence is now the default of an

@@ -1,4 +1,4 @@
-"""``AgentConventions`` -- the sentences a ``SpecToolset`` tells the model, one field each."""
+"""``AgentConventions`` -- the rewordable sentences a ``SpecToolset`` tells the model."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 @dataclass(frozen=True)
 class AgentConventions:
-    """The model-facing wording of a toolset, overridable one line at a time.
+    """The instructions a toolset gives the model, and three sentences beside them, one field each.
 
     Every field defaults to the sentence the toolset says today, so
     ``AgentConventions()`` changes nothing and ``AgentConventions(pagination=...)``
@@ -21,6 +21,13 @@ class AgentConventions:
     [`SpecToolset`][rest_framework_pydantic_ai.SpecToolset] or
     [`SpecCapability`][rest_framework_pydantic_ai.SpecCapability]; leaving that
     unset is the same as passing ``AgentConventions()``.
+
+    **What is a field:** every line of the instructions block, the heading of its
+    unavailable list included; the description of a handle field that declares
+    none; the sentence scoping a paged tool's read-shaping parameters; and the
+    retry for a missing argument. Nothing else is. The descriptions of the
+    arguments the toolset adds, such as ``limit`` and ``page``, and its other
+    retries stay fixed.
 
     **A field changes what a line says, never whether it appears.** The toolset
     still decides that: the pagination line only when some tool returns a page,
@@ -30,9 +37,10 @@ class AgentConventions:
     block, and a later release that corrects one default reaches every field you
     did not override.
 
-    **``None`` drops the line** wherever the toolset would have said it. The one
+    **``None`` drops the line** wherever the toolset would have said it; ``""``
+    does not, and leaves a blank line where an instructions line was. The one
     exception is ``missing_arguments``, which is the whole text of a retry and so
-    cannot be dropped.
+    can be neither dropped nor left blank.
 
     **Each field is a ``str.format`` template.** The placeholders a field accepts
     are the ones listed on it, and nothing else; anything outside them raises
@@ -54,7 +62,8 @@ class AgentConventions:
     Raises:
         ImproperlyConfigured: A field uses a placeholder it does not accept, is not
             a valid format string, is neither a string nor ``None``, or is
-            ``missing_arguments`` set to ``None``.
+            ``missing_arguments`` set to ``None`` or to an empty or whitespace-only
+            string.
     """
 
     base: str | None = (
@@ -184,7 +193,8 @@ class AgentConventions:
     selector requires, and a ``UrlKwarg`` declared ``required``. A field the input
     serializer requires is reported by the serializer, in its own words.
     ``{names}`` is every missing name, sorted, each in backticks and joined with
-    ``", "``. Never ``None``: it is the retry's whole text.
+    ``", "``. Never ``None``, empty or only whitespace: it is the retry's whole
+    text.
     """
 
     def __post_init__(self) -> None:
@@ -216,6 +226,9 @@ _SAMPLES: Mapping[str, Any] = MappingProxyType({"page_size": 1, "names": "`name`
 """A value of the type each placeholder is rendered with, for the trial render."""
 
 _NEVER_NONE = frozenset({"missing_arguments"})
+"""The fields that are the whole text of what they word, so can be neither dropped
+nor left blank: an empty string would send the model exactly the empty retry the
+``None`` refusal exists to stop."""
 
 
 def _validate(name: str, value: Any) -> None:
@@ -237,6 +250,15 @@ def _validate(name: str, value: Any) -> None:
     if not isinstance(value, str):
         raise ImproperlyConfigured(
             f"AgentConventions.{name} must be a string or None, not {type(value).__name__}."
+        )
+    # One arc. ``name in _NEVER_NONE`` is held by
+    # ``test_an_empty_line_is_accepted_wherever_none_is``; ``not value.strip()`` by
+    # every test there is, since without it the default ``missing_arguments`` is
+    # refused and the package's own default instance fails at import.
+    if name in _NEVER_NONE and not value.strip():
+        raise ImproperlyConfigured(
+            f"AgentConventions.{name} cannot be empty or only whitespace: it is the whole text "
+            "of a retry, and a retry with nothing in it tells the model nothing."
         )
     accepted = _PLACEHOLDERS[name]
     try:

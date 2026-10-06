@@ -403,7 +403,8 @@ line describes a tool it lacks. An `instructions=` override replaces those
 conventions but not this list, which is appended after the override: which
 tools a given step lacks is not something an override written in advance can
 say. The heading is the `unavailable_heading` field of
-[`conventions=`](#changing-what-the-model-is-told).
+[`conventions=`](#changing-what-the-model-is-told), and setting it to `None`
+drops the heading and the list, with an override or without one.
 
 A few things follow from how it is asked:
 
@@ -433,11 +434,21 @@ exist.
 
 ## Changing what the model is told
 
-Every sentence the toolset writes for the model is a field of
+Every line of the instructions block, the heading of the unavailable list
+included, is a field of
 [`AgentConventions`](reference.md#rest_framework_pydantic_ai.AgentConventions),
-and `conventions=` changes them one line at a time. Each field defaults to the
-toolset's own wording, so `AgentConventions()` changes nothing, and leaving
-`conventions=` unset is the same as passing it.
+and so are three sentences outside it: the description a handle field gets when
+it declares none, the sentence scoping a paged tool's read-shaping parameters,
+and the retry for a missing argument. `conventions=` changes them one line at a
+time. Each field defaults to the toolset's own wording, so `AgentConventions()`
+changes nothing, and leaving `conventions=` unset is the same as passing it.
+
+Nothing else the toolset writes is a field. The descriptions of the arguments it
+adds, such as `limit` and `page`, stay fixed, and so do its other retries: a
+`limit` or `page` that is not a positive integer, an `ordering` the tool does not
+take, a service asking for more input, and the opening of a
+[render retry](#a-selection-the-serializer-rejects), whose closing scope
+sentence is the one part that is a field.
 
 ```python
 from rest_framework_pydantic_ai import AgentConventions, SpecToolset
@@ -487,7 +498,9 @@ A few rules follow from what each field is:
   `ImproperlyConfigured` naming the field when the `AgentConventions` is built.
 - **`None` on `read_shaping` drops `read_shaping_on_pages` too**, because that
   sentence continues it; `None` on `unavailable_heading` drops the list beneath
-  it. `missing_arguments` cannot be `None`: it is the retry's whole text.
+  it. To drop a line, use `None`, not `""`, which leaves a blank line.
+  `missing_arguments` cannot be `None`, empty or only whitespace: it is the
+  retry's whole text.
 - **`missing_arguments` covers the two checks made before the input serializer
   runs.** A field the input serializer requires is still reported in the
   serializer's own words.

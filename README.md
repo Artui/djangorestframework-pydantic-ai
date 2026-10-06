@@ -75,11 +75,13 @@ period, is left out of that step's tool list, and the step's instructions name i
 with its reason so the model can tell the user why. Permissions do not filter the
 list: a denied tool is still offered, and the denial comes on the call.
 
-Every sentence the toolset writes for the model, from the instructions block to
-the missing-argument retry, is a field of `AgentConventions`, so
-`SpecToolset(specs, conventions=AgentConventions(pagination=...))` rewords one
-line and leaves the rest as they are. The toolset still decides when each line is
-said, and `None` drops a line.
+Every line of the instructions block is a field of `AgentConventions`, the
+heading of the unavailable list included, and so are a handle field's fallback
+description, the sentence scoping a paged tool's read-shaping parameters, and the
+missing-argument retry. `SpecToolset(specs, conventions=AgentConventions(pagination=...))`
+rewords one line and leaves the rest as they are. The toolset still decides when
+each line is said, and `None` drops a line. Argument descriptions, such as those
+of `limit` and `page`, and the toolset's other retries stay fixed.
 
 See the [documentation](https://artui.github.io/djangorestframework-pydantic-ai/)
 for the full reference.

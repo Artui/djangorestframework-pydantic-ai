@@ -414,7 +414,9 @@ class SpecToolset(AbstractToolset[Any]):
             derives from the specs. ``None`` derives it. What it does **not**
             replace is the per-step list of operations that are unavailable right
             now, which is appended after it whenever an operation condition leaves
-            one out of the catalog: the override replaces conventions, and which
+            one out of the catalog, unless ``conventions`` sets
+            ``unavailable_heading`` to ``None``, which drops that list with or
+            without an override: the override replaces conventions, and which
             operations are offered on a given step is state no override written in
             advance could have described.
 
@@ -891,7 +893,8 @@ class SpecToolset(AbstractToolset[Any]):
         ``instructions`` override, the override stands in for the derived block
         and the unavailable tools are still appended after it, because an
         override replaces the conventions and cannot have described which
-        operations a given step would lack.
+        operations a given step would lack. ``unavailable_heading=None`` in the
+        ``conventions`` drops that list either way, override or not.
 
         A toolset declaring no such condition is untouched by any of this: it
         asks nothing, and returns the same string every step.
@@ -904,7 +907,8 @@ class SpecToolset(AbstractToolset[Any]):
             derived from the specs — each line conditional on something in this
             toolset being able to act on it, so the prompt carries no advice that
             cannot fire — followed in either case by the operations unavailable
-            this step, when there are any. ``None`` when ``conventions`` dropped
+            this step, when there are any and ``unavailable_heading`` is not
+            ``None``. ``None`` when ``conventions`` dropped
             every line that would have been said and nothing is unavailable.
         """
         unavailable = await self._unavailable_operations(ctx)
@@ -1912,6 +1916,8 @@ def _unavailable_instruction(unavailable: Mapping[str, Affordance], heading: str
     as written -- a condition's ``reason`` is a sentence written for people and
     models alike.
     """
+    # Rendered like every other field, so a doubled brace reads as one here too
+    # (``test_a_doubled_brace_reaches_the_model_as_one``).
     lines = [heading.format()]
     lines.extend(f"  - `{name}`: {affordance.reason}" for name, affordance in unavailable.items())
     return "\n".join(lines)
@@ -3248,7 +3254,7 @@ def _missing_arguments(names: Sequence[str], conventions: AgentConventions) -> M
     whichever it omitted, worded by ``conventions.missing_arguments``. Sorted, so
     a message naming several reads the same way on every call (the ``several``
     case of ``test_a_selector_call_missing_a_required_argument_is_handed_back``).
-    The field cannot be ``None``: a retry has to say something.
+    The field cannot be ``None`` or blank: a retry has to say something.
     """
     return ModelRetry(conventions.missing_arguments.format(names=_listed(sorted(names))))
 
