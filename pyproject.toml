@@ -79,7 +79,7 @@ dependencies = [
     # out of a step's tools. They answer a condition against the names
     # drf-services itself enforces it with at the call, which is why the toolset
     # asks them rather than restating that rule.
-    # 0.55.0 is the floor, and it is a hard one: ``spec_to_json_schema(supplied=)``
+    # 0.55.0: ``spec_to_json_schema(supplied=)``
     # and ``output_to_json_schema(allow_none=)`` first exist there, and the
     # toolset passes both for every selector and every target lookup while it
     # builds its tool definitions at construction, so below it a toolset cannot
@@ -87,7 +87,14 @@ dependencies = [
     # stops being advertised and one only the model sends becomes required;
     # ``allow_none`` is how an ``allow_none`` retrieve's ``return_schema`` admits
     # the ``null`` it returns.
-    "djangorestframework-services>=0.55.0",
+    # 0.56.0 is the floor, and it is a hard one: ``provider_keys``,
+    # ``can_present_nothing`` and ``server_owned_keys`` first exist there, and
+    # the toolset imports them at module level, so below it the toolset does
+    # not import. It is also where ``spec_to_json_schema(argument_binding=)``
+    # lists a spreading service's own parameters, the set ``REJECT`` admits,
+    # and where a missing argument is refused only where the caller could
+    # have sent it.
+    "djangorestframework-services>=0.56.0",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
     # a business-rule refusal, an unresolved target, a dispatch that ran past its
