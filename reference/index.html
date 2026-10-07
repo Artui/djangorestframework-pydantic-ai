@@ -1569,14 +1569,16 @@ fills.</strong> A selector parameter named after a pool seed, a defaulted
 <code>UrlKwarg</code> or a key a typed <code>kwargs=</code> provider returns is not
 advertised; every other selector parameter without a default is required,
 except one the provider <em>may</em> fill, which stays advertised but optional:
-any parameter, beside a provider whose return annotation is not a
-<code>TypedDict</code> that resolves, and a key annotated to admit <code>UnsetType</code>,
-which the provider may decline. A name a <code>build_context</code> override fills
-is invisible here, so it has to be declared (see <code>build_context</code>). A
-single-item service also advertises its target lookup -- the parameters of
-its <code>collection_selector_spec</code>, or failing that its
-<code>instance_selector_spec</code>, such as a <code>pk</code> -- beside its input
-serializer's fields, the serializer's property winning a shared name. A
+any parameter, beside a provider whose return annotation does not name a
+<code>TypedDict</code>, and a key the provider may decline with <code>UNSET</code>, both as
+drf-services' <code>provider_keys</code> reads the annotation. A name a
+<code>build_context</code> override fills is invisible here, so it has to be
+declared (see <code>build_context</code>). A single-item service also advertises its
+target lookup -- the parameters of its <code>collection_selector_spec</code>, or
+failing that its <code>instance_selector_spec</code>, such as a <code>pk</code> -- beside its
+input serializer's fields, the serializer's property winning a shared name,
+and less every key a callable in the call marks <code>NotClientInput</code>, which
+dispatch keeps from the lookup. A
 call leaving out a required selector parameter is handed back as
 <code>ModelRetry</code> naming each one left out, before anything runs. A required
 serializer field is the serializer's to report, once the call runs, so a
@@ -2279,7 +2281,10 @@ what varies per call belongs in its resolver, which declares
 <code>require_permissions</code> is set, a <code>QueryParam</code> / <code>UrlKwarg</code> on
 a <code>many=True</code> spec's tool -- declared here or on its entry's
 <code>OfflineContract</code> -- shares the name its list travels under, one
-is named after a registered pool seed, or <code>instructions=</code> is given
+is named after a registered pool seed, a selector takes a parameter
+that a list tool's <code>page</code> / <code>limit</code> or one of the tool's
+<code>QueryParam</code> declarations takes out of the call before it runs, or
+<code>instructions=</code> is given
 beside a <code>conventions=</code> that changes a line of the block it
 replaces.</p>
               </div>
@@ -2645,11 +2650,14 @@ handed back as <code>ModelRetry</code> before the override runs. Mark the
 selector parameter with drf-services' <code>NotClientInput</code>
 (<code>project_pk: Annotated[int, NotClientInput]</code>): the name is left out
 of the schema, so the model is never asked for it, and the override
-fills it. The marker hides the name rather than blocking it: under the
-default <code>unknown_arguments</code> a call that sends it anyway is handed back
-as an unexpected argument only where the selector's input set is closed
-(no <code>filter_set</code>, no <code>**kwargs</code>), and otherwise the value reaches the
-pool, so the override has to write the key on every call. Where the value can be
+fills it. Under the default <code>unknown_arguments</code> a call that sends it
+anyway is handed back as an unexpected argument where the selector's
+input set is closed (no <code>filter_set</code>, no <code>**kwargs</code>); otherwise, and
+under the other policies, drf-services drops the model's value before
+the selector reads its arguments, so the override's value is the one it
+receives
+(<code>test_a_value_the_model_sends_for_a_marked_name_never_reaches_the_selector</code>).
+Where the value can be
 resolved from what a seed resolver receives, register it in
 <code>pool_seeds=</code> and resolve it there instead, since dispatch fills a
 seed from its resolver and drops a route capture of the same name.</p>
