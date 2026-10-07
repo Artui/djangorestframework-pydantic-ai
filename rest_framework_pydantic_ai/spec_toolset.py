@@ -1825,9 +1825,10 @@ def _validate_inputs_a_channel_takes(
                 f"{label}: {_inputs_taken_by(spec, shadowed, own)} that the tool also "
                 "declares as a QueryParam. A QueryParam's value is taken out of the call "
                 "and routed to request.query_params before the spec runs, so the input "
-                "would never receive the model's value. Read the value from "
-                "request.query_params and drop the input, or drop the QueryParam so the "
-                "argument reaches the spec."
+                "would never receive the model's value. Fill the parameter from "
+                "request.query_params with a kwargs= provider whose TypedDict declares "
+                "it, or read the value there in the callable and drop the input, or drop "
+                "the QueryParam so the argument reaches the spec."
             )
 
 

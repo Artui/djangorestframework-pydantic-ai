@@ -780,8 +780,9 @@ which a service tool advertises beside its serializer's fields. The
 `SpecToolset` refuses it with `ImproperlyConfigured` when it is built, whether
 the `QueryParam` is declared on the toolset, per tool or on the entry's
 `OfflineContract`, and the refusal says whether the selector, the service or its
-target lookup takes the name. Read the value off `request.query_params` and
-drop the parameter, or drop the `QueryParam`.
+target lookup takes the name. Fill the parameter from `request.query_params`
+with a typed `kwargs=` provider (the first exemption below), read the value
+there in the callable and drop the parameter, or drop the `QueryParam`.
 
 The check reads the names the tool's schema offers the model, so a name the
 model is not offered is exempt:
