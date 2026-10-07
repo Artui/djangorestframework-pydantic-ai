@@ -90,10 +90,11 @@ dependencies = [
     # 0.56.0 is the floor, and it is a hard one: ``provider_keys``,
     # ``can_present_nothing`` and ``server_owned_keys`` first exist there, and
     # the toolset imports them at module level, so below it the toolset does
-    # not import. It is also where ``spec_to_json_schema(argument_binding=)``
-    # lists a spreading service's own parameters, the set ``REJECT`` admits,
-    # and where a missing argument is refused only where the caller could
-    # have sent it.
+    # not import. ``spec_to_json_schema`` also first takes ``argument_binding=``
+    # there, which the toolset passes with the same binding it hands dispatch,
+    # so the advertised keys and the admitted ones are read off one binding.
+    # It is also where a missing argument is refused only where the caller
+    # could have sent it, which the toolset turns into a retry.
     "djangorestframework-services>=0.56.0",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
