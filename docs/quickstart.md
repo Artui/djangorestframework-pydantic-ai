@@ -109,6 +109,13 @@ while the payload was a bare slice, so a model asking for a collection received
 what was missing — the model can ask for `page: 2`, or narrow the request with a
 filter, instead of answering from a page it took for the whole set.
 
+Because the toolset takes `page` and `limit` out of a list tool's call to serve
+the page, a list selector taking a parameter of either name is refused with
+`ImproperlyConfigured` when the `SpecToolset` is built: the parameter would never
+receive what the model sent, and one with a default would quietly run on it.
+Rename the parameter. A retrieve selector's `page` is not paginated and reaches
+it.
+
 `max_page_size` caps `limit` and advertises itself as JSON-Schema `maximum`
 on it. A call naming no `limit` is served the smaller of 100 and the ceiling, and
 that is the default both the `limit` description and the toolset's instructions
@@ -140,11 +147,22 @@ agent = Agent(model, toolsets=[SpecToolset(specs).include_return_schemas()])
 
 A spec with no `output_serializer` gets `None` rather than a guessed shape.
 
-A retrieve selector declaring `allow_none=True` returns `None` when nothing
-matches, so its `return_schema` admits it: the root `type` is
-`["object", "null"]`. A service's `return_schema` stays an object whatever its
-`output_selector_spec` declares, because dispatch ignores `allow_none` on a
-nested spec.
+A `return_schema` admits `null`, with the root `type` `["object", "null"]`,
+exactly where dispatch may hand the model `None`, as drf-services'
+`can_present_nothing` answers it for every route that states an output schema:
+
+- a retrieve selector declaring `allow_none=True`, when nothing matches;
+- a service whose `output_selector_spec` re-reads through a `selector`, because
+  dispatch materializes the re-read with `.first()`, and a re-read that filters
+  out the row it wrote finds none;
+- a service with nothing to re-read that declares `ServiceSpec(allow_none=True)`,
+  since dispatch then presents the service's own return, a `None` included.
+
+`allow_none` on a service's nested `output_selector_spec` is not read, because
+dispatch does not read it, and a list result is never `null`, only empty. A
+service whose `output_selector_spec` declares `LIST` is an array whether or not
+it has a `selector` to re-read through: with none, dispatch presents the
+service's own return as a list.
 
 ## What a tool asks the model for
 
@@ -156,8 +174,10 @@ which the toolset fills. So the toolset says so when it builds the schema
 - **A name the toolset fills is not advertised.** That is drf-services' own
   pool seeds (`request`, `user`, `progress` and the rest), every name registered
   in [`pool_seeds`](#project-pool-seeds), and the keys a `kwargs=` provider
-  returns when its return annotation is a `TypedDict`, less any annotated to
-  admit `UnsetType` (below). A [`UrlKwarg`](#url-derived-values-route-captures)
+  returns when its return annotation is a `TypedDict`, less any it may decline
+  with `UNSET` (below). The annotation is read by drf-services'
+  `provider_keys`, the reader dispatch's own contract is stated in, so this
+  toolset and drf-mcp read a provider the same way. A [`UrlKwarg`](#url-derived-values-route-captures)
   that declares a `default` fills its name too, so the selector's parameter of
   that name is not required, but the `UrlKwarg` itself stays advertised, as the
   optional argument it always is.
@@ -167,10 +187,12 @@ which the toolset fills. So the toolset says so when it builds the schema
 - **A `kwargs=` provider without a `TypedDict` return annotation may fill any
   parameter**, a plain `dict` or a lambda included, so for its spec nothing is
   required merely for lacking a default, though `InputRequired` still requires
-  one. So may a provider whose annotations do not resolve, the parameters'
-  as well as the return's, and a `TypedDict` whose own key annotations do not
-  resolve: a name imported only under `TYPE_CHECKING` leaves the provider
-  untyped. Annotate the provider to have the rest required:
+  one. So may a provider whose return annotation does not resolve. Only the
+  return annotation is read for the keys, so a parameter typed with a name
+  imported only under `TYPE_CHECKING` changes nothing, and a `TypedDict` value
+  that does not resolve makes only its own key one the provider may decline, so
+  that key stays advertised and the others are still filled. Annotate the
+  provider to have the rest required:
 
 ```python
 from typing import TypedDict
@@ -188,17 +210,21 @@ def scope(view) -> ProjectScope:
 list_spec = SelectorSpec(kind=SelectorKind.LIST, selector=priced_under, kwargs=scope)
 ```
 
-- **A key annotated to admit `UnsetType` is not one the toolset fills.** A
+- **A key whose value admits `UnsetType` is not one the toolset fills.** A
   provider may decline a key by returning drf-services' `UNSET` for it, which
   drops the key from the pool and lets the model's value through, so
   `ceiling: int | UnsetType` keeps `ceiling` advertised for the model to send,
   and optional, since the provider may fill it instead. The provider's other
-  keys are still not asked for. If the provider declines the key and the model
-  has not sent it either, nothing fills the parameter and the selector raises
-  `TypeError` out of the run, as it does when an untyped provider leaves a
-  parameter unfilled, since a call is not checked for a name a provider may
-  fill. Where a provider may decline a key the model may also leave out, give
-  the selector's parameter a default.
+  keys are still not asked for. It is the key's own value that has to admit
+  `UNSET`, as a union member: `regions: list[str | UnsetType]` always comes
+  back as a list, so `regions` is filled. A generic `TypedDict` is read with
+  what binds its type parameters, so `-> Scope[str | UnsetType]` declines
+  `Scope`'s `tenant: T` as the written-out `tenant: str | UnsetType` does.
+  If the provider declines the key and the model has not sent it either,
+  drf-services refuses the call before the selector runs, and the model is
+  handed back ``Missing required argument(s): 'ceiling'.`` to send it on its
+  next turn, as it is when an untyped provider leaves a parameter unfilled.
+  Where the selector can run without the value, give the parameter a default.
 - **A name a
   [`build_context`](reference.md#rest_framework_pydantic_ai.SpecToolset)
   override fills has to be declared.** An override is code the schema cannot
@@ -206,12 +232,12 @@ list_spec = SelectorSpec(kind=SelectorKind.LIST, selector=priced_under, kwargs=s
   `view.kwargs`) is advertised as required like any other parameter without a
   default, and a call leaving it out is handed back before the override runs.
   Mark the selector parameter with drf-services' `NotClientInput`: the name is
-  left out of the schema and the override fills it. The marker hides the name
-  rather than blocking it. A call that sends it anyway is handed back as an
-  [unexpected argument](#unexpected-arguments) by default, but only where the
-  selector's input set is closed (no `filter_set`, no `**kwargs`); otherwise
-  the value reaches the selector's pool, so the override has to write the key
-  on every call.
+  left out of the schema and the override fills it. A call that sends it
+  anyway is handed back as an [unexpected argument](#unexpected-arguments) by
+  default where the selector's input set is closed (no `filter_set`, no
+  `**kwargs`). Otherwise, and under the other policies, drf-services drops the
+  model's value before the selector reads its arguments, so the value the
+  override writes is the one the selector receives.
   Where the value can be resolved from what a seed resolver receives, register
   it as a [pool seed](#project-pool-seeds) and resolve it there instead:
 
@@ -253,16 +279,30 @@ model: a model that asks for one project is served another's rows.
 arguments it validates against the input serializer to the selector that
 resolves the row or the set, too, so that selector's parameters are reflected
 beside the serializer's fields by the same rules. It is the
-`collection_selector_spec` when the service declares one, and the
-`instance_selector_spec` otherwise: dispatch never runs the instance lookup
-beside a collection one, so a service declaring both is not asked for the
-instance lookup's `pk`. A rename tool whose instance selector is
+`collection_selector_spec` or the `instance_selector_spec`, whichever the
+service declares: drf-services refuses a spec declaring both when it is built,
+and any lookup beside `many=True`, so a `many=True` service's schema stays the
+list alone. A rename tool whose instance selector is
 `task_by_pk(user, *, pk)` asks for `pk` as well as the new title, and requires
 it. Where a lookup parameter and a serializer field share a name, the
 serializer's property is the one advertised, since the serializer validates
 the value, and the name is required if either requires it, since the lookup
-cannot run without it whatever a `partial` serializer says. A `many=True`
-service reads no target, so its schema stays the list alone.
+cannot run without it whatever a `partial` serializer says.
+
+A key that any callable in the call marks `NotClientInput`, the service, one
+of its `preconditions` or the lookup itself, is left out of what the lookup
+contributes, as drf-services' `server_owned_keys` names them: dispatch keeps the
+caller's value for it from every callable, and refuses it as an
+[unexpected argument](#unexpected-arguments), so the lookup naming it plainly
+does not make it the model's to send. A field the input serializer declares
+under such a name is still advertised, since the serializer validates it into
+`data` whatever a callable hides under the name.
+
+A service with no input serializer takes the model's arguments as its `data`
+bundle, under drf-services' default binding for a service, so its own
+parameters are not arguments: its schema lists its lookup's keys and nothing
+else, which is what an [unexpected argument](#unexpected-arguments) check
+admits of it.
 
 **A call that leaves out a required selector parameter is handed back**, the
 tool's own or its target lookup's, as `ModelRetry` naming each one left out,
@@ -272,7 +312,13 @@ reach the selector, which raised `TypeError` out of the run. A required
 serializer field is checked by the serializer once the call runs, so a service
 call missing both `pk` and a field is told about `pk` first, and about the
 field on the turn after. A name a provider may fill is not checked before the
-call, since only the pool the call assembles can say whether it arrived.
+call, since only the pool the call assembles can say whether it arrived, and
+drf-services checks that pool: a selector parameter nothing filled comes back
+as a retry naming it too, ``Missing required argument(s): 'ceiling'.`` A
+required parameter no argument could fill, such as one a precondition marks
+`NotClientInput` and nothing supplies, is a
+configuration error rather than something the model can correct, and fails as
+the callable's own `TypeError`.
 
 ## Custom identity
 
@@ -544,8 +590,9 @@ toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 ```
 
 `IGNORE` drops a key no parameter declares. A parameter marked `NotClientInput`
-is still declared, only left out of the schema, so a value the model sends for
-it reaches the selector under `IGNORE`.
+is not the model's under any policy: `REJECT` refuses a value sent for it where
+the input set is closed, and everywhere else drf-services drops the value before
+any callable in the call reads it.
 
 ## A list as input
 
@@ -717,7 +764,14 @@ it; a declared `default` is seeded when the model omits the arg or sends it as
 `null`, which never reaches the query string itself. (Names can't be
 `page` / `limit` / `ordering` — those are reserved transport keys. `ordering` is
 reserved even when a `filter_set` owns it: a registered channel pops the value at
-call time, so the FilterSet would never see it.)
+call time, so the FilterSet would never see it.) For the same reason a tool may
+not register a `QueryParam` under a name its own spec takes from the call, a
+selector parameter or `filter_set` field, or a service's input serializer
+field: the `SpecToolset` refuses it with `ImproperlyConfigured` when it is
+built, whether it is declared on the toolset, per tool or on the entry's
+`OfflineContract`. Read the value off `request.query_params` and drop the
+parameter, or drop the `QueryParam`. A `UrlKwarg` may share a selector
+parameter's name, since its value reaches the selector through `view.kwargs`.
 Requires `djangorestframework-services>=0.23`, which added the
 `build_offline_context(query_params=…)` seam.
 

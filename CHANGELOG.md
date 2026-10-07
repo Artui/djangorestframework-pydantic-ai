@@ -6,6 +6,89 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **A selector parameter the toolset takes out of the call is refused when the
+  toolset is built
+  ([#107](https://github.com/Artui/djangorestframework-pydantic-ai/issues/107)).**
+  `page` and `limit` are a list tool's pagination arguments, and a `QueryParam`
+  is read while the result renders, so the toolset strips each before the
+  selector runs. A list selector taking a parameter named `page` or `limit`, or
+  any tool whose spec takes an input a `QueryParam` also names (per tool,
+  toolset-wide or on the contract), never received the model's value: a
+  required one failed every call, and a defaulted one, the shape that passed
+  silently, ran on its default whatever the model sent. `SpecToolset` now raises
+  `ImproperlyConfigured` naming the parameter. A retrieve selector keeps a
+  parameter named `page`, since nothing paginates it, and a `UrlKwarg` may
+  share a selector parameter's name, since the override is what it is for.
+  There is no input-serializer exemption: a selector tool here takes its
+  arguments as the selector's own parameters, so no serializer field lays a
+  stripped name back.
+- **A key that any callable in a service call marks `NotClientInput` is no
+  longer advertised beside the service's target lookup.** Where the service, one
+  of its `preconditions` or the lookup itself marks a key server-owned, as
+  drf-services' `server_owned_keys` names them, dispatch never hands the
+  caller's value to any of them, so the lookup naming the key plainly no longer
+  offers it to the model, and the up-front missing-argument check no longer
+  asks for it. A field the `input_serializer` declares under such a name is
+  still advertised, since the serializer validates it into `data`.
+- **A parameter a `kwargs=` provider declines and the model left out is a
+  `ModelRetry` naming it, not a crash.** drf-services 0.56.0 checks the pool the
+  call assembles and refuses a missing argument the caller could have sent as
+  ``Missing required argument(s): 'ceiling'.``, so the model resends the call
+  with it. It used to reach the selector, which raised `TypeError` out of the
+  run.
+- **A value the model sends for a `NotClientInput` name is dropped under every
+  unknown-argument policy.** drf-services 0.56.0 no longer hands it to the
+  callable as an unexpected argument, so a selector with `**kwargs` or a
+  `filter_set` never reads a value the marker hides.
+- **A spec drf-services cannot dispatch is refused when it is built, not when a
+  toolset reads it.** drf-services 0.56.0 refuses an instance lookup beside a
+  collection lookup, and any lookup beside `many=True`, at `ServiceSpec`
+  construction, so the toolset's own handling of a `many` service with a lookup
+  is gone.
+- **Floored at `djangorestframework-services>=0.56.0` (was `>=0.55.0`), and it
+  is a hard floor.** `provider_keys`, `can_present_nothing` and
+  `server_owned_keys` first exist there, and the toolset imports them at module
+  level.
+
+### Fixed
+
+- **A provider key whose value is a list or a dict that may hold `UNSET` counts
+  as filled
+  ([#104](https://github.com/Artui/djangorestframework-pydantic-ai/issues/104)).**
+  The toolset read a `kwargs=` provider's keys with its own annotation reader,
+  which counted a key as declinable wherever `UnsetType` appeared anywhere
+  inside its type, so `regions: list[str | UnsetType]` was offered to the model
+  although the provider always fills it and replaces what the model sent. The
+  toolset now reads drf-services' `provider_keys`, the reader dispatch checks
+  the call with.
+- **A provider annotation naming a type imported only under `TYPE_CHECKING`
+  no longer makes the whole provider untyped
+  ([#105](https://github.com/Artui/djangorestframework-pydantic-ai/issues/105)).**
+  One unresolvable annotation, a parameter's or a `TypedDict` value's, made
+  every key unreadable, so the model was offered the keys the provider fills
+  and a selector parameter nothing fills was required by neither. A
+  parameter's type now says nothing about the keys, and a key whose own value
+  does not resolve stays offered as optional, since the provider may decline it.
+- **A key a generic `TypedDict` provider binds to `str | UnsetType` is
+  declinable
+  ([#106](https://github.com/Artui/djangorestframework-pydantic-ai/issues/106)).**
+  `-> Scope[str | UnsetType]` was read as the bare type variable, so the key
+  counted as filled and was not offered to the model, and a call on which the
+  provider declined it ran without it. It now reads as the written-out
+  `tenant: str | UnsetType` does.
+- **A service tool's `return_schema` admits the `None` the call returns
+  ([#108](https://github.com/Artui/djangorestframework-pydantic-ai/issues/108)).**
+  `allow_none` now comes from drf-services' `can_present_nothing`, the reading
+  dispatch presents by: a re-read through an `output_selector_spec` `selector`,
+  which dispatch materializes with `.first()` and can find no row, and a service
+  with nothing to re-read that declares `ServiceSpec(allow_none=True)`. Both
+  returned `None` against an object schema whose fields were all required.
+  `allow_none` on the nested `output_selector_spec` is still not read, because
+  dispatch does not read it, and a list result stays an array that is never
+  `null`.
+
 ## [0.34.0] — 2026-10-06
 
 ### Added
