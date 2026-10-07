@@ -718,7 +718,11 @@ class SpecToolset(AbstractToolset[Any]):
         # The spec's side of the same collisions, so post-merge as well: a
         # contract's ``QueryParam`` takes an input's value as a mount's does.
         _validate_inputs_a_channel_takes(
-            self._specs, self._tool_query_params, registry=json_schema_registry
+            self._specs,
+            self._tool_query_params,
+            self._tool_url_kwargs,
+            pool_seeds=pool_seeds,
+            registry=json_schema_registry,
         )
         # Agent markings are pure in the serializer, like the schemas below, so
         # they are resolved once rather than paying a serializer instantiation
@@ -1714,35 +1718,72 @@ _PAGINATION_ARGUMENTS = frozenset({"page", "limit"})
 def _validate_inputs_a_channel_takes(
     specs: Mapping[str, Spec],
     tool_query_params: Mapping[str, Sequence[QueryParam]],
+    tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]],
     *,
+    pool_seeds: PoolSeeds = DEFAULT_POOL_SEEDS,
     registry: JsonSchemaRegistry = DEFAULT_JSON_SCHEMA_REGISTRY,
 ) -> None:
     """Refuse a spec input that one of this toolset's own arguments takes away.
 
-    The selector's side of the collision ``_validate_channel_declarations``
-    refuses from the channel's. That check keeps a ``QueryParam`` or ``UrlKwarg``
-    off ``page`` / ``limit``; this one keeps the selector off them, and off a
-    ``QueryParam``'s name, because a selector input of such a name registers, is
+    The spec's side of the collision ``_validate_channel_declarations`` refuses
+    from the channel's. That check keeps a ``QueryParam`` or ``UrlKwarg`` off
+    ``page`` / ``limit``; this one keeps the spec's inputs off them, and off a
+    ``QueryParam``'s name, because an input of such a name registers, is
     advertised, and then never receives what the model sent. A required one
-    raised ``TypeError`` out of the run naming the argument the call carried; a
-    defaulted one ran on its default whatever the call asked for. Two cases,
-    each refused with a default or without:
+    failed every call carrying it; a defaulted one ran on its default whatever
+    the call asked for. Two cases, each refused with a default or without:
 
-    - on a list tool, ``page`` or ``limit``, which ``_pop_pagination`` takes out
-      of every call to serve the page. Only a list tool paginates, so a retrieve
-      selector's ``page`` reaches it, and the condition is held by
-      ``test_a_retrieve_selector_keeps_a_parameter_named_page``;
+    - on a list tool, a selector parameter named ``page`` or ``limit``, which
+      ``_pop_pagination`` takes out of every call to serve the page. Only a list
+      tool paginates, so a retrieve selector's ``page`` reaches it, and the
+      condition is held by ``test_a_retrieve_selector_keeps_a_parameter_named_page``.
+      Read off the spec's own reflected input, ``own`` below, which no
+      provider's keys narrow;
     - on any tool, a name one of the tool's ``QueryParam`` declarations shares,
       whose value ``_pop_query_params`` routes to ``request.query_params``
-      instead. A service tool's input serializer field loses its value the same
-      way, so it is read as well
-      (``test_a_serializer_field_a_query_param_shadows_is_refused``).
+      instead. Read below.
 
-    The names are the spec's own reflected input, the properties its schema
-    starts from, read under the binding it is dispatched with: a selector's
-    keyword parameters, ``Unpack[TypedDict]`` keys and ``filter_set`` fields,
-    less pool seeds and ``NotClientInput`` keys, which no caller sends in the
-    first place, and a service's input serializer fields.
+    **A ``QueryParam`` is checked against what the tool advertises as the
+    call's own input**, ``_caller_schema``'s properties, the reader the tool's
+    schema is built from, so the refusal and the schema cannot disagree about
+    which names are the model's. That is a selector's parameters and
+    ``filter_set`` fields
+    (``test_a_filter_set_field_a_query_param_shadows_is_refused``), or a
+    service's input serializer fields and its target lookup's parameters, read
+    under the binding the call is dispatched with. Each part of that set is held by a test
+    that fails without it, because the refusal is one branch whichever part
+    answers:
+
+    - **the target lookup's parameters**, which a service tool advertises
+      beside its serializer's fields, so the model sends them: a required one
+      was answered as a missing argument of a call that carried it, which an
+      agent resent until it ran out of retries, and a defaulted one resolved
+      the row on its default
+      (``test_a_lookup_parameter_a_query_param_takes_is_refused``);
+    - **less what a ``kwargs=`` provider declares it fills**, its
+      ``provider_keys`` ``filled`` set, which owns the parameter whatever the
+      model sends. A provider reading ``request.query_params`` into the
+      parameter is the ordinary way to route a query parameter to a selector,
+      and nothing is lost there
+      (``test_a_query_param_a_typed_provider_hands_the_selector_is_served``);
+    - **keeping a key the provider may decline**, and every key of a provider
+      whose keys cannot be read: on a call where it does not fill the key, only
+      the model can, and the ``QueryParam`` has popped the model's value
+      (``test_a_query_param_on_a_key_a_provider_may_leave_to_the_model_is_refused``);
+    - **less the keys the server keeps from the call**, ``server_owned_keys``,
+      which the model is never offered and dispatch never hands the caller's
+      value for, so a ``QueryParam`` of that name takes nothing
+      (``test_a_query_param_named_after_a_key_the_server_keeps_is_not_refused``);
+    - **and a service's input serializer fields**, which validate the arguments
+      left once the ``QueryParam`` has taken its own, whatever a callable hides
+      under the name (``test_a_serializer_field_a_query_param_shadows_is_refused``).
+
+    The tool's ``UrlKwarg`` declarations are passed, so the read is the
+    schema's own, and no test holds them: a ``UrlKwarg`` fills only its own
+    name, and one sharing a ``QueryParam``'s name is refused by
+    ``_validate_no_param_channel_overlap`` before this runs. A registered pool
+    seed is in the same position, refused as a ``QueryParam`` name by
+    ``_validate_channel_declarations``.
 
     **No name is exempted for an input serializer, as drf-mcp exempts one.**
     drf-mcp lays a selector tool's validated input back over the stripped
@@ -1752,20 +1793,19 @@ def _validate_inputs_a_channel_takes(
 
     A ``UrlKwarg`` sharing a parameter's name stays allowed: its value reaches
     the selector through ``view.kwargs``, the documented way to route a capture
-    the selector also reads. A ``QueryParam`` named after one of a service's
-    target lookup parameters is not read, as drf-mcp does not read it: the
-    lookup is not the spec's own input.
+    the selector also reads.
     """
     for tool_name, spec in specs.items():
-        reflected = cast(
-            "dict[str, Any]",
-            spec_to_json_schema(
-                spec, phase="input", registry=registry, argument_binding=_ARGUMENT_BINDING
-            ),
+        own = frozenset(
+            cast(
+                "dict[str, Any]",
+                spec_to_json_schema(
+                    spec, phase="input", registry=registry, argument_binding=_ARGUMENT_BINDING
+                ),
+            ).get("properties", {})
         )
-        names = frozenset(reflected.get("properties", {}))
         label = f"SpecToolset tool {tool_name!r}"
-        pagination = sorted(names & _PAGINATION_ARGUMENTS) if _is_list_selector(spec) else []
+        pagination = sorted(own & _PAGINATION_ARGUMENTS) if _is_list_selector(spec) else []
         if pagination:
             raise ImproperlyConfigured(
                 f"{label}: the selector takes parameter(s) {pagination!r}, but `page` and "
@@ -1773,18 +1813,42 @@ def _validate_inputs_a_channel_takes(
                 "out of the call before the selector runs, so the parameter would never "
                 "receive the model's value. Rename the parameter."
             )
+        advertised = _caller_schema(
+            spec, tool_url_kwargs[tool_name], pool_seeds=pool_seeds, registry=registry
+        ).get("properties", {})
         shadowed = sorted(
-            names & {query_param.name for query_param in tool_query_params[tool_name]}
+            frozenset(advertised)
+            & {query_param.name for query_param in tool_query_params[tool_name]}
         )
         if shadowed:
             raise ImproperlyConfigured(
-                f"{label}: the spec takes input(s) {shadowed!r} that the tool also "
+                f"{label}: {_inputs_taken_by(spec, shadowed, own)} that the tool also "
                 "declares as a QueryParam. A QueryParam's value is taken out of the call "
                 "and routed to request.query_params before the spec runs, so the input "
                 "would never receive the model's value. Read the value from "
                 "request.query_params and drop the input, or drop the QueryParam so the "
                 "argument reaches the spec."
             )
+
+
+def _inputs_taken_by(spec: Spec, names: list[str], own: frozenset[str]) -> str:
+    """Which callable takes each name a ``QueryParam`` shadows, for the refusal.
+
+    A selector tool's names are the selector's. A service tool's are its own
+    where its input schema lists them, its serializer's fields, and otherwise
+    its target lookup's, which ``_caller_schema`` merged in beside them. The
+    lookup's wording is held by ``test_a_lookup_parameter_a_query_param_takes_is_refused``.
+    """
+    if isinstance(spec, SelectorSpec):
+        return f"the selector takes input(s) {names!r}"
+    served = [name for name in names if name in own]
+    looked_up = [name for name in names if name not in own]
+    parts: list[str] = []
+    if served:
+        parts.append(f"the service takes input(s) {served!r}")
+    if looked_up:
+        parts.append(f"its target lookup takes input(s) {looked_up!r}")
+    return " and ".join(parts)
 
 
 def _validate_channel_declarations(
@@ -2187,8 +2251,12 @@ def _return_schema(
     payload that is always an array. Otherwise the kind is the rendered spec's,
     which is the kind dispatch presents: a single-row service declaring a
     ``LIST`` output is an array whether or not that output has a ``selector`` to
-    re-read through, since dispatch presents the service's own return as a list
-    when it has none (``test_a_service_whose_output_is_a_list_is_an_array_not_an_envelope``).
+    re-read through, since dispatch presents the service's own return as the
+    list when it has none
+    (``test_a_service_whose_output_is_a_list_is_an_array_not_an_envelope``), and
+    raises ``ImproperlyConfigured`` for a return that is not a set of rows rather
+    than present one row against this array
+    (``test_a_list_output_with_nothing_to_reread_refuses_a_single_row``).
 
     The root admits ``null`` exactly where drf-services' ``can_present_nothing``
     says dispatch may present ``None``, so this schema and every other route's

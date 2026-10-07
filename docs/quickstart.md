@@ -148,7 +148,7 @@ agent = Agent(model, toolsets=[SpecToolset(specs).include_return_schemas()])
 A spec with no `output_serializer` gets `None` rather than a guessed shape.
 
 A `return_schema` admits `null`, with the root `type` `["object", "null"]`,
-exactly where dispatch may hand the model `None`, as drf-services'
+where the spec says dispatch may hand the model `None`, as drf-services'
 `can_present_nothing` answers it for every route that states an output schema:
 
 - a retrieve selector declaring `allow_none=True`, when nothing matches;
@@ -158,11 +158,19 @@ exactly where dispatch may hand the model `None`, as drf-services'
 - a service with nothing to re-read that declares `ServiceSpec(allow_none=True)`,
   since dispatch then presents the service's own return, a `None` included.
 
+**A `None` the spec does not declare is still handed to the model.** A service
+with nothing to re-read and no `allow_none=True` that returns `None` is
+presented as `None`, against a `return_schema` whose root is `"object"` and does
+not admit `null`. `ServiceSpec(allow_none=True)` is the declaration that admits
+it, so declare it on any such service that can return nothing.
+
 `allow_none` on a service's nested `output_selector_spec` is not read, because
 dispatch does not read it, and a list result is never `null`, only empty. A
 service whose `output_selector_spec` declares `LIST` is an array whether or not
 it has a `selector` to re-read through: with none, dispatch presents the
-service's own return as a list.
+service's own return as the list, and a return that is not a set of rows, such
+as the one row a create returns, raises `ImproperlyConfigured` out of the run.
+Return the rows, or declare `RETRIEVE` to present one.
 
 ## What a tool asks the model for
 
@@ -765,13 +773,32 @@ it; a declared `default` is seeded when the model omits the arg or sends it as
 `page` / `limit` / `ordering` — those are reserved transport keys. `ordering` is
 reserved even when a `filter_set` owns it: a registered channel pops the value at
 call time, so the FilterSet would never see it.) For the same reason a tool may
-not register a `QueryParam` under a name its own spec takes from the call, a
-selector parameter or `filter_set` field, or a service's input serializer
-field: the `SpecToolset` refuses it with `ImproperlyConfigured` when it is
-built, whether it is declared on the toolset, per tool or on the entry's
-`OfflineContract`. Read the value off `request.query_params` and drop the
-parameter, or drop the `QueryParam`. A `UrlKwarg` may share a selector
-parameter's name, since its value reaches the selector through `view.kwargs`.
+not register a `QueryParam` under a name it advertises as the call's own input:
+a selector parameter or `filter_set` field, a service's input serializer field,
+or a parameter of the service's [target lookup](#what-a-tool-asks-the-model-for),
+which a service tool advertises beside its serializer's fields. The
+`SpecToolset` refuses it with `ImproperlyConfigured` when it is built, whether
+the `QueryParam` is declared on the toolset, per tool or on the entry's
+`OfflineContract`, and the refusal says whether the selector, the service or its
+target lookup takes the name. Read the value off `request.query_params` and
+drop the parameter, or drop the `QueryParam`.
+
+The check reads the names the tool's schema offers the model, so a name the
+model is not offered is exempt:
+
+- **a name a `kwargs=` provider declares it fills**, by returning a
+  `TypedDict` whose key cannot be `UNSET`. The provider owns the parameter, so a
+  provider reading `request.query_params["status"]` into the selector's
+  `status`, beside `QueryParam("status")`, is how to route the value to the
+  selector, and the model's value is served;
+- **a key the server keeps from the call**, one a callable in it marks
+  `NotClientInput`, which no caller's value reaches.
+
+A key the provider may decline with `UNSET`, and any key of a provider whose
+annotation does not say which keys it returns, is still refused: on a call where the provider does
+not fill it, the model's value is the only one, and the `QueryParam` has taken
+it. A `UrlKwarg` may share a selector parameter's name, since its value reaches
+the selector through `view.kwargs`.
 Requires `djangorestframework-services>=0.23`, which added the
 `build_offline_context(query_params=…)` seam.
 

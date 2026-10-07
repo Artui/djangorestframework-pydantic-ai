@@ -1310,7 +1310,8 @@ def test_a_selector_parameter_a_query_param_shadows_is_refused(build):
     for. Read on the merged declarations, so a contract's counts as a mount's.
     """
     with pytest.raises(
-        ImproperlyConfigured, match=r"tool 'tasks'.*input\(s\) \['status'\].*QueryParam"
+        ImproperlyConfigured,
+        match=r"tool 'tasks': the selector takes input\(s\) \['status'\] .*QueryParam",
     ):
         build()
 
@@ -1322,7 +1323,8 @@ def test_a_serializer_field_a_query_param_shadows_is_refused():
     that carried it.
     """
     with pytest.raises(
-        ImproperlyConfigured, match=r"tool 'make'.*input\(s\) \['name'\].*QueryParam"
+        ImproperlyConfigured,
+        match=r"tool 'make': the service takes input\(s\) \['name'\] that .*QueryParam",
     ):
         SpecToolset({"make": create_spec()}, tool_query_params={"make": [QueryParam("name")]})
 
@@ -1676,6 +1678,56 @@ def test_filter_set_filters_via_ordinary_params_not_query_params():
     # as filter_data. No QueryParam involved.
     result = _dispatch(_filtered_list_spec(), user, {"min_price": "5"})
     assert [w["name"] for w in _rows(result)] == ["pricey"]
+
+
+def test_a_filter_set_field_a_query_param_shadows_is_refused():
+    """A ``filter_set`` field is the call's own input, and the toolset builds the
+    filter data from the arguments left once every channel has taken its own, so
+    a ``QueryParam`` of the same name takes the value the filter would have read.
+    """
+    with pytest.raises(
+        ImproperlyConfigured, match=r"the selector takes input\(s\) \['min_price'\] "
+    ):
+        SpecToolset(
+            {"list_widgets": _filtered_list_spec()},
+            tool_query_params={"list_widgets": [QueryParam("min_price")]},
+        )
+
+
+class _NamedWidgetFilterSet(django_filters.FilterSet):
+    name = django_filters.CharFilter()
+
+    class Meta:
+        model = Widget
+        fields = ["name"]
+
+
+def widgets_but_the_servers(user, name: Annotated[str, NotClientInput] = ""):
+    """Every widget but the one the server names, which no caller chooses."""
+    return Widget.objects.exclude(name=name)
+
+
+@pytest.mark.django_db
+def test_a_filter_set_field_under_a_hidden_name_is_still_client_input():
+    """``NotClientInput`` on a selector parameter governs the selector's
+    arguments, not a ``filter_set``'s fields: the model's ``name`` never reaches
+    the selector, which would exclude ``a`` with it, and does reach the filter
+    declared under the same name, which keeps ``a`` alone. So it stays
+    advertised, as the filter's.
+    """
+    user = User.objects.create(username="u")
+    Widget.objects.create(name="a", price=1, owner=user)
+    Widget.objects.create(name="b", price=1, owner=user)
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=widgets_but_the_servers,
+        filter_set=_NamedWidgetFilterSet,
+        output_serializer=WidgetSerializer,
+        permission_classes=[AllowAny],
+    )
+
+    assert "name" in _input_schema_of(SpecToolset({"named": spec}), "named")["properties"]
+    assert [w["name"] for w in _rows(_dispatch(spec, user, {"name": "a"}))] == ["a"]
 
 
 # --- UrlKwarg registration ---------------------------------------------------
@@ -5315,6 +5367,121 @@ async def test_a_model_that_leaves_out_the_lookup_is_told_and_corrects_itself():
     assert widget.name == "new"
 
 
+# --- a QueryParam beside the target lookup or a provider ----------------------
+#
+# The refusal of a ``QueryParam`` sharing an input's name reads the names the
+# tool advertises as the call's own, which is the selector's or the target
+# lookup's parameters less what a provider fills and what the server keeps.
+
+
+def _looked_up_through(lookup: Any, **kwargs: Any) -> ServiceSpec:
+    return _update_spec(
+        instance_selector_spec=SelectorSpec(kind=SelectorKind.RETRIEVE, selector=lookup, **kwargs)
+    )
+
+
+@pytest.mark.parametrize(
+    "lookup", [widget_in_a_named_tenant, widget_in_tenant], ids=["required", "defaulted"]
+)
+def test_a_lookup_parameter_a_query_param_takes_is_refused(lookup):
+    """A service tool advertises its target lookup's parameters as its own
+    inputs, and a ``QueryParam`` of the same name pops the model's value before
+    the lookup runs. A required ``tenant`` answered every call carrying it
+    ``Missing required argument(s): 'tenant'.``, so an agent resent the same call
+    until it ran out of retries; a defaulted one resolved the row in ``acme``
+    whatever tenant the model sent.
+
+    Holds the lookup's names in the set the refusal reads, and the wording that
+    says the lookup is what takes the name.
+    """
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"tool 'rename': its target lookup takes input\(s\) \['tenant'\] .*QueryParam",
+    ):
+        SpecToolset(
+            {"rename": _looked_up_through(lookup)},
+            tool_query_params={"rename": [QueryParam("tenant")]},
+        )
+
+
+def test_a_query_param_named_after_a_key_the_server_keeps_is_not_refused():
+    """A precondition marks ``tenant`` ``NotClientInput``, so it is the server's
+    for the whole call: the model is never offered it, and a ``QueryParam`` of
+    that name takes nothing the lookup could have read. Sized so the check
+    answers on the lookup, beside a ``QueryParam`` on ``pk``, which the model is
+    offered: the refusal names ``pk`` alone.
+
+    Holds the subtraction of the server-owned keys from the set the refusal
+    reads: without it the refusal names ``['pk', 'tenant']``.
+    """
+    with pytest.raises(
+        ImproperlyConfigured, match=r"its target lookup takes input\(s\) \['pk'\] that"
+    ):
+        SpecToolset(
+            {"rename": _gated_update_spec(widget_in_tenant)},
+            tool_query_params={"rename": [QueryParam("tenant"), QueryParam("pk")]},
+        )
+
+
+class _Status(TypedDict):
+    status: str
+
+
+def _status_from_the_query(request) -> _Status:
+    """The status the caller asked for, read from the query string."""
+    return _Status(status=request.query_params.get("status", "open"))
+
+
+def names_filed_under(user, *, status: str):
+    """The names filed under one status."""
+    filed = (("draft", "open"), ("signed", "closed"))
+    return [{"name": name} for name, under in filed if under == status]
+
+
+async def test_a_query_param_a_typed_provider_hands_the_selector_is_served():
+    """A ``kwargs=`` provider declaring that it fills ``status``, from
+    ``request.query_params``, is the ordinary way to route a query parameter to
+    a selector, and nothing is lost: the ``QueryParam`` takes the model's value
+    to the query string and the provider hands it to the selector. The provider
+    owns the parameter, so the model is not offered it as the selector's and
+    the ``QueryParam`` takes nothing from the selector. Refused when the tool
+    was built, this shape stopped serving.
+
+    Holds the subtraction of the provider's ``filled`` keys from the set the
+    refusal reads.
+    """
+    toolset = SpecToolset(
+        {"filed": _name_list_spec(names_filed_under, kwargs=_status_from_the_query)},
+        tool_query_params={"filed": [QueryParam("status")]},
+    )
+
+    result = await _call(toolset, "filed", User(username="u"), {"status": "closed"})
+
+    assert _rows(result) == [{"name": "signed"}]
+
+
+@pytest.mark.parametrize(
+    "provider", [_declining_written_out, _nothing_in_scope], ids=["declinable", "untyped"]
+)
+def test_a_query_param_on_a_key_a_provider_may_leave_to_the_model_is_refused(provider):
+    """A provider that may decline ``tenant`` with ``UNSET``, or one whose keys
+    cannot be read, leaves the model to fill it on a call where it does not, and
+    by then the ``QueryParam`` has popped the model's value. So the key stays
+    advertised as the model's, and the collision is refused, on the target
+    lookup as on a selector.
+
+    Holds the declinable keys kept in the set the refusal reads, and an untyped
+    provider counting as filling nothing: read as filled, either constructs.
+    """
+    with pytest.raises(
+        ImproperlyConfigured, match=r"its target lookup takes input\(s\) \['tenant'\] "
+    ):
+        SpecToolset(
+            {"rename": _looked_up_through(widget_in_a_named_tenant, kwargs=provider)},
+            tool_query_params={"rename": [QueryParam("tenant")]},
+        )
+
+
 # --- the pagination envelope --------------------------------------------------
 #
 # Every list-selector result is a page. The input contract said so all along --
@@ -5656,6 +5823,25 @@ async def test_a_service_declaring_allow_none_admits_null():
     assert await _returned_against_its_schema(spec) == (None, ["object", "null"])
 
 
+async def test_an_undeclared_none_is_handed_to_the_model_against_an_object_schema():
+    """What the quickstart and the changelog say of a service that returns
+    ``None`` with nothing to re-read and no ``allow_none=True``: dispatch still
+    presents it, so the model is handed ``None``, and the schema, which states
+    only what the spec declares, does not admit ``null``. The declaration is
+    what admits it (``test_a_service_declaring_allow_none_admits_null``).
+    """
+    spec = ServiceSpec(
+        service=touch_widgets,
+        atomic=False,
+        output_selector_spec=SelectorSpec(
+            kind=SelectorKind.RETRIEVE, output_serializer=WidgetSerializer
+        ),
+        permission_classes=[AllowAny],
+    )
+
+    assert await _returned_against_its_schema(spec) == (None, "object")
+
+
 def _making(output: SelectorSpec, **kwargs: Any) -> ServiceSpec:
     """``create_spec`` presenting through ``output``, with nothing to re-read."""
     return ServiceSpec(
@@ -5713,23 +5899,46 @@ async def test_a_service_tool_reads_its_output_serializer_one_level_down():
     assert set(return_schema["properties"]) == {"id", "name", "price"}
 
 
-async def test_a_service_whose_output_is_a_list_is_an_array_not_an_envelope():
-    """The toolset paginates list *selectors*. Claiming the envelope here would
-    re-open the same schema-versus-payload gap one spec kind over.
-    """
-    spec = ServiceSpec(
-        service=create_widget,
-        input_serializer=WidgetInputSerializer,
+_TOUCHED = [{"id": 1, "name": "old", "price": 1}, {"id": 2, "name": "new", "price": 2}]
+
+
+def touch_every_widget():
+    """Touch the widgets, returning the rows touched."""
+    return _TOUCHED
+
+
+def _presenting_a_list(service: Any) -> ServiceSpec:
+    """``service`` presenting through a ``LIST`` output with nothing to re-read."""
+    return ServiceSpec(
+        service=service,
+        atomic=False,
         output_selector_spec=SelectorSpec(
             kind=SelectorKind.LIST, output_serializer=WidgetSerializer
         ),
         permission_classes=[AllowAny],
     )
 
-    return_schema = _return_schema(spec)
 
-    assert return_schema is not None
-    assert return_schema["type"] == "array"
+async def test_a_service_whose_output_is_a_list_is_an_array_not_an_envelope():
+    """The toolset paginates list *selectors*. Claiming the envelope here would
+    re-open the same schema-versus-payload gap one spec kind over. With no
+    ``selector`` to re-read through, dispatch presents the service's own return
+    as the list, and the model is handed the bare array the schema states.
+    """
+    assert await _returned_against_its_schema(_presenting_a_list(touch_every_widget)) == (
+        _TOUCHED,
+        "array",
+    )
+
+
+async def test_a_list_output_with_nothing_to_reread_refuses_a_single_row():
+    """With no ``selector``, the service's own return is the list presented, so
+    a service returning one row is a configuration error drf-services raises out
+    of the call, naming what the service returned, rather than one object handed
+    to the model against a schema that promised an array.
+    """
+    with pytest.raises(ImproperlyConfigured, match=r"archive_widget returned dict"):
+        await _call(SpecToolset({"op": _presenting_a_list(archive_widget)}), "op", None)
 
 
 def test_a_spec_with_no_output_serializer_advertises_nothing():
