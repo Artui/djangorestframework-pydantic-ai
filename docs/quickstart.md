@@ -1003,6 +1003,7 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | `ServiceValidationError` (bad input) | `ModelRetry` with the field errors, one `field: message` line each — the model self-corrects |
 | A read-shaping value the output serializer rejects while rendering | `ModelRetry` naming the argument — see [A selection the serializer rejects](#a-selection-the-serializer-rejects) |
 | `ActionUnavailable` (an `Affordance` condition not met) | `ToolFailed` with the reason followed by the rule's code — `The books are closed. (code: books_closed)`; see below |
+| `AdditionalInputRequired` (the service wants one more input) | `ModelRetry` with the service's message, ending in the names to supply (``Call this tool again, additionally supplying: `confirmed`.``) — see the warning below |
 | `ServiceError` (business rule) | `ToolFailed` with the rule's own message — a failed result the model reads and reports |
 | Unresolved instance | `ToolFailed("not found")`, unless the spec sets `allow_none=True`, when the tool returns `None` |
 | A dispatch past `dispatch_timeout` | `ToolFailed` — abandoned, with the sentence telling the model to narrow and call again |
@@ -1017,6 +1018,23 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | An `ordering` outside a `filter_set`'s `OrderingFilter` choices | `ModelRetry` — the FilterSet rejects it, which arrives as the `ValidationError` row above |
 | A FilterSet `param_map` target that isn't a real column | Django's `FieldError` propagates — an author's error the model cannot correct by picking a different sort, and one that can't be checked at construction without a queryset |
 | Denied `permission_classes` (class-level `has_permission` **or** object-level `has_object_permission`) | `PermissionDenied` is raised and aborts the run — see the caveat below |
+
+!!! warning "A confirmation raised as `AdditionalInputRequired` is not a gate"
+    The retry for `AdditionalInputRequired` goes to the model, so the model can
+    answer it: a spec that raises `AdditionalInputRequired("Confirm to
+    proceed.", schema={"confirmed": ...})` gets its first call back as a retry,
+    and the model may re-send the same call with `confirmed=true` and run the
+    mutation. No person is asked at any point.
+
+    Treat that confirmation as a prompt for missing input, not as a security
+    boundary. An operation that needs a human decision has to be gated by an
+    approval mechanism outside the spec: pydantic-ai's deferred-tool approval,
+    or `ToolGuard` in `django-pydantic-agent` when it is installed. `ToolGuard`
+    is **off by default**, and a tool named in its `exempt` list stays ungated
+    even when it is also in `require_approval`. Every tool built from a mutating
+    spec carries `readOnlyHint: False` in its `annotations` metadata (only a
+    `SelectorSpec` reads `True`), so an approval policy keyed on that annotation
+    covers them.
 
 !!! warning "A tool-failure policy does *not* change the last row"
     "Aborts the run" is what a plain `pydantic_ai.Agent` does: nothing catches
