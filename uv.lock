@@ -464,7 +464,7 @@ requires-dist = [
     { name = "django", specifier = ">=4.2" },
     { name = "django-filter", marker = "extra == 'filter'", specifier = ">=23" },
     { name = "djangorestframework", specifier = ">=3.14" },
-    { name = "djangorestframework-services", specifier = ">=0.56.0" },
+    { name = "djangorestframework-services", specifier = ">=0.56.0,<0.58" },
     { name = "pydantic-ai-slim", specifier = ">=2.16,<3" },
 ]
 provides-extras = ["filter"]
