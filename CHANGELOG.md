@@ -6,6 +6,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.35.1] — 2026-10-16
+
+### Changed
+
+- **`djangorestframework-services` now has a `<0.58` ceiling.** The pin was
+  `>=0.56.0` with no upper bound, so a fresh install resolved 0.58.0, which
+  retires names this release still passes and changes some answers it relies
+  on, and part of the test suite failed against it. The ceiling keeps a new
+  install on a release the package works with. The release adapted to 0.58.0
+  floors `>=0.58.0` and drops the ceiling. Nothing in the package changed for
+  this; an existing environment that already holds 0.56 or 0.57 is unaffected.
+- Also in this patch, merged to `main` since 0.35.0: the package now bans
+  `TYPE_CHECKING` guards (a lint rule, with one test file exempt because its
+  subject is an annotation imported only under that guard), a docs note that a
+  confirmation raised as `AdditionalInputRequired` is a prompt and not a gate,
+  an annotation of the connection-release context manager as a `Generator`,
+  and dependency bumps.
+
 ## [0.35.0] — 2026-10-07
 
 ### Changed
@@ -2090,7 +2108,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.1...HEAD
+[0.35.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.32.0...v0.33.0
