@@ -31,7 +31,7 @@ import logging
 import re
 import time
 import warnings
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -1496,7 +1496,7 @@ class SpecToolset(AbstractToolset[Any]):
 
 
 @contextmanager
-def _releasing_connections_opened_here() -> Iterator[None]:
+def _releasing_connections_opened_here() -> Generator[None]:
     """Close, on the way out, each connection this thread opened inside the block.
 
     The cleanup ``SpecToolset._call_spec_releasing_connections`` documents,
