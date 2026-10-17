@@ -1889,6 +1889,30 @@ def test_a_filter_set_field_a_query_param_shadows_is_refused():
         )
 
 
+@pytest.mark.django_db(transaction=True)
+async def test_a_spec_read_naming_a_filter_set_field_is_served_alike_from_both_routes():
+    """The same rule for a ``filter_set`` field, which the tool advertises as its
+    input: the spec's own read of it leaves the value in the call, so the filter
+    reads it, from the registry as from ``registry.specs()``."""
+    user = await User.objects.acreate(username="u")
+    await Widget.objects.acreate(owner=user, name="cheap", price=1)
+    await Widget.objects.acreate(owner=user, name="dear", price=10)
+    registry = SpecRegistry()
+    registry.register(
+        "list_widgets", replace(_filtered_list_spec(), reads=(QueryParam("min_price"),))
+    )
+    from_registry = SpecToolset(registry)
+    from_mapping = SpecToolset(registry.specs())
+
+    assert _input_schema_of(from_registry, "list_widgets") == _input_schema_of(
+        from_mapping, "list_widgets"
+    )
+    served = await _call(from_registry, "list_widgets", user, {"min_price": "5"})
+    expected = await _call(from_mapping, "list_widgets", user, {"min_price": "5"})
+    assert [row["name"] for row in _rows(served)] == ["dear"]
+    assert _rows(served) == _rows(expected)
+
+
 class _NamedWidgetFilterSet(django_filters.FilterSet):
     name = django_filters.CharFilter()
 

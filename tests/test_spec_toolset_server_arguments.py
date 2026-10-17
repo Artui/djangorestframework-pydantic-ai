@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import warnings
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -22,6 +23,7 @@ from django_service_specs import (
     SpecRegistry,
 )
 from pydantic_ai import Agent
+from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import BasePermission
 from rest_framework_services import SelectorSpec
 
@@ -38,10 +40,13 @@ from tests.test_spec_toolset import (
     _input_schema_of,
     _name_list_spec,
     _NameSerializer,
+    _paged_spec,
     _rows,
+    _StrictRestqlWidget,
     _tool_return,
     ctx_for,
 )
+from tests.testapp.models import Widget
 
 
 class _RecordingPermission(BasePermission):
@@ -372,6 +377,23 @@ async def test_a_tool_with_no_binding_is_untouched():
 
     assert _rows(result) == [{"name": "project=99 draw=None"}]
     assert "project_pk" in _input_schema_of(toolset, "other")["properties"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_bound_selection_the_render_rejects_is_the_server_s_error_not_a_retry():
+    """A bound read-shaping value is the server's, so a render that rejects it is a
+    configuration bug that stays loud, as a rejected declared default does. A
+    retry would name an argument the model was never offered and cannot change,
+    and on a small budget end the run."""
+    user = await User.objects.acreate(username="u")
+    await Widget.objects.acreate(owner=user, name="a")
+    toolset = SpecToolset(
+        _registry(widgets=replace(_paged_spec(_StrictRestqlWidget), reads=(QueryParam("query"),))),
+        tool_server_arguments={"widgets": ServerArguments(values={"query": "{name, bogus}"})},
+    )
+
+    with pytest.raises(DRFValidationError, match="`bogus` field is not found"):
+        await _call(toolset, "widgets", user, {"query": "{id}"})
 
 
 # --- a consumer scoping each run ----------------------------------------------

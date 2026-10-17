@@ -37,7 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
-from types import MappingProxyType
+from types import FrameType, MappingProxyType
 from typing import Any, TypeGuard, cast
 
 from asgiref.sync import sync_to_async
@@ -1895,9 +1895,9 @@ def _warn_mount_channels(**declarations: object) -> None:
         return
     level = 1
     frame = sys._getframe(1)
-    while frame.f_globals.get("__name__", "").startswith("rest_framework_pydantic_ai"):
+    while frame.f_back is not None and _in_this_package(frame):
         level += 1
-        frame = frame.f_back or frame
+        frame = frame.f_back
     knobs = " and ".join(f"{name}=" for name in used)
     warnings.warn(
         f"SpecToolset's {knobs} {'is' if len(used) == 1 else 'are'} deprecated and will be "
@@ -1908,6 +1908,16 @@ def _warn_mount_channels(**declarations: object) -> None:
         DeprecationWarning,
         stacklevel=level + 1,
     )
+
+
+def _in_this_package(frame: FrameType) -> bool:
+    """Whether ``frame`` runs code of this package, by its module's dotted name.
+
+    The trailing dot on both sides, so the package itself and its modules match
+    and a package whose name merely begins the same way does not.
+    """
+    module: str = frame.f_globals.get("__name__", "")
+    return f"{module}.".startswith("rest_framework_pydantic_ai.")
 
 
 def _validate_server_arguments(
@@ -1983,15 +1993,16 @@ def _parameter_reads(
 ) -> frozenset[str]:
     """The spec's own ``QueryParam`` reads naming an input the tool already advertises.
 
-    Such a read declares where a selector parameter, or a target lookup's,
-    comes from; it is not a second argument. drf-services routes a value sent
+    Such a read declares where a selector parameter, a ``filter_set`` field or
+    a target lookup's parameter comes from; it is not a second argument. drf-services routes a value sent
     under a declared read to the parameter of that name and to the query
     string both, so the toolset leaves it in the call rather than taking it
     out as one of its own channels, which would hand the parameter nothing.
     That is what a toolset built off ``registry.specs()``, which reads no
     channels off the entry, has always done, so both routes advertise the
     name once, as the input, and serve it alike
-    (``test_a_spec_read_naming_a_selector_parameter_is_served_alike_from_both_routes``
+    (``test_a_spec_read_naming_a_selector_parameter_is_served_alike_from_both_routes``,
+    ``test_a_spec_read_naming_a_filter_set_field_is_served_alike_from_both_routes``
     and ``test_a_spec_read_naming_a_lookup_parameter_builds_from_both_routes``).
 
     Read off ``_caller_schema``, the reader the tool's schema and the shadow
@@ -3211,7 +3222,9 @@ def _call_spec(
     # ``view.kwargs`` carries rather than the model's, which drf-services would
     # hand the selector over its arguments
     # (``test_the_bound_value_outranks_the_one_the_model_sends``).
+    server_names: frozenset[str] = frozenset()
     if server_arguments is not None:
+        server_names = server_arguments.names()
         args = _apply_server_arguments(spec, args, server_arguments, label=label)
     # **Then against the arguments as the model sent them.** A selector -- the
     # tool's own, or the lookup a service resolves its target through -- that is
@@ -3241,8 +3254,14 @@ def _call_spec(
     # arm below needs exactly that distinction: a default that breaks the render
     # is a configuration bug and has to stay loud, while a value the model sent
     # is something it can correct. An explicit ``None`` counts as omitted, which
-    # is how ``QueryParam``'s own contract says a transport reads a null.
-    supplied_query_params = _supplied_query_params(query_params, args)
+    # is how ``QueryParam``'s own contract says a transport reads a null. A
+    # bound value is the server's, not the caller's, so it is not counted
+    # either: a render rejecting it is a configuration bug, and a retry would
+    # name an argument the model was never offered
+    # (``test_a_bound_selection_the_render_rejects_is_the_server_s_error_not_a_retry``).
+    supplied_query_params = [
+        name for name in _supplied_query_params(query_params, args) if name not in server_names
+    ]
     # Both channels pop before dispatch so their values never reach the spec as
     # inputs, where ``unknown_arguments`` (REJECT by default) would flag them.
     # That is what makes the provider-only case work: a ``project_pk`` a scoping
@@ -3433,8 +3452,10 @@ def _call_spec(
         # fails ``test_render_error_with_no_query_param_supplied_still_raises``,
         # ``test_render_error_from_a_seeded_default_still_raises`` and
         # ``test_render_error_with_an_explicit_null_still_raises``; gathering the
-        # names after the pop fails the second alone, and counting a null as
-        # supplied the third alone.
+        # names after the pop fails the second alone, counting a null as
+        # supplied the third alone, and counting a bound value as supplied
+        # ``test_a_bound_selection_the_render_rejects_is_the_server_s_error_not_a_retry``
+        # alone.
         if not supplied_query_params:
             raise
         raise ModelRetry(

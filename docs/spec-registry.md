@@ -158,8 +158,9 @@ not told it may send one.
 
 **A read naming an input declares where the input comes from.** A `QueryParam`
 read naming a parameter the spec's selector takes, such as
-`reads=[QueryParam("status")]` on a selector taking `status`, or a parameter of
-a service's target lookup, is not a second argument beside it. The tool
+`reads=[QueryParam("status")]` on a selector taking `status`, a `filter_set`
+field, or a parameter of a service's target lookup, is not a second argument
+beside it. The tool
 advertises the parameter once, as the selector declares it, and leaves its
 value in the call, where drf-services hands it to the parameter and puts it on
 `request.query_params` both. `SpecToolset(registry)` and

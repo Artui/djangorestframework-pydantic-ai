@@ -38,8 +38,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   - Fixed when the toolset is built, like its tool definitions: build a toolset
     per scope. A toolset with no bindings advertises and calls exactly as
     before. The registry page has the either-or example.
-- **Requires `django-service-specs>=0.9.0`**, the release that exports
-  `ServerArguments`, `check_server_arguments` and `apply_server_arguments`.
 
 ### Changed
 
@@ -61,7 +59,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   floor is a hard one: the toolset recognises drf-services' refusals and
   registries by the kernel's classes, which below 0.58.0 are not the ones
   drf-services raises and builds. The behaviours below are 0.58.0's, reached
-  through the toolset.
+  through the toolset. django-service-specs 0.9.0, above the 0.8.0 drf-services
+  asks for, is the release that exports `ServerArguments`,
+  `check_server_arguments` and `apply_server_arguments`, which
+  `tool_server_arguments` is built on.
 - **The names django-service-specs owns are imported from it**, in the
   package, the tests and the docs snippets: `ServiceError`, `SpecRegistry`,
   `UnknownArguments`, `PoolSeeds`, `FieldMarking`, `UNSET`, `ProgressReporter`
@@ -102,8 +103,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     registry, and when the toolset is built for a mapping, prefixed with the
     tool. The toolset's own check of that name still answers for the
     constructor's declarations.
-  - A spec's own `QueryParam` read naming a parameter its selector, or a
-    service's target lookup, takes declares where that parameter comes from,
+  - A spec's own `QueryParam` read naming an input the tool advertises (a
+    parameter its selector takes, a `filter_set` field, or a parameter of a
+    service's target lookup) declares where that input comes from,
     and `SpecToolset(registry)` builds and serves it as
     `SpecToolset(registry.specs())` does: the parameter is advertised once, as
     the selector declares it, and its value stays in the call, where
