@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import django_service_specs
 import pytest
 from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
@@ -142,6 +143,51 @@ class TestToolsetFromRegistry:
             )
 
 
+def _native_registry() -> SpecRegistry:
+    # A django-service-specs spec, which the registry accepts because it
+    # compiles to a kernel spec, and which drf-services cannot dispatch.
+    registry = SpecRegistry()
+    registry.register(
+        "native_create",
+        django_service_specs.ServiceSpec(
+            service=create_widget, permissions=[django_service_specs.Unrestricted()]
+        ),
+    )
+    return registry
+
+
+_NATIVE_REFUSAL = (
+    r"^SpecToolset tool 'native_create': django_service_specs\.ServiceSpec is not a "
+    r"drf-services spec\. "
+)
+
+
+class TestANativeSpecIsRefused:
+    """A kernel-native spec reached the toolset's internals and died on the first
+    drf-services attribute it lacked, an ``AttributeError`` naming neither the
+    tool nor what to do. The refusal is a ``TypeError`` because the value is the
+    wrong kind, and it names the tool and both ways out."""
+
+    def test_from_a_registry(self) -> None:
+        with pytest.raises(TypeError, match=_NATIVE_REFUSAL) as raised:
+            SpecToolset(_native_registry())
+
+        message = str(raised.value)
+        assert "rest_framework_services.ServiceSpec" in message
+        assert "rest_framework_services.SelectorSpec" in message
+        assert "django_service_specs.dispatch" in message
+
+    def test_from_a_mapping(self) -> None:
+        native = _native_registry().specs()
+
+        with pytest.raises(TypeError, match=_NATIVE_REFUSAL):
+            SpecToolset(native)
+
+    def test_through_the_capability(self) -> None:
+        with pytest.raises(TypeError, match=_NATIVE_REFUSAL):
+            SpecCapability(_native_registry())
+
+
 class TestCapabilityFromRegistry:
     def test_wraps_a_registry(self) -> None:
         capability = SpecCapability(_registry())
@@ -230,17 +276,31 @@ class TestTheEntrysOfflineContract:
     def test_a_field_audiences_clash_is_refused_when_the_toolset_is_built(self) -> None:
         # ``name`` is already the serializer's label; claiming it for ``id`` as
         # well leaves two, and a record has one name. The refusal is
-        # drf-services', from the spec's own output declaration, so it names the
-        # output rather than the tool: the toolset's own overrides, which the
-        # tool name labelled, add nothing the declaration lacks.
+        # drf-services', from the spec's own output declaration, and the toolset
+        # prefixes it with the tool: drf-services names the output, which a
+        # registry of many specs shares across tools.
         registry = self._contract_registry(field_audiences={"id": FieldMarking.label()})
 
         with pytest.raises(
-            ImproperlyConfigured, match=r"^Output: both 'id' and 'name' are marked"
+            ImproperlyConfigured,
+            match=r"^SpecToolset tool 'list_widgets': Output: both 'id' and 'name' are marked",
         ) as raised:
             SpecToolset(registry)
 
-        assert "Tool 'list_widgets'" not in str(raised.value)
+        # Re-raised, not replaced: drf-services' own refusal is the cause.
+        assert isinstance(raised.value.__cause__, ImproperlyConfigured)
+        assert str(raised.value.__cause__).startswith("Output: both 'id' and 'name'")
+
+    def test_a_field_audiences_key_naming_no_output_field_is_refused(self) -> None:
+        # A marking for a field the output does not carry would silently project
+        # nothing; drf-services refuses it, and the toolset names the tool.
+        registry = self._contract_registry(field_audiences={"nope": FieldMarking.label()})
+
+        with pytest.raises(ImproperlyConfigured) as raised:
+            SpecToolset(registry)
+
+        assert str(raised.value).startswith("SpecToolset tool 'list_widgets': ")
+        assert "'nope'" in str(raised.value)
 
     def test_this_mounts_declaration_overrides_the_entrys_by_name(self) -> None:
         # The contract is a default. A constructor declaration is this mount's

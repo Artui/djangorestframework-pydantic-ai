@@ -410,7 +410,8 @@ def test_a_selector_spec_with_no_selector_is_refused_when_the_toolset_is_built()
     wherever it compiles one, and the toolset compiles every spec while it is
     built. Such a spec could never be dispatched off HTTP, so the toolset used
     to build and then fail its first call; now the mount fails at startup with
-    drf-services' own refusal."""
+    drf-services' own refusal, prefixed with the tool it is about -- a mapping
+    of many specs otherwise leaves the reader to find which one."""
     spec = SelectorSpec(
         kind=SelectorKind.LIST,
         selector=None,
@@ -418,7 +419,9 @@ def test_a_selector_spec_with_no_selector_is_refused_when_the_toolset_is_built()
         permission_classes=[AllowAny],
     )
 
-    with pytest.raises(ImproperlyConfigured, match=r"^SelectorSpec declares no selector"):
+    with pytest.raises(
+        ImproperlyConfigured, match=r"^SpecToolset tool 'empty': SelectorSpec declares no selector"
+    ):
         SpecToolset({"empty": spec}, descriptions={"empty": "Nothing to run."})
 
 
@@ -944,21 +947,41 @@ def test_a_channel_named_after_the_list_argument_is_refused(build, kind):
     assert "reserved transport keys" not in message
 
 
+def test_a_malformed_schema_fragment_is_refused_naming_the_tool():
+    """drf-services reads a spec's ``metadata["json_schema"]`` while the tool's
+    schema is built, and refuses one that is not keyed by phase in the spec's own
+    terms (``SelectorSpec.metadata[...]``), which every spec in a mapping shares.
+    The toolset prefixes the refusal with the tool, as it does at compile."""
+    spec = list_spec(metadata={"json_schema": "not a mapping"})
+
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=r"^SpecToolset tool 'list_widgets': SelectorSpec\.metadata\['json_schema'\] must be",
+    ):
+        SpecToolset({"list_widgets": spec})
+
+
 @pytest.mark.parametrize(
     "read", [QueryParam("items"), UrlKwarg("items")], ids=lambda r: type(r).__name__
 )
 def test_a_read_named_after_the_list_argument_is_refused_by_drf_services(read):
     """A read is a parameter of the compiled spec, and ``items`` already is one,
-    so drf-services refuses the second source of the name when the spec compiles,
-    at ``SpecRegistry.register``. A registry entry therefore never brings this
-    toolset a channel named after the list: the check above answers for the
-    declarations made on the toolset, and this for the spec's own."""
-    registry = SpecRegistry()
+    so drf-services refuses the second source of the name when the spec compiles:
+    at ``SpecRegistry.register`` for a registry, and while the toolset is built
+    for a mapping, which is the route this test takes. The toolset therefore
+    never sees a channel named after the list from a spec: the check above
+    answers for the declarations made on the toolset, and drf-services for the
+    spec's own, named after the tool."""
+    spec = replace(bulk_spec(), reads=(read,))
 
     with pytest.raises(
-        ImproperlyConfigured, match=r"^Parameters \['items'\] are declared by two sources\."
+        ImproperlyConfigured,
+        match=(
+            r"^SpecToolset tool 'create_widgets': "
+            r"Parameters \['items'\] are declared by two sources\."
+        ),
     ) as caught:
-        registry.register("create_widgets", replace(bulk_spec(), reads=(read,)))
+        SpecToolset({"create_widgets": spec})
 
     assert "named 'items'" not in str(caught.value)
 
@@ -1072,9 +1095,15 @@ async def test_toolset_threads_the_unknown_arguments_knob():
 
 
 @pytest.mark.parametrize(
-    "policy", [UnknownArguments.PASSTHROUGH, "passthrough"], ids=["member", "raw-value"]
+    ("policy", "spelled"),
+    [
+        (UnknownArguments.PASSTHROUGH, "passthrough"),
+        ("passthrough", "passthrough"),
+        ("drop", "drop"),
+    ],
+    ids=["member", "raw-value", "drop"],
 )
-def test_passthrough_is_refused_when_the_toolset_is_built(policy):
+def test_passthrough_is_refused_when_the_toolset_is_built(policy, spelled):
     """A model's tool call is a flat object, and drf-services hands a callable
     only what its spec declares, so an argument outside that set has no channel
     to reach it. drf-services refuses ``PASSTHROUGH`` with ``ValueError`` on
@@ -1083,12 +1112,14 @@ def test_passthrough_is_refused_when_the_toolset_is_built(policy):
 
     The raw value as well as the member, because ``UnknownArguments`` is a
     ``str`` enum and the guard admits the accepted values rather than excluding
-    the retired one: a string spelling of it must not slip past.
+    the retired one: a string spelling of it must not slip past. ``"drop"``,
+    which names no policy at all, is refused the same way, so a misspelt setting
+    fails at startup rather than reaching drf-services on the first call.
     """
     with pytest.raises(
         ImproperlyConfigured,
         match=(
-            r"^SpecToolset: unknown_arguments='passthrough' is not accepted\. "
+            rf"^SpecToolset: unknown_arguments='{spelled}' is not accepted\. "
             r"Use UnknownArguments\.REJECT or UnknownArguments\.IGNORE\. "
         ),
     ) as raised:

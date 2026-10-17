@@ -52,9 +52,17 @@ agent = Agent(model, deps_type=AgentDeps, toolsets=[SpecToolset(registry)])
 That is the whole change. Each entry becomes one tool, named as it is in the
 registry, in registration order.
 
+The registry is django-service-specs', and it accepts any spec that compiles to
+one of the kernel's. The toolset dispatches through drf-services, so every entry
+it is handed must be a `rest_framework_services.ServiceSpec` or `SelectorSpec`.
+A django-service-specs spec raises `TypeError` naming the tool when the toolset
+is built; call one through `django_service_specs.dispatch` instead.
+
 Pass the **registry**, not `registry.specs()`. The mapping is what the registry
 holds minus everything else the entry carries, and one of those things — the
-[agent contract](#what-the-entry-carries-for-an-agent) — is read here.
+[agent contract](#what-the-spec-declares-for-an-agent) — is read here. One
+shape is the exception, below: a `QueryParam` read naming a selector
+parameter.
 
 The same goes for the capability:
 
@@ -149,6 +157,15 @@ built from the mapping advertises none of the spec's `reads`. The spec still
 carries them, so a value the model sends under one of those names is admitted
 and routed onto the request as drf-services routes any caller's, but a model is
 not told it may send one.
+
+**One shape works only from the mapping.** A `QueryParam` read naming a
+parameter the spec's selector takes, such as `reads=[QueryParam("status")]` on a
+selector taking `status`, is refused by `SpecToolset(registry)` when it is
+built: the toolset reads the entry's query params as its own channel and refuses
+one that shadows a selector parameter. `SpecToolset(registry.specs())` builds
+the same spec and serves it, since drf-services routes the read to the
+parameter. The asymmetry is known, and is fixed in the seam release, in this
+toolset and the MCP transport together.
 
 ## What stays per toolset
 

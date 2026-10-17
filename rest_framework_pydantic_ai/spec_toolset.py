@@ -62,6 +62,7 @@ from django_service_specs import (
     SpecRegistry,
     UnknownArguments,
     base_pool,
+    kernel_spec,
     operation_affordances,
     paginate_output,
     provider_keys,
@@ -201,9 +202,48 @@ def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
     drf-services' own specs, so the cast states the one kind this package reads
     rather than widening every internal signature to a kind it cannot dispatch.
     """
-    if isinstance(specs, SpecRegistry):
-        return cast("Mapping[str, Spec]", specs.specs())
-    return specs
+    resolved = (
+        cast("Mapping[str, Spec]", specs.specs()) if isinstance(specs, SpecRegistry) else specs
+    )
+    for name, spec in resolved.items():
+        # Checked rather than trusted, because the registry's type admits it and
+        # nothing downstream would say what went wrong: a django-service-specs
+        # spec has no ``permission_classes``, and the first internal that reads
+        # one died with an ``AttributeError`` naming neither the tool nor the
+        # fix. ``TypeError`` because the value is the wrong kind, not a
+        # misconfiguration of a right one. A mapping is held to the same check:
+        # its annotation says the same thing, and ty is not the only caller.
+        # Each member of the tuple is held by the suite at large: without
+        # ``ServiceSpec`` every service tool is refused
+        # (``test_create_service_renders_output``), without ``SelectorSpec``
+        # every selector tool (``test_list_selector_renders_owned_widgets``);
+        # the check itself by ``TestANativeSpecIsRefused``.
+        if not isinstance(spec, (ServiceSpec, SelectorSpec)):
+            kind = f"{type(spec).__module__.split('.')[0]}.{type(spec).__qualname__}"
+            raise TypeError(
+                f"SpecToolset tool {name!r}: {kind} is not a drf-services spec. "
+                "This toolset dispatches through drf-services, which takes "
+                "rest_framework_services.ServiceSpec or "
+                "rest_framework_services.SelectorSpec: declare the operation with one "
+                "of those, or call a django-service-specs spec through "
+                "django_service_specs.dispatch."
+            )
+    return resolved
+
+
+@contextmanager
+def _refusals_name_the_tool(name: str) -> Generator[None, None, None]:
+    """Prefix a drf-services refusal raised while building one tool with that tool.
+
+    drf-services names what it refuses by the spec's own parts - the output,
+    the serializer, the parameters - which a mapping of many specs leaves the
+    reader to match to a tool by hand. The refusal is re-raised rather than
+    replaced, so its own wording, and its cause, survive.
+    """
+    try:
+        yield
+    except ImproperlyConfigured as exc:
+        raise ImproperlyConfigured(f"SpecToolset tool {name!r}: {exc}") from exc
 
 
 def _resolve_contracts(specs: SpecSource) -> Mapping[str, OfflineContract]:
@@ -619,15 +659,21 @@ class SpecToolset(AbstractToolset[Any]):
             ``require_permissions`` is set, a ``QueryParam`` / ``UrlKwarg``
             declared here on a ``many=True`` spec's tool shares the name its
             list travels under (a spec's own read of that name is refused by
-            drf-services before the toolset sees it), one is named after a
+            drf-services when the spec compiles), one is named after a
             registered pool seed, a selector takes a parameter that a list
             tool's ``page`` / ``limit`` or one of the tool's ``QueryParam``
             declarations, the spec's own reads included, takes out of the call
             before it runs, ``instructions=`` is given beside a
             ``conventions=`` that changes a line of the block it replaces, or
-            drf-services refuses a spec while the toolset compiles it -- a
-            ``SelectorSpec`` with no ``selector``, or two output fields marked
-            ``FieldMarking.label()``.
+            drf-services refuses a spec while the toolset compiles it, reads
+            its input schema or projects its output -- a ``SelectorSpec`` with
+            no ``selector``, a malformed ``metadata["json_schema"]`` fragment, a
+            ``field_audiences`` key naming no output field, or two output fields
+            marked ``FieldMarking.label()``. drf-services' message is prefixed
+            ``SpecToolset tool '<name>': ``.
+        TypeError: A value in ``specs`` is not a drf-services ``ServiceSpec``
+            or ``SelectorSpec`` -- a django-service-specs spec in a registry,
+            say. The message names the tool and the constructors to use.
         ValueError: A tool name is outside ``^[a-zA-Z0-9_-]{1,64}$``, a per-tool
             mapping names a tool this toolset does not expose, or one name is
             registered on both parameter channels.
@@ -667,6 +713,13 @@ class SpecToolset(AbstractToolset[Any]):
         # wrong whatever the specs are.
         _validate_unknown_arguments(unknown_arguments)
         resolved = _resolve_specs(specs)
+        # Compiled here, first, so a spec drf-services refuses fails the mount
+        # naming its tool, before any check below reads it. Held by ``test_a_selector_spec_with_no_selector_is_refused_when_the_
+        # toolset_is_built``, whose refusal nothing before dispatch would
+        # otherwise raise with the tool's name.
+        for name, spec in resolved.items():
+            with _refusals_name_the_tool(name):
+                kernel_spec(spec)
         contracts = _resolve_contracts(specs)
         _validate_tool_names(resolved)
         _validate_permissions(resolved, require=require_permissions)
@@ -762,14 +815,20 @@ class SpecToolset(AbstractToolset[Any]):
         # ``return_schema`` describes the payload the model actually receives,
         # and that payload is projected — so the schema has to be projected by
         # the same declaration, or it would advertise a field the render drops.
-        self._projections: dict[str, AudienceProjection] = {
-            name: audience_projection_for_spec(
-                spec,
-                overrides=contracts.get(name, _NO_CONTRACT).field_audiences,
-                name=f"Tool {name!r}",
-            )
-            for name, spec in self._specs.items()
-        }
+        #
+        # The output's own refusals - a ``field_audiences`` key naming no output
+        # field, two fields marked as the label - surface here rather than at
+        # compile, so they are prefixed with the tool the same way. Held by
+        # ``test_a_field_audiences_key_naming_no_output_field_is_refused``.
+        self._projections: dict[str, AudienceProjection] = {}
+        for name, spec in self._specs.items():
+            with _refusals_name_the_tool(name):
+                self._projections[name] = audience_projection_for_spec(
+                    spec,
+                    overrides=contracts.get(name, _NO_CONTRACT).field_audiences,
+                    # The tool is the prefix already; this names the part.
+                    name="field_audiences",
+                )
         # Schemas derive purely from the specs (no DB), so the tool defs are built
         # once up front. ``ToolDefinition`` defaults to ``kind="function"`` — the
         # in-process kind the run loop routes into ``call_tool``.
@@ -1826,14 +1885,16 @@ def _validate_inputs_a_channel_takes(
     the selector also reads.
     """
     for tool_name, spec in specs.items():
-        own = frozenset(
-            cast(
-                "dict[str, Any]",
-                spec_to_json_schema(
-                    spec, phase="input", registry=registry, argument_binding=_ARGUMENT_BINDING
-                ),
-            ).get("properties", {})
-        )
+        # The first read of each spec's input schema, so drf-services' refusals
+        # of a malformed ``metadata["json_schema"]`` fragment or input marker
+        # surface here, naming the spec's class; they are prefixed with the tool
+        # like the compile's. Held by
+        # ``test_a_malformed_schema_fragment_is_refused_naming_the_tool``.
+        with _refusals_name_the_tool(tool_name):
+            schema = spec_to_json_schema(
+                spec, phase="input", registry=registry, argument_binding=_ARGUMENT_BINDING
+            )
+        own = frozenset(cast("dict[str, Any]", schema).get("properties", {}))
         label = f"SpecToolset tool {tool_name!r}"
         pagination = sorted(own & _PAGINATION_ARGUMENTS) if _is_list_selector(spec) else []
         if pagination:

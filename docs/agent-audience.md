@@ -95,9 +95,12 @@ A project that genuinely wants two agent audiences with different visibility
 does not want this. It wants two serializers.
 
 Two fields left claiming `FieldMarking.label()` raises `ImproperlyConfigured`
-when the toolset is built (`Output: both 'id' and 'name' are marked
-FieldMarking.label()...`): a record has one name. The refusal is drf-services',
-from the spec's output declaration, so it names the fields rather than the tool.
+when the toolset is built (`SpecToolset tool 'list_widgets': Output: both 'id'
+and 'name' are marked FieldMarking.label()...`): a record has one name. A
+`field_audiences` key naming a field the output does not carry is refused the
+same way, rather than projecting nothing. Both refusals are drf-services', from
+the spec's output declaration; the toolset prefixes them with the tool, since
+drf-services names only the fields.
 
 ## What it costs
 
