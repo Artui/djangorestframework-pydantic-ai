@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from rest_framework_services.types.progress_reporter import ProgressReporter
+from django_service_specs import ProgressReporter
 
 
 @dataclass

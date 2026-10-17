@@ -43,6 +43,29 @@ from asgiref.sync import sync_to_async
 from django.core.exceptions import ImproperlyConfigured
 from django.db import connections
 from django.http import HttpRequest
+from django_service_specs import (
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_POOL_SEEDS,
+    UNSET,
+    ActionUnavailable,
+    AdditionalInputRequired,
+    Affordance,
+    AudienceProjection,
+    DispatchResult,
+    FieldAudience,
+    OutputPage,
+    PoolSeeds,
+    ProgressReporter,
+    SelectorKind,
+    ServiceError,
+    ServiceValidationError,
+    SpecRegistry,
+    UnknownArguments,
+    base_pool,
+    operation_affordances,
+    paginate_output,
+    provider_keys,
+)
 from pydantic_ai import ModelRetry, RunContext, ToolFailed
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
@@ -52,44 +75,23 @@ from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.settings import api_settings
 from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
-    DEFAULT_PAGE_SIZE,
-    DEFAULT_POOL_SEEDS,
-    UNSET,
-    ActionUnavailable,
-    AdditionalInputRequired,
-    Affordance,
     ArgumentBinding,
-    AudienceProjection,
-    DispatchResult,
-    FieldAudience,
     JsonSchemaRegistry,
     OfflineContract,
-    OutputPage,
-    PoolSeeds,
-    SelectorKind,
     SelectorSpec,
-    ServiceError,
     ServiceSpec,
-    ServiceValidationError,
-    SpecRegistry,
-    UnknownArguments,
     audience_projection_for_spec,
-    base_pool,
     build_offline_context,
     can_present_nothing,
     dispatch_spec,
     enforce_permissions,
-    operation_affordances,
     output_to_json_schema,
-    paginate_output,
-    provider_keys,
     render_for_audience,
     server_owned_keys,
     spec_to_json_schema,
     unmet_operation_affordance,
 )
 from rest_framework_services.dispatch.unguarded_specs import unguarded_specs
-from rest_framework_services.types.progress_reporter import ProgressReporter
 from rest_framework_services.types.validate_channel_names import validate_channel_names
 
 from rest_framework_pydantic_ai.types.agent_conventions import AgentConventions
@@ -191,22 +193,34 @@ def _usage_extra(ctx: RunContext[Any]) -> dict[str, Any]:
 
 
 def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
-    """Normalise a ``SpecSource`` to the plain mapping the internals expect."""
-    return specs.specs() if isinstance(specs, SpecRegistry) else specs
+    """Normalise a ``SpecSource`` to the plain mapping the internals expect.
+
+    The registry is django-service-specs', and it types an entry as anything
+    that compiles to a kernel spec. What it hands back is each spec as it was
+    registered, and this toolset dispatches through drf-services, which takes
+    drf-services' own specs, so the cast states the one kind this package reads
+    rather than widening every internal signature to a kind it cannot dispatch.
+    """
+    if isinstance(specs, SpecRegistry):
+        return cast("Mapping[str, Spec]", specs.specs())
+    return specs
 
 
 def _resolve_contracts(specs: SpecSource) -> Mapping[str, OfflineContract]:
     """Each registry entry's ``OfflineContract``, by tool name.
 
-    ``SpecRegistry.specs()`` flattens an entry to its spec, which is everything
-    the dispatch internals need and drops the one thing this toolset cannot
-    derive: what a caller with **no HTTP request** has to be told. Over HTTP the
-    URLconf supplies the route captures and the query string supplies the
-    read-shaping params; here nobody does, and the entry is where a project that
-    also runs an MCP server has already said so.
+    What a caller with **no HTTP request** has to be told. Over HTTP the URLconf
+    supplies the route captures and the query string supplies the read-shaping
+    params; here nobody does, and the spec's ``reads`` and ``field_audiences``
+    are where a project that also runs an MCP server has already said so. The
+    entry answers them as ``agent_contract``, and this toolset reads them there.
 
-    A bare mapping carries no entries and so no contracts. That toolset declares
-    its channels in the constructor, as it always has.
+    A bare mapping is read as carrying none, as it always was: its toolset
+    declares its channels in the constructor. The spec in it still carries its
+    ``reads``, so drf-services admits and routes a value sent under one of
+    those names -- only the tool's schema does not advertise it.
+    ``test_a_bare_mapping_advertises_no_read_and_still_routes_one`` holds both
+    halves.
     """
     if not isinstance(specs, SpecRegistry):
         return {}
@@ -360,7 +374,7 @@ class SpecToolset(AbstractToolset[Any]):
     **A list selector's result is a page, always.** It comes back as
     ``{"items": [...], "page": 1, "totalPages": N, "hasNext": bool}`` — never a
     bare list — with at most
-    [`DEFAULT_PAGE_SIZE`][rest_framework_services.dispatch.paginate_output.DEFAULT_PAGE_SIZE]
+    [`DEFAULT_PAGE_SIZE`][django_service_specs.DEFAULT_PAGE_SIZE]
     rows unless ``max_page_size`` lowers it. That is the input contract this
     toolset has always published being honoured: ``page`` and ``limit`` were
     advertised on every list tool and the payload was a bare slice, so a model
@@ -398,11 +412,13 @@ class SpecToolset(AbstractToolset[Any]):
             declaration site for a project exposing the same specs over more than
             one transport, so the agent reads the source MCP and the HTTP views
             read. **Prefer the registry over ``registry.specs()``**: an entry
-            carries an
-            [`OfflineContract`][rest_framework_services.types.offline_contract.OfflineContract]
-            and the flattened mapping does not, so a contract's ``url_kwargs``,
-            ``query_params`` and ``field_audiences`` are silently absent from a
-            toolset built off the mapping. A filtered view is itself a registry, so several toolsets can
+            answers its spec's ``reads`` as an
+            [`OfflineContract`][rest_framework_services.types.offline_contract.OfflineContract],
+            and the toolset reads channels off the entry, so a toolset built off
+            the mapping advertises none of the spec's reads. drf-services still
+            admits and routes a value sent under one of those names, but the
+            model is not told it may send one. ``field_audiences`` is part of the
+            spec's output declaration and is projected either way. A filtered view is itself a registry, so several toolsets can
             be projected from one declaration with no shared state
             (``SpecToolset(registry.by_tag("read"), id="reads")``). Only the
             names come from it; everything else here is transport-specific, which
@@ -442,10 +458,16 @@ class SpecToolset(AbstractToolset[Any]):
             ``ctx.deps.progress``, tolerating a deps type without the field.
         unknown_arguments: What to do with a tool arg outside the spec's declared
             input set — a key the model invented. ``UnknownArguments.REJECT``
-            surfaces it as a ``ModelRetry`` so the model self-corrects,
-            ``IGNORE`` drops it, ``PASSTHROUGH`` forwards it to the callable.
-            Specs whose declared set is open (a ``filter_set``, a ``**kwargs``
-            selector) are unaffected.
+            (the default) surfaces it as a ``ModelRetry`` so the model
+            self-corrects, and ``IGNORE`` drops it. Under either, the key never
+            reaches the callable, which drf-services hands only what its spec
+            declares. A ``filter_set``'s filters are declared names, so a key
+            outside them and the selector's parameters is refused like any
+            other; a selector taking a bare ``**kwargs`` declares no name, so
+            nothing is refused and nothing undeclared is handed to it.
+            ``PASSTHROUGH`` raises ``ImproperlyConfigured`` here: a tool call
+            has no channel that carries an undeclared name through to the
+            callable, and drf-services refuses it on every call.
         query_params: Read-shaping
             [`QueryParam`][rest_framework_services.types.query_param.QueryParam]
             args that seed
@@ -460,11 +482,12 @@ class SpecToolset(AbstractToolset[Any]):
         tool_query_params: ``query_params`` for one tool only, keyed by tool
             name. A per-tool param overrides a toolset-wide one of the same name.
 
-            Both are **this mount's** declarations, and both override the entry's
-            own ``OfflineContract`` by name. Where a project runs more than one
-            agent transport, the contract is the better home: the operation needs
-            the identical params whichever transport calls it, and declaring them
-            per mount is how two mounts come to disagree.
+            Both are **this mount's** declarations, and both override by name
+            the ``QueryParam`` reads the spec declares, which its registry
+            entry's ``OfflineContract`` carries. Where a project runs more than
+            one agent transport, the spec's ``reads`` are the better home: the
+            operation needs the identical params whichever transport calls it,
+            and declaring them per mount is how two mounts come to disagree.
         url_kwargs:
             [`UrlKwarg`][rest_framework_services.types.url_kwarg.UrlKwarg] args
             — URL route captures (``parent_pk``) seeded into
@@ -481,8 +504,8 @@ class SpecToolset(AbstractToolset[Any]):
             still reaches the selector. A name cannot be both a ``QueryParam``
             and a ``UrlKwarg`` on one tool: a value cannot route to two channels.
         tool_url_kwargs: ``url_kwargs`` for one tool only, same override rule,
-            and the same preference for the entry's ``OfflineContract`` where one
-            exists.
+            and the same preference for the spec's own ``UrlKwarg`` reads where
+            a registry carries the spec.
         host: The origin the synthesized request reports, so
             ``build_absolute_uri`` builds real absolute URLs — DRF's
             ``FileField`` and the ``Hyperlinked*`` fields call it for every value
@@ -573,7 +596,7 @@ class SpecToolset(AbstractToolset[Any]):
             extending the shared default:
             ``DEFAULT_JSON_SCHEMA_REGISTRY.extend(fields=[(MoneyField, {"type": "string"})])``.
         pool_seeds: The project's own always-available pool seeds -- a
-            [`PoolSeeds`][rest_framework_services.types.pool_seeds.PoolSeeds]
+            [`PoolSeeds`][django_service_specs.PoolSeeds]
             registry of names such as a tenant, a locale or a clock, which over
             HTTP hang off ``request`` and off it have no channel. Handed to every
             dispatch this toolset makes, so a service, a selector or an
@@ -591,16 +614,20 @@ class SpecToolset(AbstractToolset[Any]):
             ``user`` / ``request`` to receive them.
 
     Raises:
-        ImproperlyConfigured: A spec has no ``permission_classes`` and
-            ``require_permissions`` is set, a ``QueryParam`` / ``UrlKwarg`` on
-            a ``many=True`` spec's tool -- declared here or on its entry's
-            ``OfflineContract`` -- shares the name its list travels under, one
-            is named after a registered pool seed, a selector takes a parameter
-            that a list tool's ``page`` / ``limit`` or one of the tool's
-            ``QueryParam`` declarations takes out of the call before it runs, or
-            ``instructions=`` is given
-            beside a ``conventions=`` that changes a line of the block it
-            replaces.
+        ImproperlyConfigured: ``unknown_arguments`` is neither ``REJECT`` nor
+            ``IGNORE``, a spec has no ``permission_classes`` and
+            ``require_permissions`` is set, a ``QueryParam`` / ``UrlKwarg``
+            declared here on a ``many=True`` spec's tool shares the name its
+            list travels under (a spec's own read of that name is refused by
+            drf-services before the toolset sees it), one is named after a
+            registered pool seed, a selector takes a parameter that a list
+            tool's ``page`` / ``limit`` or one of the tool's ``QueryParam``
+            declarations, the spec's own reads included, takes out of the call
+            before it runs, ``instructions=`` is given beside a
+            ``conventions=`` that changes a line of the block it replaces, or
+            drf-services refuses a spec while the toolset compiles it -- a
+            ``SelectorSpec`` with no ``selector``, or two output fields marked
+            ``FieldMarking.label()``.
         ValueError: A tool name is outside ``^[a-zA-Z0-9_-]{1,64}$``, a per-tool
             mapping names a tool this toolset does not expose, or one name is
             registered on both parameter channels.
@@ -636,6 +663,9 @@ class SpecToolset(AbstractToolset[Any]):
         thread_sensitive: bool = True,
         executor: ThreadPoolExecutor | None = None,
     ) -> None:
+        # First, because it reads nothing but the argument: a refused policy is
+        # wrong whatever the specs are.
+        _validate_unknown_arguments(unknown_arguments)
         resolved = _resolve_specs(specs)
         contracts = _resolve_contracts(specs)
         _validate_tool_names(resolved)
@@ -1353,7 +1383,7 @@ class SpecToolset(AbstractToolset[Any]):
 
         Note what the **default pool** leaves out, because it is the question this
         seam attracts: drf-services'
-        [`DispatchResult.service_result`][rest_framework_services.types.dispatch_result.DispatchResult]
+        [`DispatchResult.service_result`][django_service_specs.DispatchResult]
         -- the flags carrier an upsert's ``created`` rides on. The HTTP path does
         not put it in this pool either; it feeds a callable ``success_status`` and
         a ``response_finalizer``, both of which are status-code machinery a
@@ -1372,7 +1402,7 @@ class SpecToolset(AbstractToolset[Any]):
 
         Args:
             dispatch_result: The dispatch's full
-                [`DispatchResult`][rest_framework_services.types.dispatch_result.DispatchResult].
+                [`DispatchResult`][django_service_specs.DispatchResult].
                 Keyword-only, and **always supplied by this toolset** -- an
                 override that does not accept it raises ``TypeError`` on the next
                 tool call. That break is deliberate: the parameter is the only
@@ -2016,6 +2046,47 @@ Every subset of the conditioned tools is a possible key, which is why there is a
 bound at all; in practice a deployment moves between a handful -- the books open
 or closed -- and an evicted entry costs one derivation, tens of microseconds.
 """
+
+
+_ACCEPTED_UNKNOWN_ARGUMENTS = (UnknownArguments.REJECT, UnknownArguments.IGNORE)
+"""The ``unknown_arguments`` policies a toolset is built with.
+
+An allow-list rather than a check for the one refused member, because
+``UnknownArguments`` is a ``str`` enum and a policy arrives as whatever a
+project's settings hold: ``"passthrough"`` compares equal to the member. A
+member a later django-service-specs release adds is refused too, until this
+toolset is taught what to do with it. ``test_reject_and_ignore_still_build`` holds each member here, one
+parameter apiece.
+"""
+
+
+def _validate_unknown_arguments(unknown_arguments: UnknownArguments) -> None:
+    """Refuse a policy this toolset cannot carry out, at construction.
+
+    ``PASSTHROUGH`` is the one there is: drf-services raises ``ValueError`` for it
+    on every call, so a toolset built with it used to construct and then abort
+    the run on its first tool call. The reason is not drf-services' alone. A
+    model's tool call is one flat object and the toolset hands drf-services
+    every key in it as an argument, so there is no second channel an undeclared
+    name could travel through to reach the callable; the declaration is what
+    makes a name an argument.
+    """
+    if unknown_arguments in _ACCEPTED_UNKNOWN_ARGUMENTS:
+        return
+    # The value, not the member's repr: a policy read from settings arrives as
+    # the string, and the message should name what the project wrote.
+    spelled = (
+        unknown_arguments.value
+        if isinstance(unknown_arguments, UnknownArguments)
+        else unknown_arguments
+    )
+    raise ImproperlyConfigured(
+        f"SpecToolset: unknown_arguments={spelled!r} is not accepted. Use "
+        "UnknownArguments.REJECT or UnknownArguments.IGNORE. A tool call has no "
+        "channel that carries a name the spec does not declare through to the "
+        "callable, and drf-services refuses PASSTHROUGH on every call. Declare "
+        "the argument instead: a reads entry, a serializer field or a parameter."
+    )
 
 
 def _validate_conventions_beside_instructions(

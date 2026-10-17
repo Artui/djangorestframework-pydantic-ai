@@ -22,6 +22,23 @@ from django.db import connection, connections
 from django.db.models import Q
 from django.test import RequestFactory
 from django_restql.mixins import DynamicFieldsMixin
+from django_service_specs import (
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_POOL_SEEDS,
+    UNSET,
+    ActionUnavailable,
+    AdditionalInputRequired,
+    Affordance,
+    FieldMarking,
+    PoolSeeds,
+    SelectorKind,
+    ServiceConflict,
+    ServiceError,
+    ServiceValidationError,
+    SpecRegistry,
+    UnknownArguments,
+    UnsetType,
+)
 from pydantic_ai import Agent, ModelRetry, ToolFailed
 from pydantic_ai.messages import (
     ModelResponse,
@@ -39,28 +56,12 @@ from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework.request import Request
 from rest_framework_services import (
     DEFAULT_JSON_SCHEMA_REGISTRY,
-    DEFAULT_PAGE_SIZE,
-    DEFAULT_POOL_SEEDS,
     MARKING,
-    UNSET,
-    ActionUnavailable,
-    AdditionalInputRequired,
-    Affordance,
-    FieldMarking,
     InputRequired,
     NotClientInput,
-    OfflineContract,
     PolymorphicServiceSpec,
-    PoolSeeds,
-    SelectorKind,
     SelectorSpec,
-    ServiceConflict,
-    ServiceError,
     ServiceSpec,
-    ServiceValidationError,
-    SpecRegistry,
-    UnknownArguments,
-    UnsetType,
     audience_projection_for_spec,
     build_offline_context,
     output_to_json_schema,
@@ -383,17 +384,42 @@ async def test_annotations_mark_read_vs_write():
     assert tools["create_widget"].tool_def.metadata == {"annotations": {"readOnlyHint": False}}
 
 
-async def test_selector_without_callable_has_no_description():
+def _undocumented_widgets(user):
+    return Widget.objects.filter(owner=user)
+
+
+def _undescribed_spec() -> SelectorSpec:
+    """A spec nothing describes: its selector carries no docstring."""
+    return SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=_undocumented_widgets,
+        output_serializer=WidgetSerializer,
+        permission_classes=[AllowAny],
+    )
+
+
+async def test_selector_without_docstring_has_no_description():
+    with pytest.warns(UndescribedToolWarning):
+        toolset = SpecToolset({"empty": _undescribed_spec()})
+    tools = await toolset.get_tools(None)
+    assert tools["empty"].tool_def.description is None
+
+
+def test_a_selector_spec_with_no_selector_is_refused_when_the_toolset_is_built():
+    """drf-services refuses a top-level ``SelectorSpec`` with ``selector=None``
+    wherever it compiles one, and the toolset compiles every spec while it is
+    built. Such a spec could never be dispatched off HTTP, so the toolset used
+    to build and then fail its first call; now the mount fails at startup with
+    drf-services' own refusal."""
     spec = SelectorSpec(
         kind=SelectorKind.LIST,
         selector=None,
         output_serializer=WidgetSerializer,
         permission_classes=[AllowAny],
     )
-    with pytest.warns(UndescribedToolWarning):
-        toolset = SpecToolset({"empty": spec})
-    tools = await toolset.get_tools(None)
-    assert tools["empty"].tool_def.description is None
+
+    with pytest.raises(ImproperlyConfigured, match=r"^SelectorSpec declares no selector"):
+        SpecToolset({"empty": spec}, descriptions={"empty": "Nothing to run."})
 
 
 async def test_id_property():
@@ -856,23 +882,18 @@ async def test_the_model_reads_an_item_error_as_argument_index_and_field():
     assert await Widget.objects.filter(owner=user).acount() == 2
 
 
-@pytest.mark.parametrize("policy", list(UnknownArguments))
+@pytest.mark.parametrize("policy", [UnknownArguments.REJECT, UnknownArguments.IGNORE])
 @pytest.mark.django_db
 def test_an_argument_beside_the_list_is_refused_under_every_policy(policy):
     """The service receives only the list, so ``IGNORE`` would drop the argument
-    without a trace and ``PASSTHROUGH`` has nowhere to put it."""
+    without a trace. Every policy a toolset accepts: ``PASSTHROUGH`` is refused
+    when the toolset is built (``test_passthrough_is_refused_when_the_toolset_is_built``)."""
     user = User.objects.create(username="u")
 
     with pytest.raises(ModelRetry, match=r"Unexpected argument\(s\): 'note'\."):
         _dispatch(bulk_spec(), user, {"items": [_ITEM], "note": "x"}, unknown_arguments=policy)
 
     assert not Widget.objects.exists()
-
-
-def _bulk_registry(contract: OfflineContract) -> SpecRegistry:
-    registry = SpecRegistry()
-    registry.register("create_widgets", bulk_spec(), agent_contract=contract)
-    return registry
 
 
 @pytest.mark.parametrize(
@@ -894,13 +915,6 @@ def _bulk_registry(contract: OfflineContract) -> SpecRegistry:
             id="tool_query_params",
         ),
         pytest.param(
-            lambda: SpecToolset(
-                _bulk_registry(OfflineContract(query_params=(QueryParam("items"),)))
-            ),
-            "QueryParam",
-            id="contract query_params",
-        ),
-        pytest.param(
             lambda: SpecToolset({"create_widgets": bulk_spec()}, url_kwargs=[UrlKwarg("items")]),
             "UrlKwarg",
             id="toolset-wide url_kwargs",
@@ -913,18 +927,13 @@ def _bulk_registry(contract: OfflineContract) -> SpecRegistry:
             "UrlKwarg",
             id="tool_url_kwargs",
         ),
-        pytest.param(
-            lambda: SpecToolset(_bulk_registry(OfflineContract(url_kwargs=(UrlKwarg("items"),)))),
-            "UrlKwarg",
-            id="contract url_kwargs",
-        ),
     ],
 )
 def test_a_channel_named_after_the_list_argument_is_refused(build, kind):
     """A declared channel is popped out of the arguments before dispatch, so one
     sharing the list's name would take the list with it and the service would
-    never see a call succeed. Every declaration site, because the check has to
-    read the merged declarations to see a contract's."""
+    never see a call succeed. Every declaration site this toolset owns; the
+    spec's own ``reads`` are refused before it sees them (below)."""
     with pytest.raises(ImproperlyConfigured) as caught:
         build()
 
@@ -933,6 +942,25 @@ def test_a_channel_named_after_the_list_argument_is_refused(build, kind):
     assert "'create_widgets'" in message
     # Not drf-services' reserved-name refusal, which would say nothing about why.
     assert "reserved transport keys" not in message
+
+
+@pytest.mark.parametrize(
+    "read", [QueryParam("items"), UrlKwarg("items")], ids=lambda r: type(r).__name__
+)
+def test_a_read_named_after_the_list_argument_is_refused_by_drf_services(read):
+    """A read is a parameter of the compiled spec, and ``items`` already is one,
+    so drf-services refuses the second source of the name when the spec compiles,
+    at ``SpecRegistry.register``. A registry entry therefore never brings this
+    toolset a channel named after the list: the check above answers for the
+    declarations made on the toolset, and this for the spec's own."""
+    registry = SpecRegistry()
+
+    with pytest.raises(
+        ImproperlyConfigured, match=r"^Parameters \['items'\] are declared by two sources\."
+    ) as caught:
+        registry.register("create_widgets", replace(bulk_spec(), reads=(read,)))
+
+    assert "named 'items'" not in str(caught.value)
 
 
 def test_a_channel_may_share_a_name_no_list_travels_under():
@@ -1041,6 +1069,41 @@ async def test_toolset_threads_the_unknown_arguments_knob():
         "create_widget", {"name": "z", "price": 5, "bogus": 1}, ctx_for(user), None
     )
     assert out["name"] == "z"
+
+
+@pytest.mark.parametrize(
+    "policy", [UnknownArguments.PASSTHROUGH, "passthrough"], ids=["member", "raw-value"]
+)
+def test_passthrough_is_refused_when_the_toolset_is_built(policy):
+    """A model's tool call is a flat object, and drf-services hands a callable
+    only what its spec declares, so an argument outside that set has no channel
+    to reach it. drf-services refuses ``PASSTHROUGH`` with ``ValueError`` on
+    every call; refused here, the mount fails at startup instead of building and
+    then aborting the run on the first tool call.
+
+    The raw value as well as the member, because ``UnknownArguments`` is a
+    ``str`` enum and the guard admits the accepted values rather than excluding
+    the retired one: a string spelling of it must not slip past.
+    """
+    with pytest.raises(
+        ImproperlyConfigured,
+        match=(
+            r"^SpecToolset: unknown_arguments='passthrough' is not accepted\. "
+            r"Use UnknownArguments\.REJECT or UnknownArguments\.IGNORE\. "
+        ),
+    ) as raised:
+        SpecToolset({"list_widgets": list_spec()}, unknown_arguments=policy)
+
+    assert "no channel" in str(raised.value)
+
+
+@pytest.mark.parametrize("policy", [UnknownArguments.REJECT, UnknownArguments.IGNORE])
+def test_reject_and_ignore_still_build(policy):
+    """The two accepted policies, each on its own, so an allow-list narrowed to
+    either one fails here rather than in whichever test happens to use it."""
+    toolset = SpecToolset({"list_widgets": list_spec()}, unknown_arguments=policy)
+
+    assert toolset._unknown_arguments is policy
 
 
 # --- object-level permission enforcement -------------------------------------
@@ -1273,9 +1336,9 @@ def tasks_by_status(*, status: str = "open"):
     return [{"name": status}]
 
 
-def _status_registry(contract: OfflineContract) -> SpecRegistry:
+def _status_registry(*reads: QueryParam) -> SpecRegistry:
     registry = SpecRegistry()
-    registry.register("tasks", _name_list_spec(tasks_by_status), agent_contract=contract)
+    registry.register("tasks", replace(_name_list_spec(tasks_by_status), reads=reads))
     return registry
 
 
@@ -1296,9 +1359,7 @@ def _status_registry(contract: OfflineContract) -> SpecRegistry:
             id="toolset-wide",
         ),
         pytest.param(
-            lambda: SpecToolset(
-                _status_registry(OfflineContract(query_params=(QueryParam("status"),)))
-            ),
+            lambda: SpecToolset(_status_registry(QueryParam("status"))),
             id="contract",
         ),
     ],
@@ -1307,7 +1368,11 @@ def test_a_selector_parameter_a_query_param_shadows_is_refused(build):
     """A ``QueryParam``'s value is popped and routed to ``request.query_params``,
     so a selector parameter of the same name never receives it. With a default,
     as here, the tool ran on ``status="open"`` whatever status the model asked
-    for. Read on the merged declarations, so a contract's counts as a mount's.
+    for. Read on the merged declarations, so the spec's own ``reads`` count as a
+    mount's. drf-services alone would hand the selector a read's value -- it
+    routes a declared read to the parameter of that name and the query string
+    both -- but the toolset takes every channel's value out of the call before
+    dispatch, so it refuses the shape while it does.
     """
     with pytest.raises(
         ImproperlyConfigured,
@@ -1678,6 +1743,48 @@ def test_filter_set_filters_via_ordinary_params_not_query_params():
     # as filter_data. No QueryParam involved.
     result = _dispatch(_filtered_list_spec(), user, {"min_price": "5"})
     assert [w["name"] for w in _rows(result)] == ["pricey"]
+
+
+@pytest.mark.django_db
+def test_reject_refuses_a_key_outside_a_filter_sets_surface():
+    """A ``filter_set``'s filters are declared names like a parameter is, so the
+    set they make is closed: a key outside the filters and the selector's own
+    parameters is refused under ``REJECT`` like any invented key. Holds the
+    ``unknown_arguments`` docstring and the quickstart, which used to call a
+    ``filter_set`` spec's input set open and so unaffected."""
+    with pytest.raises(ModelRetry, match=r"^Unexpected argument\(s\): 'colour'\.$"):
+        _dispatch(_filtered_list_spec(), User(username="u"), {"colour": "red"})
+
+
+def _open_selector(user, **kwargs):
+    """Every widget, whatever is asked for."""
+    _OPEN_SELECTOR_CALLS.append(dict(kwargs))
+    return [{"name": "all"}]
+
+
+_OPEN_SELECTOR_CALLS: list[dict[str, Any]] = []
+
+
+@pytest.mark.parametrize("policy", [UnknownArguments.REJECT, UnknownArguments.IGNORE])
+@pytest.mark.django_db
+def test_a_bare_kwargs_selector_refuses_nothing_and_is_handed_nothing(policy):
+    """A bare ``**kwargs`` declares no name, so there is nothing to hold a key
+    against and neither policy refuses one -- and nothing undeclared reaches
+    the callable either, which is the half the docstring used to leave out by
+    calling such a spec unaffected."""
+    _OPEN_SELECTOR_CALLS.clear()
+    spec = SelectorSpec(
+        kind=SelectorKind.LIST,
+        selector=_open_selector,
+        output_serializer=_NameSerializer,
+        permission_classes=[AllowAny],
+    )
+
+    result = _dispatch(spec, User(username="u"), {"colour": "red"}, unknown_arguments=policy)
+
+    assert _rows(result) == [{"name": "all"}]
+    (call,) = _OPEN_SELECTOR_CALLS
+    assert "colour" not in call
 
 
 def test_a_filter_set_field_a_query_param_shadows_is_refused():
@@ -2215,14 +2322,8 @@ def test_a_description_for_an_unknown_tool_is_a_typo():
 
 
 def test_a_tool_with_no_description_anywhere_warns():
-    spec = SelectorSpec(
-        kind=SelectorKind.LIST,
-        selector=None,
-        output_serializer=WidgetSerializer,
-        permission_classes=[AllowAny],
-    )
     with pytest.warns(UndescribedToolWarning, match="'empty'"):
-        SpecToolset({"empty": spec})
+        SpecToolset({"empty": _undescribed_spec()})
 
 
 def test_a_whitespace_only_description_counts_as_none():
@@ -4382,10 +4483,9 @@ def names_in_hidden_project_or_filtered(
     ("selector", "policy"),
     [
         (names_in_hidden_project, UnknownArguments.IGNORE),
-        (names_in_hidden_project, UnknownArguments.PASSTHROUGH),
         (names_in_hidden_project_or_filtered, UnknownArguments.REJECT),
     ],
-    ids=["ignore", "passthrough", "reject-on-an-open-selector"],
+    ids=["ignore", "reject-on-an-open-selector"],
 )
 async def test_a_value_the_model_sends_for_a_marked_name_never_reaches_the_selector(
     selector, policy
@@ -4924,7 +5024,9 @@ async def test_a_parameter_neither_the_provider_nor_the_model_fills_is_asked_for
     check such a parameter before the call, since only the assembled pool can say
     whether it arrived, and drf-services checks that pool: a selector spreads the
     caller's arguments, so the model could have filled ``ceiling``, and the call
-    comes back as a retry naming it rather than reaching the selector.
+    comes back as a retry naming it rather than reaching the selector, in
+    drf-services' words for a missing field, ``ceiling: This field is
+    required.``.
 
     This used to be the selector's ``TypeError`` out of the run, which is what
     the docs then advised a default against. The retry is what a model can act
@@ -4939,8 +5041,13 @@ async def test_a_parameter_neither_the_provider_nor_the_model_fills_is_asked_for
         url_kwargs=[UrlKwarg("project_pk")],
     )
 
-    with pytest.raises(ModelRetry, match=r"^Missing required argument\(s\): 'ceiling'\.$"):
+    # drf-services' own refusal, keyed by the name, not the toolset's
+    # ``missing_arguments`` sentence: only the pool drf-services assembles can
+    # say the parameter went unfilled, so the toolset's pre-dispatch check never
+    # sees it. The negative assertion holds which of the two answered.
+    with pytest.raises(ModelRetry, match=r"^ceiling: This field is required\.$") as raised:
         await _call(toolset, "under", User(username="u"))
+    assert "Missing required argument" not in str(raised.value)
     resent = await _call(toolset, "under", User(username="u"), {"ceiling": 10})
     result = await _call(toolset, "under_a_default", User(username="u"))
 

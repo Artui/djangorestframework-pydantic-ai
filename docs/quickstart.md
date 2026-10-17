@@ -6,7 +6,8 @@
 define for `djangorestframework-services`. A read selector and a write service:
 
 ```python
-from rest_framework_services import SelectorKind, SelectorSpec, ServiceSpec
+from django_service_specs import SelectorKind
+from rest_framework_services import SelectorSpec, ServiceSpec
 
 
 def list_orders(user):
@@ -230,8 +231,8 @@ list_spec = SelectorSpec(kind=SelectorKind.LIST, selector=priced_under, kwargs=s
   `Scope`'s `tenant: T` as the written-out `tenant: str | UnsetType` does.
   If the provider declines the key and the model has not sent it either,
   drf-services refuses the call before the selector runs, and the model is
-  handed back ``Missing required argument(s): 'ceiling'.`` to send it on its
-  next turn, as it is when an untyped provider leaves a parameter unfilled.
+  handed back ``ceiling: This field is required.`` to send it on its next
+  turn, as it is when an untyped provider leaves a parameter unfilled.
   Where the selector can run without the value, give the parameter a default.
 - **A name a
   [`build_context`](reference.md#rest_framework_pydantic_ai.SpecToolset)
@@ -252,7 +253,8 @@ list_spec = SelectorSpec(kind=SelectorKind.LIST, selector=priced_under, kwargs=s
 ```python
 from typing import Annotated
 
-from rest_framework_services import NotClientInput, SelectorKind, SelectorSpec
+from django_service_specs import SelectorKind
+from rest_framework_services import NotClientInput, SelectorSpec
 
 
 def list_tasks(user, project_pk: Annotated[int, NotClientInput]):
@@ -322,7 +324,8 @@ call missing both `pk` and a field is told about `pk` first, and about the
 field on the turn after. A name a provider may fill is not checked before the
 call, since only the pool the call assembles can say whether it arrived, and
 drf-services checks that pool: a selector parameter nothing filled comes back
-as a retry naming it too, ``Missing required argument(s): 'ceiling'.`` A
+as a retry naming it too, in drf-services' words for a missing field,
+``ceiling: This field is required.`` A
 required parameter no argument could fill, such as one a precondition marks
 `NotClientInput` and nothing supplies, is a
 configuration error rather than something the model can correct, and fails as
@@ -341,11 +344,11 @@ toolset = SpecToolset(specs, get_user=lambda ctx: ctx.deps.principal.user)
 
 Over HTTP a service reads its tenant, locale or clock off `request`. Off HTTP
 there is no request carrying any of that, and drf-services'
-[`PoolSeeds`][rest_framework_services.types.pool_seeds.PoolSeeds] is the channel
+[`PoolSeeds`][django_service_specs.PoolSeeds] is the channel
 for it. Hand the registry to the toolset as `pool_seeds=`:
 
 ```python
-from rest_framework_services import DEFAULT_POOL_SEEDS
+from django_service_specs import DEFAULT_POOL_SEEDS
 
 seeds = DEFAULT_POOL_SEEDS.extend(tenant=lambda user: user.profile.tenant)
 toolset = SpecToolset(specs, pool_seeds=seeds)
@@ -557,7 +560,9 @@ A few rules follow from what each field is:
   retry's whole text.
 - **`missing_arguments` covers the two checks made before the input serializer
   runs.** A field the input serializer requires is still reported in the
-  serializer's own words.
+  serializer's own words, and a parameter a provider may fill and did not in
+  drf-services' (``ceiling: This field is required.``), since only the pool it
+  assembles can say the value never arrived.
 
 **Some lines state facts about behaviour, and an override owns keeping them
 true.** `pagination` and `query_param_on_pages` name the page envelope's keys, and
@@ -587,17 +592,26 @@ transport is configured to say.
 
 By default the toolset **rejects** tool args outside a spec's declared input set
 — a key the model invented — surfacing them as a `ModelRetry` so the model
-self-corrects. Specs whose declared set is open (a `filter_set` or `**kwargs`
-selector) are unaffected. Pass `unknown_arguments=` to change this:
+self-corrects. A `filter_set`'s filters are declared names, so a key outside them
+and the selector's parameters is refused like any other. A selector taking a bare
+`**kwargs` declares no name, so nothing is refused, and nothing undeclared is
+handed to it either. Pass `unknown_arguments=` to change this:
 
 ```python
-from rest_framework_services import UnknownArguments
+from django_service_specs import UnknownArguments
 
 # silently drop unexpected keys instead of rejecting them
 toolset = SpecToolset(specs, unknown_arguments=UnknownArguments.IGNORE)
 ```
 
-`IGNORE` drops a key no parameter declares. A parameter marked `NotClientInput`
+`IGNORE` drops a key no parameter declares. Under either policy the key never
+reaches the callable: drf-services hands a callable only what its spec declares.
+`REJECT` and `IGNORE` are the two the toolset accepts. `PASSTHROUGH` raises
+`ImproperlyConfigured` when the toolset is built, because a tool call is one flat
+object and has no other channel to carry an undeclared name to the callable; to
+hand one over, declare it, as a `reads` entry, a serializer field or a parameter.
+
+A parameter marked `NotClientInput`
 is not the model's under any policy: `REJECT` refuses a value sent for it where
 the input set is closed, and everywhere else drf-services drops the value before
 any callable in the call reads it.
@@ -1059,7 +1073,7 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
     `ServiceError`:
 
     ```python
-    from rest_framework_services import ServiceError
+    from django_service_specs import ServiceError
 
 
     class BookingError(ServiceError):  # not Exception
@@ -1087,7 +1101,8 @@ message is also what a transport forwards as the tool result, so the toolset put
 both into it — the reason first, then the code, labelled:
 
 ```python
-from rest_framework_services import Affordance, ServiceSpec
+from django_service_specs import Affordance
+from rest_framework_services import ServiceSpec
 
 
 def post_invoice(data, user):

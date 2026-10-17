@@ -4,17 +4,17 @@ import inspect
 
 import pytest
 from django.core.exceptions import ImproperlyConfigured
+from django_service_specs import (
+    DEFAULT_PAGE_SIZE,
+    DEFAULT_POOL_SEEDS,
+    SelectorKind,
+    UnknownArguments,
+)
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 from rest_framework.permissions import AllowAny
-from rest_framework_services import (
-    DEFAULT_PAGE_SIZE,
-    DEFAULT_POOL_SEEDS,
-    SelectorKind,
-    SelectorSpec,
-    ServiceSpec,
-)
+from rest_framework_services import SelectorSpec, ServiceSpec
 
 from rest_framework_pydantic_ai import (
     AgentConventions,
@@ -95,6 +95,20 @@ def test_id_defaults_and_forwards():
     cap = SpecCapability({"go": ping_spec()}, id="orders")
     assert cap.id == "orders"
     assert cap.get_toolset().id == "orders"
+
+
+def test_passthrough_is_refused_when_the_capability_is_built():
+    """At ``SpecCapability(...)``, not at ``get_toolset()``: the capability is
+    what a project constructs at startup, and the refusal is only worth having
+    there."""
+    with pytest.raises(ImproperlyConfigured, match=r"unknown_arguments='passthrough'"):
+        SpecCapability({"go": ping_spec()}, unknown_arguments=UnknownArguments.PASSTHROUGH)
+
+
+def test_ignore_still_reaches_the_toolset():
+    cap = SpecCapability({"go": ping_spec()}, unknown_arguments=UnknownArguments.IGNORE)
+
+    assert cap.get_toolset()._unknown_arguments is UnknownArguments.IGNORE
 
 
 # --- instructions delegation -------------------------------------------------

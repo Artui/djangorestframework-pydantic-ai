@@ -7,14 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from django.http import HttpRequest
+from django_service_specs import DEFAULT_POOL_SEEDS, PoolSeeds, UnknownArguments
 from pydantic_ai.capabilities import AbstractCapability
-from rest_framework_services import (
-    DEFAULT_JSON_SCHEMA_REGISTRY,
-    DEFAULT_POOL_SEEDS,
-    JsonSchemaRegistry,
-    PoolSeeds,
-    UnknownArguments,
-)
+from rest_framework_services import DEFAULT_JSON_SCHEMA_REGISTRY, JsonSchemaRegistry
 
 from rest_framework_pydantic_ai.spec_toolset import (
     ExceptionHandler,
@@ -82,6 +77,9 @@ class SpecCapability(AbstractCapability[Any]):
             choosing between names alone — the guess-or-load-everything outcome
             deferring exists to avoid. Not the same knob as ``descriptions``,
             which relabels individual *tools*.
+        unknown_arguments: As ``SpecToolset``: ``REJECT`` (the default) or
+            ``IGNORE``. ``PASSTHROUGH`` raises ``ImproperlyConfigured`` when the
+            capability is built, since the toolset it owns is built then.
     """
 
     def __init__(

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from rest_framework_services import UNSET
+from django_service_specs import UNSET
 
 from rest_framework_pydantic_ai import QueryParam
 

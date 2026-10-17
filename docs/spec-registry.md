@@ -18,7 +18,7 @@ mapping** — there is no separate constructor to learn.
 
 ```python
 # orders/registry.py
-from rest_framework_services import SpecRegistry
+from django_service_specs import SpecRegistry
 
 registry = SpecRegistry()
 
@@ -108,34 +108,47 @@ model choosing between names alone — and it will either guess or load all of
 them, which is the cost deferring was meant to avoid. `description` names the
 *capability*; the separate `descriptions` mapping relabels individual tools.
 
-## What the entry carries for an agent
+## What the spec declares for an agent
 
-An entry may hold an
-[`OfflineContract`][rest_framework_services.types.offline_contract.OfflineContract]:
-what a caller with **no HTTP request** has to be told, because the URLconf and
-query string tell an HTTP one for free.
+A spec declares what a caller with **no HTTP request** has to be told, because
+the URLconf and query string tell an HTTP one for free: `reads=` names the route
+captures and query values it reads, and `field_audiences=` marks output fields
+for an agent. Its registry entry answers both as one
+[`OfflineContract`][rest_framework_services.types.offline_contract.OfflineContract]
+(`entry.agent_contract`).
 
 ```python
+from dataclasses import replace
+
+from rest_framework_pydantic_ai import QueryParam, UrlKwarg
+
 registry.register(
     "list_orders",
-    specs.list_orders,
-    tags=("read", "public"),
-    agent_contract=OfflineContract(
-        url_kwargs=(UrlKwarg(name="tenant_pk"),),
-        query_params=(QueryParam(name="fields"),),
+    replace(
+        specs.list_orders,
+        reads=[UrlKwarg(name="tenant_pk"), QueryParam(name="fields")],
     ),
+    tags=("read", "public"),
 )
 ```
 
-`SpecToolset` reads it, and so does an MCP server's `register_specs`. That is
-the point of putting it there: an operation needs the *identical* description of
-the absent request whichever agent transport calls it, so declaring it per mount
-is how two mounts come to disagree. `field_audiences` rides on the same object,
-for the one tool that must return what its siblings hide.
+`replace` is for a spec declared elsewhere; a spec you write declares `reads=`
+in its own constructor. `SpecRegistry.register` takes no contract of its own:
+the spec is the one place it is said.
+
+`SpecToolset` reads the contract off the entry, and so does an MCP server's
+`register_specs`. That is the point of putting it there: an operation needs the
+*identical* description of the absent request whichever agent transport calls
+it, so declaring it per mount is how two mounts come to disagree.
+`field_audiences` is part of the spec's output declaration, so every projection
+of the spec carries it, whichever transport or mapping it is reached through.
 
 **Pass the registry, not `registry.specs()`.** The mapping is the flattened
-`name -> spec` view, and a contract is on the entry rather than the spec — so a
-toolset built from the mapping silently has none of it.
+`name -> spec` view, and the toolset reads channels off the entry, so a toolset
+built from the mapping advertises none of the spec's `reads`. The spec still
+carries them, so a value the model sends under one of those names is admitted
+and routed onto the request as drf-services routes any caller's, but a model is
+not told it may send one.
 
 ## What stays per toolset
 

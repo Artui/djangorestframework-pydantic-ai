@@ -87,17 +87,27 @@ dependencies = [
     # stops being advertised and one only the model sends becomes required;
     # ``allow_none`` is how an ``allow_none`` retrieve's ``return_schema`` admits
     # the ``null`` it returns.
-    # 0.56.0 is the floor, and it is a hard one: ``provider_keys``,
-    # ``can_present_nothing`` and ``server_owned_keys`` first exist there, and
-    # the toolset imports them at module level, so below it the toolset does
-    # not import. ``spec_to_json_schema`` also first takes ``argument_binding=``
+    # 0.56.0: ``provider_keys``, ``can_present_nothing`` and
+    # ``server_owned_keys`` first exist there, and the toolset imports them at
+    # module level, so below it the toolset does not import. ``spec_to_json_schema`` also first takes ``argument_binding=``
     # there, which the toolset passes with the same binding it hands dispatch,
     # so the advertised keys and the admitted ones are read off one binding.
     # It is also where a missing argument is refused only where the caller
     # could have sent it, which the toolset turns into a retry.
-    # The ceiling is there because 0.58.0 retires names this release still
-    # passes; the release adapted to it floors ``>=0.58.0`` and drops the cap.
-    "djangorestframework-services>=0.56.0,<0.58",
+    # The floor, and a hard one: drf-services is an adapter over
+    # django-service-specs from here, and the names the kernel owns are re-exported
+    # as the kernel's own objects. The toolset imports those names from the kernel
+    # (below), so its ``isinstance`` checks against ``ServiceError``,
+    # ``ServiceValidationError``, ``AdditionalInputRequired``, ``ActionUnavailable``
+    # and ``SpecRegistry`` match what drf-services raises and builds only where
+    # the two are one object; below it each refusal would escape the run as an
+    # unrecognised exception and a registry would be read as a bare mapping.
+    "djangorestframework-services>=0.58.0",
+    # Declared because the toolset imports the kernel-owned names from here
+    # rather than through drf-services' re-exports, which are being retired.
+    # Nothing it imports needs a newer kernel than drf-services' own floor asks
+    # for; this one is the lowest the floor job resolves and runs the suite on.
+    "django-service-specs>=0.9.0",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
     # a business-rule refusal, an unresolved target, a dispatch that ran past its

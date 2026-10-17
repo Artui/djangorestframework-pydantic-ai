@@ -68,7 +68,7 @@ the run under a plain `pydantic_ai.Agent`. A host that installs a tool-failure
 policy — `django-pydantic-agent`'s `build_agent` does by default — turns that
 denial into a failed-tool result instead, so the run continues; the call is
 still denied either way. Unexpected arguments are **rejected by default** — pass
-`unknown_arguments=` to `SpecToolset` (`IGNORE` / `PASSTHROUGH`) to change that.
+`unknown_arguments=UnknownArguments.IGNORE` to `SpecToolset` to drop them instead.
 
 A tool whose `Affordance` condition is unmet right now, such as posting to a closed
 period, is left out of that step's tool list, and the step's instructions name it
