@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Generic, TypeVar
 import django_filters
 import pytest
 from asgiref.sync import async_to_sync, sync_to_async
-from django.contrib.auth.models import User
+from django.contrib.auth.models import AnonymousUser, User
 from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, connections
@@ -1106,9 +1106,10 @@ async def test_toolset_threads_the_unknown_arguments_knob():
 def test_passthrough_is_refused_when_the_toolset_is_built(policy, spelled):
     """A model's tool call is a flat object, and drf-services hands a callable
     only what its spec declares, so an argument outside that set has no channel
-    to reach it. drf-services refuses ``PASSTHROUGH`` with ``ValueError`` on
-    every call; refused here, the mount fails at startup instead of building and
-    then aborting the run on the first tool call.
+    to reach it. Up to 0.35.x ``PASSTHROUGH`` forwarded a call's undeclared keys
+    (into a service's ``data``, for one); drf-services 0.58 retired it and
+    raises ``ValueError`` for it on every call, so the toolset refuses it at
+    build and the mount fails at startup.
 
     The raw value as well as the member, because ``UnknownArguments`` is a
     ``str`` enum and the guard admits the accepted values rather than excluding
@@ -1410,6 +1411,28 @@ def test_a_selector_parameter_a_query_param_shadows_is_refused(build):
         match=r"tool 'tasks': the selector takes input\(s\) \['status'\] .*QueryParam",
     ):
         build()
+
+
+async def test_known_difference_a_registry_read_shadowing_a_parameter_routes_from_the_mapping():
+    """Documents a known difference between the two routes, not a contract.
+
+    The registry route reads the entry's ``reads`` as the toolset's own query
+    params, so the shadow check above refuses this spec when the toolset is
+    built from the registry. ``registry.specs()`` flattens the entry to its
+    spec, which the toolset reads no channels off, so the same spec builds and
+    drf-services routes the read to the selector parameter of that name. The
+    registry page and the changelog say so, and a later release makes the two
+    consistent; when it does, this test changes with it.
+    """
+    registry = _status_registry(QueryParam("status"))
+
+    with pytest.raises(ImproperlyConfigured, match=r"the selector takes input\(s\) \['status'\]"):
+        SpecToolset(registry)
+
+    toolset = SpecToolset(registry.specs())
+    result = await _call(toolset, "tasks", AnonymousUser(), {"status": "done"})
+
+    assert _rows(result) == [{"name": "done"}]
 
 
 def test_a_serializer_field_a_query_param_shadows_is_refused():

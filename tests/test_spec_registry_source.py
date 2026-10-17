@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
 from django_service_specs import FieldAudience, FieldMarking, SelectorKind, SpecRegistry
 from rest_framework.permissions import AllowAny, BasePermission
-from rest_framework_services import SelectorSpec, ServiceSpec
+from rest_framework_services import PolymorphicServiceSpec, SelectorSpec, ServiceSpec
 
 from rest_framework_pydantic_ai import QueryParam, SpecCapability, SpecToolset, UrlKwarg
 from tests.test_spec_toolset import ctx_for
@@ -158,7 +158,7 @@ def _native_registry() -> SpecRegistry:
 
 _NATIVE_REFUSAL = (
     r"^SpecToolset tool 'native_create': django_service_specs\.ServiceSpec is not a "
-    r"drf-services spec\. "
+    r"rest_framework_services\.ServiceSpec or SelectorSpec\. "
 )
 
 
@@ -172,10 +172,7 @@ class TestANativeSpecIsRefused:
         with pytest.raises(TypeError, match=_NATIVE_REFUSAL) as raised:
             SpecToolset(_native_registry())
 
-        message = str(raised.value)
-        assert "rest_framework_services.ServiceSpec" in message
-        assert "rest_framework_services.SelectorSpec" in message
-        assert "django_service_specs.dispatch" in message
+        assert "django_service_specs.dispatch" in str(raised.value)
 
     def test_from_a_mapping(self) -> None:
         native = _native_registry().specs()
@@ -186,6 +183,51 @@ class TestANativeSpecIsRefused:
     def test_through_the_capability(self) -> None:
         with pytest.raises(TypeError, match=_NATIVE_REFUSAL):
             SpecCapability(_native_registry())
+
+    def test_a_native_selector_spec_is_pointed_at_dispatch_too(self) -> None:
+        native = django_service_specs.SelectorSpec(
+            kind=SelectorKind.LIST,
+            selector=list_widgets,
+            permissions=[django_service_specs.Unrestricted()],
+        )
+
+        with pytest.raises(TypeError, match=r"SelectorSpec is not a ") as raised:
+            SpecToolset({"native_list": native})
+
+        assert "django_service_specs.dispatch" in str(raised.value)
+
+    def test_a_polymorphic_spec_is_pointed_at_its_variants(self) -> None:
+        # A drf-services class, so the kernel's dispatch is the wrong way out:
+        # the polymorphic actions page expands ``.specs`` into one tool per
+        # variant, and the message says that instead.
+        moderate = PolymorphicServiceSpec(
+            discriminator=lambda *, data: data["op"],
+            specs={"create": _create_spec()},
+        )
+
+        with pytest.raises(
+            TypeError,
+            match=(
+                r"^SpecToolset tool 'moderate': rest_framework_services\."
+                r"PolymorphicServiceSpec is not a rest_framework_services\.ServiceSpec "
+                r"or SelectorSpec\. "
+            ),
+        ) as raised:
+            SpecToolset({"moderate": moderate})
+
+        assert ".specs" in str(raised.value)
+        assert "django_service_specs.dispatch" not in str(raised.value)
+
+    def test_a_registry_entry_is_not_pointed_at_dispatch(self) -> None:
+        # ``RegisteredSpec`` lives in django-service-specs too, but it is an
+        # entry, not a spec dispatch could run: only a kernel spec is pointed
+        # there, whatever module the value comes from.
+        entry = _native_registry().get("native_create")
+
+        with pytest.raises(TypeError, match=r"RegisteredSpec is not a ") as raised:
+            SpecToolset({"native_create": entry})
+
+        assert "django_service_specs.dispatch" not in str(raised.value)
 
 
 class TestCapabilityFromRegistry:

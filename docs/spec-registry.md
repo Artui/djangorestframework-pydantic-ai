@@ -164,8 +164,8 @@ selector taking `status`, is refused by `SpecToolset(registry)` when it is
 built: the toolset reads the entry's query params as its own channel and refuses
 one that shadows a selector parameter. `SpecToolset(registry.specs())` builds
 the same spec and serves it, since drf-services routes the read to the
-parameter. The asymmetry is known, and is fixed in the seam release, in this
-toolset and the MCP transport together.
+parameter. The two routes behave differently today, and a later release will
+make them consistent, in this toolset and the MCP transport together.
 
 ## What stays per toolset
 

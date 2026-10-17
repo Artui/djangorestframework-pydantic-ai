@@ -67,6 +67,8 @@ from django_service_specs import (
     paginate_output,
     provider_keys,
 )
+from django_service_specs import SelectorSpec as KernelSelectorSpec
+from django_service_specs import ServiceSpec as KernelServiceSpec
 from pydantic_ai import ModelRetry, RunContext, ToolFailed
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import AbstractToolset, ToolsetTool
@@ -79,6 +81,7 @@ from rest_framework_services import (
     ArgumentBinding,
     JsonSchemaRegistry,
     OfflineContract,
+    PolymorphicServiceSpec,
     SelectorSpec,
     ServiceSpec,
     audience_projection_for_spec,
@@ -221,14 +224,36 @@ def _resolve_specs(specs: SpecSource) -> Mapping[str, Spec]:
         if not isinstance(spec, (ServiceSpec, SelectorSpec)):
             kind = f"{type(spec).__module__.split('.')[0]}.{type(spec).__qualname__}"
             raise TypeError(
-                f"SpecToolset tool {name!r}: {kind} is not a drf-services spec. "
-                "This toolset dispatches through drf-services, which takes "
-                "rest_framework_services.ServiceSpec or "
-                "rest_framework_services.SelectorSpec: declare the operation with one "
-                "of those, or call a django-service-specs spec through "
-                "django_service_specs.dispatch."
+                f"SpecToolset tool {name!r}: {kind} is not a "
+                "rest_framework_services.ServiceSpec or SelectorSpec. This toolset "
+                f"dispatches through drf-services, which takes only those.{_way_out(spec)}"
             )
     return resolved
+
+
+def _way_out(spec: object) -> str:
+    """The sentence a refused spec's message ends on, when there is one to give.
+
+    Only a kernel spec is pointed at the kernel's ``dispatch``, by class rather
+    than by module: django-service-specs also defines ``RegisteredSpec``,
+    ``ChildSpec`` and the relation specs, which drf-services re-exports and
+    which ``dispatch`` would not run either - none is a spec or compiles to one
+    (``test_a_registry_entry_is_not_pointed_at_dispatch``). Each member of the
+    kernel pair is held by its own test: ``ServiceSpec`` by
+    ``TestANativeSpecIsRefused.test_from_a_registry``, ``SelectorSpec`` by
+    ``test_a_native_selector_spec_is_pointed_at_dispatch_too``. A
+    ``PolymorphicServiceSpec`` is expanded into one tool per variant, as the
+    polymorphic actions page shows
+    (``test_a_polymorphic_spec_is_pointed_at_its_variants``).
+    """
+    if isinstance(spec, (KernelServiceSpec, KernelSelectorSpec)):
+        return " Call a django-service-specs spec through django_service_specs.dispatch."
+    if isinstance(spec, PolymorphicServiceSpec):
+        return (
+            " Expand its .specs into one tool per variant, each a ServiceSpec, "
+            "as the polymorphic actions page shows."
+        )
+    return ""
 
 
 @contextmanager
@@ -826,8 +851,6 @@ class SpecToolset(AbstractToolset[Any]):
                 self._projections[name] = audience_projection_for_spec(
                     spec,
                     overrides=contracts.get(name, _NO_CONTRACT).field_audiences,
-                    # The tool is the prefix already; this names the part.
-                    name="field_audiences",
                 )
         # Schemas derive purely from the specs (no DB), so the tool defs are built
         # once up front. ``ToolDefinition`` defaults to ``kind="function"`` — the
@@ -2124,10 +2147,11 @@ parameter apiece.
 def _validate_unknown_arguments(unknown_arguments: UnknownArguments) -> None:
     """Refuse a policy this toolset cannot carry out, at construction.
 
-    ``PASSTHROUGH`` is the one there is: drf-services raises ``ValueError`` for it
-    on every call, so a toolset built with it used to construct and then abort
-    the run on its first tool call. The reason is not drf-services' alone. A
-    model's tool call is one flat object and the toolset hands drf-services
+    ``PASSTHROUGH`` is the one there is. Up to 0.35.x it forwarded the undeclared
+    keys of a call - into a service's ``data``, for one - and drf-services 0.58
+    retired it: it raises ``ValueError`` for the policy on every call, so the
+    toolset refuses it here, at build, rather than on the first tool call. The
+    reason is not drf-services' alone. A model's tool call is one flat object and the toolset hands drf-services
     every key in it as an argument, so there is no second channel an undeclared
     name could travel through to reach the callable; the declaration is what
     makes a name an argument.
