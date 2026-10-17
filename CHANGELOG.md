@@ -6,6 +6,41 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **`tool_server_arguments=` on `SpecToolset` and `SpecCapability`: values the
+  server supplies for a tool's arguments, and names it keeps from the model.**
+  Keyed by tool name, each a django-service-specs `ServerArguments(values=...,
+  withheld=...)` over names the tool's spec declares: a selector or target
+  lookup parameter, or one of its `reads`. For an argument the model must not
+  choose, such as the project an agent run is scoped to.
+  - A bound name (`values`) carries the server's value on every call, applied
+    before the call is checked or its channels are split. It satisfies a
+    `required` parameter, and every reader sees the one value: a bound
+    `UrlKwarg` read is on `view.kwargs`, a bound `QueryParam` read on
+    `request.query_params`, and the selector receives it as its parameter.
+  - A withheld name is absent from every call, so its declared default, or the
+    callable's own, answers. Withholding the other names of an either-or scope
+    holds a tool taking a project or a draw request to the project.
+  - Neither is advertised: both leave the tool's `properties` and `required`,
+    and the instructions name neither. A value the model sends under one is
+    dropped before the call is checked, never refused, and logged at `WARNING`
+    with the tool and the names, never the values.
+  - Checked when the toolset is built. A key naming a tool the toolset does not
+    expose raises `ValueError`, as every per-tool mapping does. A binding
+    django-service-specs' `check_server_arguments` refuses, run with the
+    toolset's `pool_seeds`, raises `ImproperlyConfigured` prefixed
+    `SpecToolset tool '<name>': `: a name the spec does not declare, one bound
+    and withheld at once, one a pool seed or a typed `kwargs=` provider fills,
+    a withheld name no call could do without, or a bound value its parameter
+    refuses. So does a withheld name that a `UrlKwarg(required=True)` passed to
+    the toolset requires, which would otherwise refuse every call.
+  - Fixed when the toolset is built, like its tool definitions: build a toolset
+    per scope. A toolset with no bindings advertises and calls exactly as
+    before. The registry page has the either-or example.
+- **Requires `django-service-specs>=0.9.0`**, the release that exports
+  `ServerArguments`, `check_server_arguments` and `apply_server_arguments`.
+
 ### Changed
 
 - **Breaking: `unknown_arguments=UnknownArguments.PASSTHROUGH` is refused when
@@ -67,14 +102,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     registry, and when the toolset is built for a mapping, prefixed with the
     tool. The toolset's own check of that name still answers for the
     constructor's declarations.
-  - A `QueryParam` read naming a parameter the spec's selector takes works only
-    from the mapping. `SpecToolset(registry)` refuses it when it is built, as
-    it refuses a `QueryParam` of that name passed to the constructor, because
-    it reads the entry's reads as its own query params;
-    `SpecToolset(registry.specs())` builds the same spec and routes the value
-    to the selector. The two routes behave differently today, and a later
-    release will make them consistent, in this toolset and the MCP transport
-    together.
+  - A spec's own `QueryParam` read naming a parameter its selector, or a
+    service's target lookup, takes declares where that parameter comes from,
+    and `SpecToolset(registry)` builds and serves it as
+    `SpecToolset(registry.specs())` does: the parameter is advertised once, as
+    the selector declares it, and its value stays in the call, where
+    drf-services hands it to the parameter and puts it on
+    `request.query_params`. Up to 0.35.x an entry's `QueryParam` contract of
+    such a name was refused when the toolset was built, as shadowing the
+    parameter. A `QueryParam` of that name passed to the toolset's own
+    `query_params=` or `tool_query_params=` is still refused, a re-declaration
+    of the spec's read included, since the toolset takes that value out of the
+    call and routes it to the query string alone.
 - **Breaking: a `SelectorSpec` with `selector=None` is refused when the toolset
   is built**, with drf-services' `ImproperlyConfigured` (`SpecToolset tool
   'empty': SelectorSpec declares no selector, ...`). Such a spec could never run
@@ -115,6 +154,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   audiences on the spec rather than through `agent_contract=`, the quickstart
   quotes drf-services' missing-field wording, and the API reference links the
   kernel-owned names to django-service-specs' own pages.
+
+### Deprecated
+
+- **`query_params=`, `tool_query_params=`, `url_kwargs=` and `tool_url_kwargs=`
+  on `SpecToolset` and `SpecCapability`.** Passing any of them warns with
+  `DeprecationWarning`, attributed to the caller's line, and they will be
+  removed in the next minor release. Declare each read on the spec as
+  `reads=[QueryParam(...)]` or `reads=[UrlKwarg(...)]` and build the toolset from
+  the `SpecRegistry`, where every transport reads the same declaration; a
+  `UrlKwarg(default=...)` standing in for a value the model must not choose
+  moves to `tool_server_arguments`. Until then they behave as before, including
+  overriding the spec's read of the same name, which is true of what the
+  toolset advertises, routes and defaults and of nothing drf-services reads: a
+  mount loosening a spec's `required` read to optional advertises an argument
+  the call is still refused without.
 
 ## [0.35.1] — 2026-10-16
 

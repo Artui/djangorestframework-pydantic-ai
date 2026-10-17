@@ -106,8 +106,9 @@ dependencies = [
     "djangorestframework-services>=0.58.0",
     # Declared because the toolset imports the kernel-owned names from here
     # rather than through drf-services' re-exports, which are being retired.
-    # Nothing it imports needs a newer kernel than drf-services' own floor asks
-    # for; this one is the lowest the floor job resolves and runs the suite on.
+    # The floor is above drf-services' own because ``tool_server_arguments`` is
+    # built on ``ServerArguments``, ``check_server_arguments`` and
+    # ``apply_server_arguments``, which the kernel first exports here.
     "django-service-specs>=0.9.0",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
@@ -178,6 +179,10 @@ testpaths = ["tests"]
 filterwarnings = [
     'ignore::SyntaxWarning:.*[/\\]pypeg2[/\\]',
     'ignore::DeprecationWarning:.*[/\\]pypeg2[/\\]',
+    # The suite still exercises the deprecated mount-level channel knobs, which
+    # stay supported for one minor. The tests about the deprecation itself use
+    # ``pytest.warns``, which records whatever this filter says.
+    "ignore:SpecToolset's .* deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]

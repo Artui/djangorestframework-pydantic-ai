@@ -1391,20 +1391,19 @@ def _status_registry(*reads: QueryParam) -> SpecRegistry:
             id="toolset-wide",
         ),
         pytest.param(
-            lambda: SpecToolset(_status_registry(QueryParam("status"))),
-            id="contract",
+            lambda: SpecToolset(
+                _status_registry(QueryParam("status")), query_params=[QueryParam("status")]
+            ),
+            id="mount-over-the-spec-s-read",
         ),
     ],
 )
 def test_a_selector_parameter_a_query_param_shadows_is_refused(build):
-    """A ``QueryParam``'s value is popped and routed to ``request.query_params``,
-    so a selector parameter of the same name never receives it. With a default,
-    as here, the tool ran on ``status="open"`` whatever status the model asked
-    for. Read on the merged declarations, so the spec's own ``reads`` count as a
-    mount's. drf-services alone would hand the selector a read's value -- it
-    routes a declared read to the parameter of that name and the query string
-    both -- but the toolset takes every channel's value out of the call before
-    dispatch, so it refuses the shape while it does.
+    """A ``QueryParam`` this mount declares is popped and routed to
+    ``request.query_params``, so a selector parameter of the same name never
+    receives it. With a default, as here, the tool ran on ``status="open"``
+    whatever status the model asked for. A mount re-declaring the spec's own read
+    of the name is still this mount's declaration, and is refused with it.
     """
     with pytest.raises(
         ImproperlyConfigured,
@@ -1413,26 +1412,61 @@ def test_a_selector_parameter_a_query_param_shadows_is_refused(build):
         build()
 
 
-async def test_known_difference_a_registry_read_shadowing_a_parameter_routes_from_the_mapping():
-    """Documents a known difference between the two routes, not a contract.
-
-    The registry route reads the entry's ``reads`` as the toolset's own query
-    params, so the shadow check above refuses this spec when the toolset is
-    built from the registry. ``registry.specs()`` flattens the entry to its
-    spec, which the toolset reads no channels off, so the same spec builds and
-    drf-services routes the read to the selector parameter of that name. The
-    registry page and the changelog say so, and a later release makes the two
-    consistent; when it does, this test changes with it.
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize("args", [{"status": "done"}, {}], ids=["sent", "omitted"])
+async def test_a_spec_read_naming_a_selector_parameter_is_served_alike_from_both_routes(args):
+    """A spec's own ``QueryParam`` read of a name its selector takes is the
+    declaration of where that parameter comes from, not a shadow of it. Neither
+    route makes it a channel of the toolset's: the parameter is advertised once,
+    as the selector declares it, and its value stays in the call for
+    drf-services, which hands it to the selector and the query string both. The
+    registry route used to refuse the spec, reading the entry's read as a
+    ``QueryParam`` of its own.
     """
-    registry = _status_registry(QueryParam("status"))
+    registry = SpecRegistry()
+    registry.register(
+        "tasks",
+        replace(
+            _name_list_spec(tasks_by_status, permission_classes=[_QueryRecordingPermission]),
+            reads=(QueryParam("status"),),
+        ),
+    )
+    from_registry = SpecToolset(registry)
+    from_mapping = SpecToolset(registry.specs())
 
-    with pytest.raises(ImproperlyConfigured, match=r"the selector takes input\(s\) \['status'\]"):
-        SpecToolset(registry)
+    assert _input_schema_of(from_registry, "tasks") == _input_schema_of(from_mapping, "tasks")
+    assert from_registry._tool_query_params["tasks"] == ()
+    served = await _call(from_registry, "tasks", AnonymousUser(), dict(args))
+    seen_from_registry = _QueryRecordingPermission.seen
+    expected = await _call(from_mapping, "tasks", AnonymousUser(), dict(args))
+    assert _rows(served) == _rows(expected) == [{"name": args.get("status", "open")}]
+    # And the query string carries the value too, on both routes alike.
+    assert seen_from_registry == _QueryRecordingPermission.seen
+    assert seen_from_registry == ({"status": ["done"]} if args else {})
 
-    toolset = SpecToolset(registry.specs())
-    result = await _call(toolset, "tasks", AnonymousUser(), {"status": "done"})
 
-    assert _rows(result) == [{"name": "done"}]
+class _QueryRecordingPermission(BasePermission):
+    """Allows everything, and records the query string it was shown."""
+
+    seen: dict[str, Any] = {}
+
+    def has_permission(self, request: Any, view: Any) -> bool:
+        _QueryRecordingPermission.seen = dict(request.query_params.lists())
+        return True
+
+
+def test_a_spec_read_naming_a_lookup_parameter_builds_from_both_routes():
+    """The same rule for a service tool's target lookup, whose parameters the tool
+    advertises beside its serializer's fields: the registry builds the spec the
+    mapping builds, and advertises the same arguments."""
+    registry = SpecRegistry()
+    registry.register("rename", replace(_update_spec(), reads=(QueryParam("pk"),)))
+
+    from_registry = SpecToolset(registry)
+
+    assert _input_schema_of(from_registry, "rename") == _input_schema_of(
+        SpecToolset(registry.specs()), "rename"
+    )
 
 
 def test_a_serializer_field_a_query_param_shadows_is_refused():

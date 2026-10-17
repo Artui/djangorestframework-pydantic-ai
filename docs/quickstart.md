@@ -761,6 +761,14 @@ into `request.query_params` over the off-HTTP path. That is for whatever reads
 `request.query_params` **directly**: django-restql field selection, or a custom
 serializer that branches on the query string.
 
+!!! warning "Declaring these on the toolset is deprecated"
+    `query_params=` and `tool_query_params=` warn with `DeprecationWarning` and
+    will be removed in the next minor release. Declare the param on the spec as
+    `reads=[QueryParam(...)]` and build the toolset from the
+    [registry](spec-registry.md#what-the-spec-declares-for-an-agent); everything
+    below holds for a read declared there. For a value the model may not choose,
+    see [arguments the server supplies](spec-registry.md#arguments-the-server-supplies).
+
 !!! note "You don't need this for `filter_set`"
     A `SelectorSpec.filter_set`'s fields are already generated into the tool's
     input schema (the `[filter]` extra) and flow through as ordinary `params` —
@@ -792,9 +800,12 @@ a selector parameter or `filter_set` field, a service's input serializer field,
 or a parameter of the service's [target lookup](#what-a-tool-asks-the-model-for),
 which a service tool advertises beside its serializer's fields. The
 `SpecToolset` refuses it with `ImproperlyConfigured` when it is built, whether
-the `QueryParam` is declared on the toolset, per tool or on the entry's
-`OfflineContract`, and the refusal says whether the selector, the service or its
-target lookup takes the name. Fill the parameter from `request.query_params`
+the `QueryParam` is declared on the toolset or per tool, and the refusal says
+whether the selector, the service or its target lookup takes the name. A spec's
+own `reads=[QueryParam(...)]` of such a name is not refused: it declares where
+the input comes from, so the tool advertises the input once and drf-services
+hands it the value, from the registry and from `registry.specs()` alike (see
+[the registry page](spec-registry.md#what-the-spec-declares-for-an-agent)). Fill the parameter from `request.query_params`
 with a typed `kwargs=` provider (the first exemption below), read the value
 there in the callable and drop the parameter, or drop the `QueryParam`.
 
@@ -891,6 +902,16 @@ as a tool arg, then popped and seeded into `build_offline_context(kwargs=…)`,
 from where drf-services spreads it into the selector / target pools —
 authoritative over the spec `params`, below a `spec.kwargs` provider (mirroring
 HTTP precedence exactly).
+
+!!! warning "Declaring these on the toolset is deprecated"
+    `url_kwargs=` and `tool_url_kwargs=` warn with `DeprecationWarning` and will
+    be removed in the next minor release. Declare the capture on the spec as
+    `reads=[UrlKwarg(...)]` and build the toolset from the
+    [registry](spec-registry.md#what-the-spec-declares-for-an-agent). A
+    `UrlKwarg(default=...)` standing in for a value the model must not choose
+    was only a default it could override; bind the value with
+    [`tool_server_arguments`](spec-registry.md#arguments-the-server-supplies)
+    instead.
 
 ```python
 from rest_framework_pydantic_ai import UrlKwarg

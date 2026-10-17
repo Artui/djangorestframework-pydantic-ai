@@ -83,6 +83,13 @@ rewords one line and leaves the rest as they are. The toolset still decides when
 each line is said, and `None` drops a line. Argument descriptions, such as those
 of `limit` and `page`, and the toolset's other retries stay fixed.
 
+An argument the model must not choose, such as the project a run is scoped to,
+is the server's to supply: `SpecToolset(registry, tool_server_arguments={"list_vendors":
+ServerArguments(values={"project_pk": "7"})})` binds it on every call to that
+tool, takes it out of the tool's schema, and drops whatever the model sends
+under it. `ServerArguments.withheld` keeps a name from the model with no value
+in its place, so its default answers.
+
 See the [documentation](https://artui.github.io/djangorestframework-pydantic-ai/)
 for the full reference.
 

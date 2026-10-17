@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from django.http import HttpRequest
-from django_service_specs import DEFAULT_POOL_SEEDS, PoolSeeds, UnknownArguments
+from django_service_specs import DEFAULT_POOL_SEEDS, PoolSeeds, ServerArguments, UnknownArguments
 from pydantic_ai.capabilities import AbstractCapability
 from rest_framework_services import DEFAULT_JSON_SCHEMA_REGISTRY, JsonSchemaRegistry
 
@@ -100,6 +100,7 @@ class SpecCapability(AbstractCapability[Any]):
         tool_query_params: Mapping[str, Sequence[QueryParam]] | None = None,
         url_kwargs: Sequence[UrlKwarg] = (),
         tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None = None,
+        tool_server_arguments: Mapping[str, ServerArguments] | None = None,
         host: str | None = None,
         max_retries: int = 1,
         max_result_bytes: int | None = None,
@@ -128,6 +129,7 @@ class SpecCapability(AbstractCapability[Any]):
             tool_query_params=tool_query_params,
             url_kwargs=url_kwargs,
             tool_url_kwargs=tool_url_kwargs,
+            tool_server_arguments=tool_server_arguments,
             host=host,
             max_retries=max_retries,
             max_result_bytes=max_result_bytes,

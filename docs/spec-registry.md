@@ -60,9 +60,7 @@ is built; call one through `django_service_specs.dispatch` instead.
 
 Pass the **registry**, not `registry.specs()`. The mapping is what the registry
 holds minus everything else the entry carries, and one of those things — the
-[agent contract](#what-the-spec-declares-for-an-agent) — is read here. One
-shape is the exception, below: a `QueryParam` read naming a selector
-parameter.
+[agent contract](#what-the-spec-declares-for-an-agent) — is read here.
 
 The same goes for the capability:
 
@@ -158,14 +156,91 @@ carries them, so a value the model sends under one of those names is admitted
 and routed onto the request as drf-services routes any caller's, but a model is
 not told it may send one.
 
-**One shape works only from the mapping.** A `QueryParam` read naming a
-parameter the spec's selector takes, such as `reads=[QueryParam("status")]` on a
-selector taking `status`, is refused by `SpecToolset(registry)` when it is
-built: the toolset reads the entry's query params as its own channel and refuses
-one that shadows a selector parameter. `SpecToolset(registry.specs())` builds
-the same spec and serves it, since drf-services routes the read to the
-parameter. The two routes behave differently today, and a later release will
-make them consistent, in this toolset and the MCP transport together.
+**A read naming an input declares where the input comes from.** A `QueryParam`
+read naming a parameter the spec's selector takes, such as
+`reads=[QueryParam("status")]` on a selector taking `status`, or a parameter of
+a service's target lookup, is not a second argument beside it. The tool
+advertises the parameter once, as the selector declares it, and leaves its
+value in the call, where drf-services hands it to the parameter and puts it on
+`request.query_params` both. `SpecToolset(registry)` and
+`SpecToolset(registry.specs())` build it and serve it alike.
+
+A `QueryParam` of that name passed to the toolset's own `query_params=` or
+`tool_query_params=` is still refused when the toolset is built, a re-declaration
+of the spec's read included: the toolset takes such a value out of the call and
+routes it to the query string alone, so the parameter would never receive it.
+
+## Arguments the server supplies
+
+Some arguments are not the model's to choose. An agent run scoped to one
+project should not be able to list another project's rows by sending a
+different `project_pk`, and a model asked for an identifier it cannot know
+tends to invent one or send the parameter's name. `tool_server_arguments`
+answers for such names per tool, with django-service-specs'
+[`ServerArguments`][django_service_specs.types.server_arguments.ServerArguments]:
+
+```python
+from django_service_specs import ServerArguments
+
+toolset = SpecToolset(
+    registry,
+    tool_server_arguments={
+        "list_document_vendors": ServerArguments(
+            values={"project_pk": str(document.project_id)},
+            withheld=frozenset({"draw_request_pk"}),
+        ),
+    },
+)
+```
+
+- **A bound name** (`values`) carries the server's value on every call. It
+  satisfies a `required` parameter, and every reader of the call sees the one
+  value: a bound `UrlKwarg` read is on `view.kwargs`, where a permission class
+  or a `kwargs=` provider finds it, a bound `QueryParam` read on
+  `request.query_params`, and the selector receives it as its parameter.
+- **A withheld name** is absent from every call, so the read's declared default,
+  or the callable's own, answers. Withholding the other names of an either-or
+  scope is how a tool taking a project *or* a draw request is held to the
+  project.
+- **Neither is advertised.** Both leave the tool's `properties` and `required`,
+  and the instructions name neither. If the model sends one anyway, its value
+  is dropped before the call is checked, never refused, so a guess costs no
+  retry, and the toolset logs the tool and the names at `WARNING`, never the
+  values.
+
+Each name must be one the tool's spec declares: a selector or target-lookup
+parameter, or one of its `reads`. The toolset checks every binding when it is
+built, with django-service-specs' `check_server_arguments` and the toolset's
+own `pool_seeds`, and raises `ImproperlyConfigured` naming the tool for a name
+the spec does not declare, a name a pool seed or a typed `kwargs=` provider
+fills, a withheld name no call could do without, or a bound value its
+parameter refuses. A key naming a tool the toolset does not expose raises
+`ValueError`, as every per-tool mapping does.
+
+The bindings are fixed when the toolset is built, like its tool definitions.
+For a per-run scope, build a toolset per run, from the run's scope:
+
+```python
+SCOPE_NAMES = frozenset({"project_pk", "draw_request_pk"})
+
+
+def scope_bindings(registry, scope):
+    """Each tool reading a scope name, bound to the run's scope, the rest withheld."""
+    bindings = {}
+    for entry in registry.all():
+        declared = {read.name for read in entry.spec.reads} & SCOPE_NAMES
+        if declared:
+            values = {name: scope[name] for name in declared if name in scope}
+            bindings[entry.name] = ServerArguments(
+                values=values, withheld=frozenset(declared - values.keys())
+            )
+    return bindings
+
+
+toolset = SpecToolset(registry, tool_server_arguments=scope_bindings(registry, scope))
+```
+
+`SpecCapability` takes the same keyword.
 
 ## What stays per toolset
 
@@ -175,25 +250,43 @@ ceilings. A publicly exposed MCP endpoint and an in-process toolset carry
 different risk, so one shared number would be a regression rather than a
 simplification.
 
+### Deprecated: channel declarations on the toolset
+
 The [`QueryParam`](reference.md#rest_framework_pydantic_ai.QueryParam) /
 [`UrlKwarg`](reference.md#rest_framework_pydantic_ai.UrlKwarg) constructor
-arguments remain, and override the entry's contract by name:
+arguments, `query_params=`, `tool_query_params=`, `url_kwargs=` and
+`tool_url_kwargs=`, are deprecated. Passing any of them warns with
+`DeprecationWarning`, and they will be removed in the next minor release. They
+declare at one mount what the spec's `reads` declare for every transport, which
+is how two mounts come to disagree about one operation. Move each onto the spec
+and build the toolset from the registry:
 
 ```python
+# Before
 SpecToolset(
     registry.by_tag("read"),
     query_params=[QueryParam(name="fields")],
     tool_url_kwargs={"list_orders": [UrlKwarg(name="tenant_pk")]},
 )
+
+# After
+registry.register(
+    "list_orders",
+    replace(specs.list_orders, reads=[UrlKwarg(name="tenant_pk"), QueryParam(name="fields")]),
+)
+SpecToolset(registry.by_tag("read"))
 ```
 
-They are the right tool for a toolset with no registry behind it, and for a
-mount that genuinely differs. Where a project runs a second agent transport,
-prefer the contract.
+A `UrlKwarg(default=...)` used to keep a value the model should not choose was
+only ever a default: the model could override it, and it stayed advertised.
+That use moves to [`tool_server_arguments`](#arguments-the-server-supplies).
 
-Per-tool maps like `tool_query_params` / `tool_url_kwargs` key off the registry's
-names, and an unknown key still raises — a typo is a configuration error, not a
-silent no-op.
+Until they go, they behave as before. Each overrides the entry's declaration of
+the same name, and the override is true of what the toolset advertises, routes
+and defaults, and of nothing drf-services reads: the spec's own declaration
+still checks the call. A mount loosening a spec's `required` read to optional
+advertises an argument the call is then refused without. Per-tool maps key off
+the registry's names, and an unknown key still raises.
 
 ## Names
 

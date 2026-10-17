@@ -10,6 +10,7 @@ import pytest
 from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
 from django_service_specs import FieldAudience, FieldMarking, SelectorKind, SpecRegistry
+from pydantic_ai import ModelRetry
 from rest_framework.permissions import AllowAny, BasePermission
 from rest_framework_services import PolymorphicServiceSpec, SelectorSpec, ServiceSpec
 
@@ -364,6 +365,27 @@ class TestTheEntrysOfflineContract:
 
         (kwarg,) = toolset._tool_url_kwargs["list_widgets"]
         assert kwarg.description == "tool"
+
+    @pytest.mark.django_db(transaction=True)
+    async def test_an_override_changes_what_is_advertised_and_the_spec_still_checks_the_call(
+        self,
+    ) -> None:
+        """An override by name is true of what this toolset advertises, routes and
+        defaults, and of nothing drf-services reads: the spec's own declaration
+        still checks the call. A mount loosening a required read to optional
+        advertises it as optional, and a call leaving it out is refused by the
+        spec all the same. Declare the read once, on the spec.
+        """
+        registry = self._contract_registry(reads=(UrlKwarg("tenant_pk", required=True),))
+        toolset = SpecToolset(registry, url_kwargs=[UrlKwarg("tenant_pk")])
+        user = await User.objects.acreate(username="u")
+
+        schema = toolset._tool_defs["list_widgets"].parameters_json_schema
+        assert "tenant_pk" in schema["properties"]
+        assert "tenant_pk" not in schema.get("required", [])
+        tools = await toolset.get_tools(ctx_for(user))
+        with pytest.raises(ModelRetry, match="tenant_pk: This field is required"):
+            await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
 
     def test_the_contract_still_answers_to_the_shared_channel_checks(self) -> None:
         # Nothing about arriving from an entry exempts a declaration from the
