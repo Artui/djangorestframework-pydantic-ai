@@ -37,7 +37,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     the toolset requires, which would otherwise refuse every call.
   - Fixed when the toolset is built, like its tool definitions: build a toolset
     per scope. A toolset with no bindings advertises and calls exactly as
-    before. The registry page has the either-or example.
+    before. The registry page has the either-or example, and a per-run
+    function from the registry and the run's scope to the bindings: a tool is
+    bound only when the run binds one of the scope names it reads, its other
+    optional scope reads are withheld, and a required one the run does not bind
+    stays the model's to send.
 
 ### Changed
 
@@ -115,7 +119,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     parameter. A `QueryParam` of that name passed to the toolset's own
     `query_params=` or `tool_query_params=` is still refused, a re-declaration
     of the spec's read included, since the toolset takes that value out of the
-    call and routes it to the query string alone.
+    call and routes it to the query string alone. A `UrlKwarg` of that name
+    with no `default`, passed to `url_kwargs=` or `tool_url_kwargs=`, is
+    loosened the same way: up to 0.35.x the registry refused it beside the
+    spec's `QueryParam` read with `ValueError`, as one name on two channels,
+    and it now builds and serves as `SpecToolset(registry.specs())` does, with
+    the value on `view.kwargs` and, under the spec's read, on
+    `request.query_params`. A `UrlKwarg` with a `default`, which fills the
+    parameter itself, and one over a read of a name the tool does not take as
+    an input are still refused there.
 - **Breaking: a `SelectorSpec` with `selector=None` is refused when the toolset
   is built**, with drf-services' `ImproperlyConfigured` (`SpecToolset tool
   'empty': SelectorSpec declares no selector, ...`). Such a spec could never run
@@ -151,7 +163,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   selector taking a bare `**kwargs` refuses nothing and is handed none of the
   undeclared keys, where up to 0.35.x it received them under every policy. The
   docs and the `unknown_arguments` docstring no longer describe either
-  input set as open and unaffected.
+  input set as open and unaffected. Declare each parameter the selector needs,
+  as a named parameter or a `filter_set` filter; under `IGNORE` a `**kwargs`
+  selector also now receives none of the undeclared keys, only the seeds
+  dispatch hands every call, such as `request` and `view`.
 - **Docs**: the registry and agent-audience pages declare reads and field
   audiences on the spec rather than through `agent_contract=`, the quickstart
   quotes drf-services' missing-field wording, and the API reference links the
@@ -161,16 +176,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`query_params=`, `tool_query_params=`, `url_kwargs=` and `tool_url_kwargs=`
   on `SpecToolset` and `SpecCapability`.** Passing any of them warns with
-  `DeprecationWarning`, attributed to the caller's line, and they will be
-  removed in the next minor release. Declare each read on the spec as
-  `reads=[QueryParam(...)]` or `reads=[UrlKwarg(...)]` and build the toolset from
-  the `SpecRegistry`, where every transport reads the same declaration; a
-  `UrlKwarg(default=...)` standing in for a value the model must not choose
-  moves to `tool_server_arguments`. Until then they behave as before, including
+  `DeprecationWarning`, naming the class they were passed to and attributed to
+  the caller's line, and they will be removed in the next minor release.
+  Declare each read on the spec as `reads=[QueryParam(...)]` or
+  `reads=[UrlKwarg(...)]` and build the toolset from the `SpecRegistry`, where
+  every transport reads the same declaration; a `UrlKwarg(default=...)`
+  standing in for a value the model must not choose moves to
+  `tool_server_arguments`. Until then they behave as before, including
   overriding the spec's read of the same name, which is true of what the
   toolset advertises, routes and defaults and of nothing drf-services reads: a
   mount loosening a spec's `required` read to optional advertises an argument
-  the call is still refused without.
+  the call is still refused without. One case changed, the loosening under
+  Changed: a `UrlKwarg` with no `default` over the spec's `QueryParam` read of
+  a name the tool takes as an input now builds and serves from the registry,
+  where it was refused.
 
 ## [0.35.1] — 2026-10-16
 

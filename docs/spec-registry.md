@@ -170,6 +170,15 @@ A `QueryParam` of that name passed to the toolset's own `query_params=` or
 `tool_query_params=` is still refused when the toolset is built, a re-declaration
 of the spec's read included: the toolset takes such a value out of the call and
 routes it to the query string alone, so the parameter would never receive it.
+A `UrlKwarg` of that name with no `default`, passed to `url_kwargs=` or
+`tool_url_kwargs=`, is built: it carries the input's value onto `view.kwargs`,
+and the spec's read puts it on `request.query_params`, from the registry and from
+`registry.specs()` alike. Two pairings still differ between the routes. A
+`UrlKwarg` with a `default` fills the parameter itself, so the tool no longer
+takes the name as an input, and a `UrlKwarg` may name a read the tool never took
+as one; in both, the registry refuses the spec's read beside the `UrlKwarg` with
+`ValueError`, as one name on two channels, while `registry.specs()`, which
+advertises none of the spec's reads, builds the toolset.
 
 ## Arguments the server supplies
 
@@ -219,22 +228,35 @@ parameter refuses. A key naming a tool the toolset does not expose raises
 `ValueError`, as every per-tool mapping does.
 
 The bindings are fixed when the toolset is built, like its tool definitions.
-For a per-run scope, build a toolset per run, from the run's scope:
+For a per-run scope, build a toolset per run, from the run's scope. A tool
+counts as scoped by the run only when the run binds one of the scope names it
+reads: its other optional scope reads are then withheld too, so the model
+cannot widen the scope through a sibling, while a required one the run does
+not bind stays the model's to send, since withheld no call could supply it. A
+tool reading only scope names the run does not bind gets no binding and keeps
+them all:
 
 ```python
-SCOPE_NAMES = frozenset({"project_pk", "draw_request_pk"})
+SCOPE_NAMES = frozenset({"project_pk", "draw_request_pk", "document_pk"})
 
 
 def scope_bindings(registry, scope):
-    """Each tool reading a scope name, bound to the run's scope, the rest withheld."""
+    """Each tool the run's scope reaches: the bound names, and optional siblings withheld."""
     bindings = {}
     for entry in registry.all():
-        declared = {read.name for read in entry.spec.reads} & SCOPE_NAMES
-        if declared:
-            values = {name: scope[name] for name in declared if name in scope}
-            bindings[entry.name] = ServerArguments(
-                values=values, withheld=frozenset(declared - values.keys())
-            )
+        reads = [read for read in entry.spec.reads if read.name in SCOPE_NAMES]
+        values = {read.name: scope[read.name] for read in reads if read.name in scope}
+        if not values:
+            continue
+        bindings[entry.name] = ServerArguments(
+            values=values,
+            # A QueryParam read has no ``required``; a UrlKwarg read may.
+            withheld=frozenset(
+                read.name
+                for read in reads
+                if read.name not in values and not getattr(read, "required", False)
+            ),
+        )
     return bindings
 
 

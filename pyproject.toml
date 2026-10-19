@@ -182,7 +182,7 @@ filterwarnings = [
     # The suite still exercises the deprecated mount-level channel knobs, which
     # stay supported for one minor. The tests about the deprecation itself use
     # ``pytest.warns``, which records whatever this filter says.
-    "ignore:SpecToolset's .* deprecated:DeprecationWarning",
+    "ignore:Spec(Toolset|Capability)'s .* deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]

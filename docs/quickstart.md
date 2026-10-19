@@ -754,20 +754,21 @@ use.
 ## Read-shaping query params
 
 `page` / `limit` are built in for list selectors and `ordering` comes from the
-`filter_set`, but you can register your own request-level params with
-[`QueryParam`](reference.md#rest_framework_pydantic_ai.QueryParam). Each is
-advertised as a tool arg, then — instead of reaching the spec as an input — seeded
+`filter_set`, but a spec can declare its own request-level params, as
+`reads=[QueryParam(...)]` with
+[`QueryParam`](reference.md#rest_framework_pydantic_ai.QueryParam). Built from
+the [registry](spec-registry.md#what-the-spec-declares-for-an-agent) the spec is
+registered in, the toolset advertises each as a tool arg, then — instead of reaching the spec as an input — seeded
 into `request.query_params` over the off-HTTP path. That is for whatever reads
 `request.query_params` **directly**: django-restql field selection, or a custom
 serializer that branches on the query string.
 
-!!! warning "Declaring these on the toolset is deprecated"
-    `query_params=` and `tool_query_params=` warn with `DeprecationWarning` and
-    will be removed in the next minor release. Declare the param on the spec as
-    `reads=[QueryParam(...)]` and build the toolset from the
-    [registry](spec-registry.md#what-the-spec-declares-for-an-agent); everything
-    below holds for a read declared there. For a value the model may not choose,
-    see [arguments the server supplies](spec-registry.md#arguments-the-server-supplies).
+!!! warning "Declare them on the spec, not on the toolset"
+    The toolset's own `query_params=` and `tool_query_params=` are deprecated:
+    they warn with `DeprecationWarning` and will be removed in the next minor
+    release. [Moving them onto the spec](spec-registry.md#deprecated-channel-declarations-on-the-toolset)
+    is the migration. For a value the model may not choose, see
+    [arguments the server supplies](spec-registry.md#arguments-the-server-supplies).
 
 !!! note "You don't need this for `filter_set`"
     A `SelectorSpec.filter_set`'s fields are already generated into the tool's
@@ -778,24 +779,31 @@ serializer that branches on the query string.
     serializer reads off `request.query_params`.
 
 ```python
-from rest_framework_pydantic_ai import QueryParam
+from dataclasses import replace
 
-toolset = SpecToolset(
-    specs,
-    # applies to every tool
-    query_params=[QueryParam("query", description="django-restql field selection")],
-    # or scope params to one tool
-    tool_query_params={"list_orders": [QueryParam("status", default="open")]},
+from django_service_specs import SpecRegistry
+
+from rest_framework_pydantic_ai import QueryParam, SpecToolset
+
+# A param several tools read is one declaration, in each spec's reads.
+RESTQL = QueryParam("query", description="django-restql field selection")
+
+registry = SpecRegistry()
+registry.register(
+    "list_orders",
+    replace(list_orders_spec, reads=[RESTQL, QueryParam("detail", default="summary")]),
 )
+toolset = SpecToolset(registry)
 ```
 
-A registered param is popped before dispatch, so `unknown_arguments` never flags
+A declared param is popped before dispatch, so `unknown_arguments` never flags
 it; a declared `default` is seeded when the model omits the arg or sends it as
 `null`, which never reaches the query string itself. (Names can't be
 `page` / `limit` / `ordering` — those are reserved transport keys. `ordering` is
-reserved even when a `filter_set` owns it: a registered channel pops the value at
-call time, so the FilterSet would never see it.) For the same reason a tool may
-not register a `QueryParam` under a name it advertises as the call's own input:
+reserved even when a `filter_set` owns it: a declared channel pops the value at
+call time, so the FilterSet would never see it.) For the same reason the
+toolset's deprecated `query_params=` and `tool_query_params=` may not declare a
+`QueryParam` under a name a tool advertises as the call's own input:
 a selector parameter or `filter_set` field, a service's input serializer field,
 or a parameter of the service's [target lookup](#what-a-tool-asks-the-model-for),
 which a service tool advertises beside its serializer's fields. The
@@ -896,31 +904,29 @@ serializer is a bug whatever the model sent.
 Over HTTP a nested route (`/projects/{project_pk}/widgets/`) supplies
 `project_pk` from the URL, and a selector reads it from `view.kwargs` — directly,
 or through a `spec.kwargs` provider that scopes by it (a tenant/role lookup). Off
-the HTTP path there is no route, so register the value with
-[`UrlKwarg`](reference.md#rest_framework_pydantic_ai.UrlKwarg). It is advertised
-as a tool arg, then popped and seeded into `build_offline_context(kwargs=…)`,
+the HTTP path there is no route, so declare the capture on the spec, as
+`reads=[UrlKwarg(...)]` with
+[`UrlKwarg`](reference.md#rest_framework_pydantic_ai.UrlKwarg). Built from the
+registry, the toolset advertises it as a tool arg, then popped and seeded into `build_offline_context(kwargs=…)`,
 from where drf-services spreads it into the selector / target pools —
 authoritative over the spec `params`, below a `spec.kwargs` provider (mirroring
 HTTP precedence exactly).
 
-!!! warning "Declaring these on the toolset is deprecated"
-    `url_kwargs=` and `tool_url_kwargs=` warn with `DeprecationWarning` and will
-    be removed in the next minor release. Declare the capture on the spec as
-    `reads=[UrlKwarg(...)]` and build the toolset from the
-    [registry](spec-registry.md#what-the-spec-declares-for-an-agent). A
-    `UrlKwarg(default=...)` standing in for a value the model must not choose
-    was only a default it could override; bind the value with
-    [`tool_server_arguments`](spec-registry.md#arguments-the-server-supplies)
+!!! warning "Declare them on the spec, not on the toolset"
+    The toolset's own `url_kwargs=` and `tool_url_kwargs=` are deprecated: they
+    warn with `DeprecationWarning` and will be removed in the next minor
+    release. [Moving them onto the spec](spec-registry.md#deprecated-channel-declarations-on-the-toolset)
+    is the migration. A `UrlKwarg(default=...)` standing in for a value the
+    model must not choose was only a default it could override; bind the value
+    with [`tool_server_arguments`](spec-registry.md#arguments-the-server-supplies)
     instead.
 
 ```python
 from rest_framework_pydantic_ai import UrlKwarg
 
-toolset = SpecToolset(
-    specs,
-    url_kwargs=[UrlKwarg("project_pk", type="integer", description="owning project")],
-    # or scope to one tool: tool_url_kwargs={"list_widgets": [UrlKwarg("project_pk")]}
-)
+project = UrlKwarg("project_pk", type="integer", description="owning project")
+registry.register("list_widgets", replace(list_widgets_spec, reads=[project]))
+toolset = SpecToolset(registry)
 ```
 
 Reach for `UrlKwarg` when the value is **request state** rather than an ordinary
@@ -931,7 +937,7 @@ it is advertised:
   `params` cannot cover, because the provider reads `view.kwargs`, not `params`;
 - a closed-surface spec whose route capture must be model-suppliable.
 
-Like `QueryParam`, a registered kwarg is popped before dispatch (so
+Like `QueryParam`, a declared kwarg is popped before dispatch (so
 `unknown_arguments` never flags it) and its `default` is seeded when the model
 omits it. A kwarg with a `default` therefore fills a selector parameter of the
 same name, and the tool does not require it; one without a default reaches the
@@ -940,8 +946,12 @@ decides whether the tool requires it. A name can't be `page` / `limit` / `orderi
 pool seeds (`request` / `user` / `data` / `instance` / `serializer` /
 `collection` / `progress` — a caller must not be able to route a value onto
 those) or a name
-registered in [`pool_seeds`](#project-pool-seeds), nor be registered as both a
-`QueryParam` and a `UrlKwarg` on the same tool.
+registered in [`pool_seeds`](#project-pool-seeds), nor be declared as both a
+`QueryParam` and a `UrlKwarg` on the same tool. (The one pairing the toolset
+builds is a deprecated mount `UrlKwarg` with no `default` over the spec's
+`QueryParam` read of a name the tool takes as an input: the read says where
+that input comes from, so the value reaches `view.kwargs` and the query string
+both.)
 
 A capture the spec genuinely cannot run without takes `required=True`:
 
@@ -982,24 +992,37 @@ scoping provider doing `view.kwargs.get("project_pk")` returns `None` and
 **mis-scopes every call** instead of failing, which is the failure mode worth
 naming: it is silent.
 
-Register the `UrlKwarg` as well when the value is scope. It is a strict superset
-— the selector still receives it in `**extras`, the schema keeps one property and
-one `required` entry (an explicit `UrlKwarg` wins the merge over a reflected key
-of the same name), and the provider gets its value:
+Declare the `UrlKwarg` read as well when the value is scope, and bind it with
+[`tool_server_arguments`](spec-registry.md#arguments-the-server-supplies) when
+the model must not choose it. The read is a strict superset: the selector still
+receives the value in `**extras`, and the provider finds it on `view.kwargs`:
 
 ```python
-# project_pk reflected from WidgetExtras *and* registered here:
+from django_service_specs import ServerArguments
+
+# project_pk reflected from WidgetExtras *and* read from the route:
 #   selector's extras -> 7      view.kwargs -> {"project_pk": 7}
+registry.register(
+    "list_widgets",
+    replace(list_widgets_spec, reads=[UrlKwarg("project_pk", type="integer", required=True)]),
+)
 toolset = SpecToolset(
-    specs,
-    tool_url_kwargs={"list_widgets": [UrlKwarg("project_pk", type="integer", required=True)]},
+    registry,
+    tool_server_arguments={"list_widgets": ServerArguments(values={"project_pk": 7})},
 )
 ```
 
+Declared and not bound, the name is advertised once, with one `required` entry
+(the `UrlKwarg` wins the merge over a reflected key of the same name), and the
+model supplies it. Bound, it leaves the schema, and whatever the model sends
+under it is dropped before the call.
+
 That split mirrors HTTP, where a route capture arrives in the URL and never in
 the body — which is what makes it unspoofable. Off the HTTP path, `params` are
-whatever the model chose; a `UrlKwarg` value outranks them. If a provider scopes
-by it, it has to come through the channel that carries that precedence.
+whatever the model chose; a `UrlKwarg` value outranks them, but the model chooses
+that value too unless the server binds it. If a provider scopes by it, it has to
+come through the channel that carries that precedence, with the value the
+server supplies.
 
 `UrlKwarg` and `QueryParam` are
 [drf-services' types](https://github.com/Artui/djangorestframework-services/blob/main/rest_framework_services/types/url_kwarg.py),

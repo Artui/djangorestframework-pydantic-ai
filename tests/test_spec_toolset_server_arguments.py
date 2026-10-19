@@ -7,10 +7,13 @@ toolset without the keyword and fails there on what it asserts, not on an import
 
 from __future__ import annotations
 
+import _thread
 import logging
+import re
 import warnings
 from collections.abc import Mapping
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -37,6 +40,7 @@ from rest_framework_pydantic_ai import (
 from rest_framework_pydantic_ai.testing import tool_calling_model
 from tests.test_spec_toolset import (
     _call,
+    _dual_declared_spec,
     _input_schema_of,
     _name_list_spec,
     _NameSerializer,
@@ -292,7 +296,7 @@ async def test_the_bound_value_outranks_the_one_the_model_sends(caplog):
 
     assert _rows(_tool_return(result).content) == [{"name": "project=7"}]
     assert _RecordingPermission.seen["kwargs"] == {"project_pk": "7"}
-    (record,) = [r for r in caplog.records if "server supplies" in r.getMessage()]
+    (record,) = [r for r in caplog.records if "dropped caller-supplied" in r.getMessage()]
     assert record.levelno == logging.WARNING
     assert "'vendors'" in record.getMessage()
     assert "project_pk" in record.getMessage()
@@ -318,7 +322,12 @@ async def test_a_withheld_name_takes_nothing_the_model_sends(caplog):
 
     assert _rows(result) == [{"name": "project=7 draw=None"}]
     assert _RecordingPermission.seen["kwargs"] == {"project_pk": "7"}
-    assert "draw_request_pk, project_pk" in caplog.text
+    # Worded for both kinds of name: a withheld one is not a value the server
+    # supplies, only one the model may not choose.
+    assert (
+        "dropped caller-supplied argument(s) draw_request_pk, project_pk, which "
+        "tool_server_arguments keeps from the model"
+    ) in caplog.text
 
 
 @pytest.mark.django_db(transaction=True)
@@ -331,7 +340,7 @@ async def test_nothing_is_logged_when_the_model_sends_no_server_name(caplog):
     with caplog.at_level(logging.WARNING, logger="rest_framework_pydantic_ai"):
         await _call(toolset, "vendors", user, {})
 
-    assert "server supplies" not in caplog.text
+    assert "dropped caller-supplied" not in caplog.text
 
 
 @pytest.mark.django_db(transaction=True)
@@ -399,27 +408,36 @@ async def test_a_bound_selection_the_render_rejects_is_the_server_s_error_not_a_
 # --- a consumer scoping each run ----------------------------------------------
 #
 # Modelled on a production consumer that scopes a document-enrichment run to the
-# document's project, or else its draw request. It subclassed the toolset to
-# take every scope capture it had bound out of each tool's schema and out of
-# each call's arguments, beside a ``UrlKwarg(default=<bound value>)`` that the
-# model could still override. With the keyword, the project's part is one small
-# function from its registry and its scope to the bindings; the toolset is not
-# subclassed for it at all.
+# document's project, or else its draw request. It subclassed the toolset to keep
+# its bound scope out of each tool's schema and each call's arguments, under one
+# rule: a tool counts as scoped by the run only if the run binds one of its scope
+# names; its optional siblings are then the server's as well, and a required one
+# the run does not bind stays the model's to send. With the keyword, that rule is
+# one small function from the registry and the run's scope to the bindings, and
+# the toolset is not subclassed for it at all.
+#
+# The function is the registry page's own example, run as written, so the page
+# cannot drift from what these tests hold.
 
-_SCOPE_NAMES = frozenset({"project_pk", "draw_request_pk"})
+_DOCS_PAGE = Path(__file__).resolve().parent.parent / "docs" / "spec-registry.md"
 
 
-def scope_bindings(registry: SpecRegistry, scope: Mapping[str, str]) -> dict[str, ServerArguments]:
-    """Each tool reading a scope name, bound to the run's scope, its other scope names withheld."""
-    bindings: dict[str, ServerArguments] = {}
-    for entry in registry.all():
-        declared = {read.name for read in entry.spec.reads} & _SCOPE_NAMES
-        if declared:
-            values = {name: scope[name] for name in sorted(declared) if name in scope}
-            bindings[entry.name] = ServerArguments(
-                values=values, withheld=frozenset(declared - values.keys())
-            )
-    return bindings
+def _docs_recipe(registry: SpecRegistry, scope: Mapping[str, str]) -> dict[str, Any]:
+    """Run the registry page's per-run scope example over ``registry`` and ``scope``.
+
+    Returns the names the block defined: ``scope_bindings`` and the ``toolset``
+    it builds.
+    """
+    blocks = re.findall(r"```python\n(.*?)```", _DOCS_PAGE.read_text(), flags=re.DOTALL)
+    (block,) = [block for block in blocks if "def scope_bindings" in block]
+    namespace: dict[str, Any] = {
+        "ServerArguments": ServerArguments,
+        "SpecToolset": SpecToolset,
+        "registry": registry,
+        "scope": scope,
+    }
+    exec(block, namespace)
+    return namespace
 
 
 @pytest.mark.django_db(transaction=True)
@@ -429,9 +447,8 @@ async def test_a_run_scoped_to_a_project_binds_it_and_withholds_the_sibling():
         list_document_vendors=_scoped_spec(),
         list_vendors=_name_list_spec(any_vendors, permission_classes=[_RecordingPermission]),
     )
-    toolset = SpecToolset(
-        registry, tool_server_arguments=scope_bindings(registry, {"project_pk": "7"})
-    )
+    recipe = _docs_recipe(registry, {"project_pk": "7"})
+    toolset = recipe["toolset"]
     # The model reaches for the scope anyway -- a guessed project and a
     # placeholder for the draw request it was never shown.
     agent = Agent(
@@ -449,9 +466,95 @@ async def test_a_run_scoped_to_a_project_binds_it_and_withholds_the_sibling():
     # the route included.
     assert _RecordingPermission.seen["kwargs"] == {"project_pk": "7"}
     schema = _input_schema_of(toolset, "list_document_vendors")
-    assert not _SCOPE_NAMES & set(schema["properties"])
+    assert not {"project_pk", "draw_request_pk"} & set(schema["properties"])
     # A tool reading no scope name has no binding.
-    assert "list_vendors" not in scope_bindings(registry, {"project_pk": "7"})
+    assert "list_vendors" not in recipe["scope_bindings"](registry, {"project_pk": "7"})
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_tool_reading_only_scope_names_the_run_does_not_bind_keeps_them():
+    """A tool reading only ``draw_request_pk``, in a run scoped to a project, is
+    not scoped by the run: it has no binding, so the model still sends its draw
+    request and the selector receives it. Holds the recipe's skip of a tool with
+    nothing bound; without it the name would be withheld, gone from the schema,
+    and every call would reach the selector with no draw request."""
+    user = await User.objects.acreate(username="u")
+    registry = _registry(list_draw_vendors=_scoped_spec(reads=(UrlKwarg("draw_request_pk"),)))
+    recipe = _docs_recipe(registry, {"project_pk": "7"})
+    toolset = recipe["toolset"]
+
+    result = await _call(toolset, "list_draw_vendors", user, {"draw_request_pk": "3"})
+
+    assert _rows(result) == [{"name": "project=None draw=3"}]
+    assert "draw_request_pk" in _input_schema_of(toolset, "list_draw_vendors")["properties"]
+    assert recipe["scope_bindings"](registry, {"project_pk": "7"}) == {}
+
+
+def vendors_of_document(*, document_pk: str, project_pk: str | None = None):
+    """The vendors a document may be matched to, within its project if one is given."""
+    return [{"name": f"project={project_pk} document={document_pk}"}]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_required_scope_name_the_run_does_not_bind_stays_the_model_s():
+    """A scoped tool's sibling it cannot run without is not withheld: withheld, no
+    call could supply it, which the toolset refuses when it is built. Holds the
+    recipe's ``required`` check; the model is still asked for the document, and
+    only the project is the server's."""
+    user = await User.objects.acreate(username="u")
+    registry = _registry(
+        list_document_vendors=_scoped_spec(
+            vendors_of_document,
+            reads=(UrlKwarg("project_pk"), UrlKwarg("document_pk", required=True)),
+        )
+    )
+    toolset = _docs_recipe(registry, {"project_pk": "7"})["toolset"]
+
+    result = await _call(
+        toolset, "list_document_vendors", user, {"project_pk": "99", "document_pk": "5"}
+    )
+
+    assert _rows(result) == [{"name": "project=7 document=5"}]
+    schema = _input_schema_of(toolset, "list_document_vendors")
+    assert "project_pk" not in schema["properties"]
+    assert schema["required"] == ["document_pk"]
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_bound_capture_reaches_the_extras_and_the_route_alike():
+    """The quickstart's scope over a reflected ``**extras`` key: declared as the
+    spec's ``UrlKwarg`` read and bound, the selector receives the server's value
+    in its extras and a scoping provider finds it on ``view.kwargs``, while the
+    model is offered neither. Unbound, the read is advertised once, and required."""
+    seen: dict[str, Any] = {}
+
+    def scope_provider(view: Any) -> dict[str, Any]:
+        seen["view_kwargs"] = dict(view.kwargs)
+        return {}
+
+    user = await User.objects.acreate(username="u")
+    await Widget.objects.acreate(name="cheap", price=5, owner=user)
+    await Widget.objects.acreate(name="dear", price=15, owner=user)
+    spec = replace(
+        _dual_declared_spec(),
+        kwargs=scope_provider,
+        reads=(UrlKwarg("project_pk", type="integer", required=True),),
+    )
+    toolset = SpecToolset(
+        _registry(list_widgets=spec),
+        tool_server_arguments={"list_widgets": ServerArguments(values={"project_pk": 7})},
+    )
+
+    result = await _call(toolset, "list_widgets", user, {"project_pk": 99})
+
+    assert [row["name"] for row in _rows(result)] == ["cheap"]
+    assert seen["view_kwargs"] == {"project_pk": 7}
+    assert "project_pk" not in _input_schema_of(toolset, "list_widgets").get("properties", {})
+    # Declared and not bound, the name is advertised once, the read's
+    # declaration over the reflected key, and required as the read says.
+    unbound = _input_schema_of(SpecToolset(_registry(list_widgets=spec)), "list_widgets")
+    assert unbound["properties"]["project_pk"]["type"] == "integer"
+    assert unbound["required"] == ["project_pk"]
 
 
 # --- the capability -----------------------------------------------------------
@@ -492,10 +595,147 @@ def test_a_mount_level_channel_declaration_is_deprecated(build, knob, value):
 
     (warning,) = [w for w in record if issubclass(w.category, DeprecationWarning)]
     message = str(warning.message)
-    assert f"{knob}=" in message
+    assert message.startswith(f"{build.__name__}'s {knob}= is deprecated")
     assert "reads=" in message
     assert "tool_server_arguments" in message
     assert warning.filename == __file__
+
+
+# Compiled into a namespace of the test's choosing, so the frames a warning is
+# attributed through carry whatever module name the test needs them to.
+_DEPRECATED_BUILD = """
+def build():
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        SpecToolset({"vendors": spec}, url_kwargs=[UrlKwarg("tenant_pk")])
+    return [w for w in record if issubclass(w.category, DeprecationWarning)]
+
+
+def run_as_thread(outcome, done):
+    try:
+        outcome["warnings"] = build()
+    except BaseException as error:
+        outcome["error"] = error
+    finally:
+        done.release()
+"""
+
+
+def _probe(module: str) -> dict[str, Any]:
+    """``_DEPRECATED_BUILD`` compiled as code of ``module``, in a file named
+    ``<module>``, so a warning attributed to one of its frames says so."""
+    namespace: dict[str, Any] = {
+        "__name__": module,
+        "warnings": warnings,
+        "SpecToolset": SpecToolset,
+        "UrlKwarg": UrlKwarg,
+        "spec": _name_list_spec(any_vendors),
+    }
+    exec(compile(_DEPRECATED_BUILD, f"<{module}>", "exec"), namespace)
+    return namespace
+
+
+def test_a_package_whose_name_only_begins_like_this_one_is_the_caller():
+    """The frame walk skips this package's modules by dotted name, so a package
+    named ``rest_framework_pydantic_ai_extras`` is outside it and is the line the
+    warning names. Holds the trailing dot in ``_in_this_package``: a bare prefix
+    match would skip this caller too and name the test instead."""
+    (warning,) = _probe("rest_framework_pydantic_ai_extras")["build"]()
+
+    assert warning.filename == "<rest_framework_pydantic_ai_extras>"
+
+
+def test_a_walk_reaching_the_bottom_of_the_stack_inside_this_package_still_warns():
+    """A function a thread is started on from C has no frame beneath it. When
+    that frame is this package's, the walk stops on it and warns there rather
+    than stepping off the stack. Holds the ``f_back`` guard in
+    ``_warn_mount_channels``, without which the walk reads the globals of
+    ``None`` and the toolset is never built."""
+    outcome: dict[str, Any] = {}
+    done = _thread.allocate_lock()
+    done.acquire()
+
+    _thread.start_new_thread(
+        _probe("rest_framework_pydantic_ai.probe")["run_as_thread"], (outcome, done)
+    )
+
+    assert done.acquire(timeout=30)
+    assert "error" not in outcome, outcome.get("error")
+    (warning,) = outcome["warnings"]
+    assert warning.filename == "<rest_framework_pydantic_ai.probe>"
+
+
+def tasks_in_status(*, status: str = "open"):
+    """The tasks in one status, the open ones when none is named."""
+    return [{"name": status}]
+
+
+def _status_registry() -> SpecRegistry:
+    """A tool whose selector takes ``status``, which its spec also reads as a ``QueryParam``."""
+    return _registry(
+        tasks=_name_list_spec(
+            tasks_in_status,
+            permission_classes=[_RecordingPermission],
+            reads=(QueryParam("status"),),
+        )
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+async def test_a_mount_url_kwarg_over_a_spec_s_read_of_its_input_serves_as_both_routes_do():
+    """A mount's ``UrlKwarg("status")`` over a spec's ``QueryParam("status")``
+    read of a selector parameter declares where the tool's input comes from, so
+    the registry builds and serves it as ``registry.specs()`` does: the value on
+    ``view.kwargs``, and on the query string under the spec's read. Up to 0.35.x
+    the registry refused it as one name on two channels."""
+    user = await User.objects.acreate(username="u")
+    registry = _status_registry()
+    served = []
+    for source in (registry, registry.specs()):
+        with pytest.warns(DeprecationWarning):
+            toolset = SpecToolset(source, url_kwargs=[UrlKwarg("status")])
+        result = await _call(toolset, "tasks", user, {"status": "done"})
+        served.append(
+            (_rows(result), _RecordingPermission.seen, _input_schema_of(toolset, "tasks"))
+        )
+
+    assert served[0] == served[1]
+    assert served[0][:2] == (
+        [{"name": "done"}],
+        {"kwargs": {"status": "done"}, "query_params": {"status": ["done"]}},
+    )
+
+
+@pytest.mark.parametrize(
+    ("selector", "url_kwarg"),
+    [
+        (tasks_in_status, UrlKwarg("status", default="open")),
+        (any_vendors, UrlKwarg("status")),
+    ],
+    ids=["default-fills-the-parameter", "not-an-input"],
+)
+def test_a_mount_url_kwarg_over_a_read_the_tool_does_not_take_is_refused_from_the_registry(
+    selector, url_kwarg
+):
+    """Where the tool does not take the name as an input -- a ``UrlKwarg`` with a
+    ``default`` fills the selector's ``status`` itself, and ``any_vendors`` has
+    none -- the spec's read is a channel of its own, and the registry refuses it
+    beside the ``UrlKwarg`` as one name on two channels. ``registry.specs()``
+    reads no channel off the spec, so it builds. The first case holds
+    ``_parameter_reads`` reading the tool's ``url_kwargs``: read without them,
+    the parameter would count as the model's and the registry would build."""
+    registry = _registry(
+        tasks=_name_list_spec(
+            selector, permission_classes=[_RecordingPermission], reads=(QueryParam("status"),)
+        )
+    )
+    with (
+        pytest.warns(DeprecationWarning),
+        pytest.raises(ValueError, match="both a QueryParam and a UrlKwarg on tool 'tasks'"),
+    ):
+        SpecToolset(registry, url_kwargs=[url_kwarg])
+    with pytest.warns(DeprecationWarning):
+        SpecToolset(registry.specs(), url_kwargs=[url_kwarg])
 
 
 def test_no_deprecation_is_raised_for_a_mount_declaring_no_channel():
@@ -504,14 +744,19 @@ def test_no_deprecation_is_raised_for_a_mount_declaring_no_channel():
         SpecToolset(_registry(vendors=_scoped_spec()), tool_server_arguments={"vendors": _SCOPED})
 
 
-def test_the_bindings_are_read_once_when_the_toolset_is_built():
+@pytest.mark.django_db(transaction=True)
+async def test_the_bindings_are_read_once_when_the_toolset_is_built():
     """A mapping changed after the toolset is built binds nothing new: the check
-    ran on what was passed, and an unchecked binding would reach every call."""
+    ran on what was passed, and an unchecked binding would reach every call. So
+    the call still serves the bound project, and the schema still omits it."""
+    user = await User.objects.acreate(username="u")
     bindings = {"vendors": _SCOPED}
     toolset = SpecToolset(_registry(vendors=_scoped_spec()), tool_server_arguments=bindings)
 
     bindings["vendors"] = ServerArguments()
+    result = await _call(toolset, "vendors", user, {"project_pk": "99"})
 
+    assert _rows(result) == [{"name": "project=7 draw=None"}]
     assert "project_pk" not in _input_schema_of(toolset, "vendors")["properties"]
 
 

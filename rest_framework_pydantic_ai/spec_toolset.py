@@ -1888,19 +1888,28 @@ def _warn_mount_channels(**declarations: object) -> None:
 
     Attributed to the first caller outside this package, so a toolset built
     through ``SpecCapability`` points at the line that built the capability
-    (``test_a_mount_level_channel_declaration_is_deprecated``).
+    (``test_a_mount_level_channel_declaration_is_deprecated``), and named for
+    the class that caller built: the module of the last frame of this package
+    the walk passes says which. Two conjuncts in the walk, each held by a test
+    that fails without it: ``f_back`` by
+    ``test_a_walk_reaching_the_bottom_of_the_stack_inside_this_package_still_warns``,
+    and ``_in_this_package``'s trailing dot by
+    ``test_a_package_whose_name_only_begins_like_this_one_is_the_caller``.
     """
     used = [name for name, value in declarations.items() if value]
     if not used:
         return
     level = 1
     frame = sys._getframe(1)
+    entry = frame
     while frame.f_back is not None and _in_this_package(frame):
+        entry = frame
         level += 1
         frame = frame.f_back
+    owner = _ENTRY_POINTS.get(entry.f_globals.get("__name__", ""), "SpecToolset")
     knobs = " and ".join(f"{name}=" for name in used)
     warnings.warn(
-        f"SpecToolset's {knobs} {'is' if len(used) == 1 else 'are'} deprecated and will be "
+        f"{owner}'s {knobs} {'is' if len(used) == 1 else 'are'} deprecated and will be "
         "removed in the next minor release. Declare each read on the spec, as "
         "reads=[QueryParam(...)] or reads=[UrlKwarg(...)], and build the toolset from the "
         "SpecRegistry the spec is registered in; to supply an argument's value, or to keep "
@@ -1908,6 +1917,12 @@ def _warn_mount_channels(**declarations: object) -> None:
         DeprecationWarning,
         stacklevel=level + 1,
     )
+
+
+# The public classes taking the deprecated knobs, by the module whose frame is
+# the last of this package's on the way out. ``SpecToolset``'s own module is
+# the default, so only the class that builds one is listed.
+_ENTRY_POINTS = {"rest_framework_pydantic_ai.spec_capability": "SpecCapability"}
 
 
 def _in_this_package(frame: FrameType) -> bool:
@@ -2007,6 +2022,10 @@ def _parameter_reads(
 
     Read off ``_caller_schema``, the reader the tool's schema and the shadow
     check are built from, so the three agree on which names are the model's.
+    That includes the tool's ``url_kwargs``: one with a ``default`` fills its
+    parameter, which is then not an input and leaves the spec's read a channel
+    of its own
+    (``test_a_mount_url_kwarg_over_a_read_the_tool_does_not_take_is_refused_from_the_registry``).
     A serializer field needs no case: drf-services refuses a service spec whose
     read names one when the spec compiles.
     """
@@ -3493,7 +3512,8 @@ def _apply_server_arguments(
     dropped = sorted(server.names() & args.keys())
     if dropped:
         logger.warning(
-            "Tool %r: dropped caller-supplied argument(s) %s, which the server supplies",
+            "Tool %r: dropped caller-supplied argument(s) %s, which tool_server_arguments "
+            "keeps from the model",
             label,
             ", ".join(dropped),
         )
