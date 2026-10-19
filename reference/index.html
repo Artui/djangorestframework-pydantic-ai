@@ -1586,7 +1586,7 @@ call missing both hears about the field on its next turn.</p>
 <p><strong>A list selector's result is a page, always.</strong> It comes back as
 <code>{"items": [...], "page": 1, "totalPages": N, "hasNext": bool}</code> — never a
 bare list — with at most
-<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.dispatch.paginate_output.DEFAULT_PAGE_SIZE"><code>DEFAULT_PAGE_SIZE</code></a>
+<a class="autorefs autorefs-external" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.dispatch.paginate_output.DEFAULT_PAGE_SIZE"><code>DEFAULT_PAGE_SIZE</code></a>
 rows unless <code>max_page_size</code> lowers it. That is the input contract this
 toolset has always published being honoured: <code>page</code> and <code>limit</code> were
 advertised on every list tool and the payload was a bare slice, so a model
@@ -1641,11 +1641,13 @@ per-run typed deps reach dispatch.</p>
 declaration site for a project exposing the same specs over more than
 one transport, so the agent reads the source MCP and the HTTP views
 read. <strong>Prefer the registry over <code>registry.specs()</code></strong>: an entry
-carries an
-<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/registry/#rest_framework_services.types.offline_contract.OfflineContract"><code>OfflineContract</code></a>
-and the flattened mapping does not, so a contract's <code>url_kwargs</code>,
-<code>query_params</code> and <code>field_audiences</code> are silently absent from a
-toolset built off the mapping. A filtered view is itself a registry, so several toolsets can
+answers its spec's <code>reads</code> as an
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/registry/#rest_framework_services.types.offline_contract.OfflineContract"><code>OfflineContract</code></a>,
+and the toolset reads channels off the entry, so a toolset built off
+the mapping advertises none of the spec's reads. drf-services still
+admits and routes a value sent under one of those names, but the
+model is not told it may send one. <code>field_audiences</code> is part of the
+spec's output declaration and is projected either way. A filtered view is itself a registry, so several toolsets can
 be projected from one declaration with no shared state
 (<code>SpecToolset(registry.by_tag("read"), id="reads")</code>). Only the
 names come from it; everything else here is transport-specific, which
@@ -1788,20 +1790,26 @@ context, for a spec that reports progress. Defaults to
                 <code>unknown_arguments</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="rest_framework_services.UnknownArguments" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.types.unknown_arguments.UnknownArguments">UnknownArguments</a></code>
+                  <code><a class="autorefs autorefs-external" title="django_service_specs.UnknownArguments" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.types.unknown_arguments.UnknownArguments">UnknownArguments</a></code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>What to do with a tool arg outside the spec's declared
 input set — a key the model invented. <code>UnknownArguments.REJECT</code>
-surfaces it as a <code>ModelRetry</code> so the model self-corrects,
-<code>IGNORE</code> drops it, <code>PASSTHROUGH</code> forwards it to the callable.
-Specs whose declared set is open (a <code>filter_set</code>, a <code>**kwargs</code>
-selector) are unaffected.</p>
+(the default) surfaces it as a <code>ModelRetry</code> so the model
+self-corrects, and <code>IGNORE</code> drops it. Under either, the key never
+reaches the callable, which drf-services hands only what its spec
+declares. A <code>filter_set</code>'s filters are declared names, so a key
+outside them and the selector's parameters is refused like any
+other; a selector taking a bare <code>**kwargs</code> declares no name, so
+nothing is refused and nothing undeclared is handed to it.
+<code>PASSTHROUGH</code> raises <code>ImproperlyConfigured</code> here: a tool call
+has no channel that carries an undeclared name through to the
+callable, and drf-services refuses it on every call.</p>
               </div>
             </td>
             <td>
-                  <code><span title="rest_framework_services.UnknownArguments.REJECT">REJECT</span></code>
+                  <code><span title="django_service_specs.UnknownArguments.REJECT">REJECT</span></code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -1818,7 +1826,13 @@ selector) are unaffected.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Read-shaping
+                <p><strong>Deprecated</strong>, with <code>tool_query_params</code>, <code>url_kwargs</code>
+and <code>tool_url_kwargs</code>: passing any of them warns with
+<code>DeprecationWarning</code>, and they will be removed in the next minor
+release. Declare each read on the spec, as <code>reads=[QueryParam(...)]</code>
+or <code>reads=[UrlKwarg(...)]</code>, and build the toolset from the
+<code>SpecRegistry</code>; for a value the model may not choose, use
+<code>tool_server_arguments</code>. Read-shaping
 <a class="autorefs autorefs-internal" title="QueryParam
 
 
@@ -1856,11 +1870,12 @@ toolset awareness of the library.</p>
               <div class="doc-md-description">
                 <p><code>query_params</code> for one tool only, keyed by tool
 name. A per-tool param overrides a toolset-wide one of the same name.</p>
-<p>Both are <strong>this mount's</strong> declarations, and both override the entry's
-own <code>OfflineContract</code> by name. Where a project runs more than one
-agent transport, the contract is the better home: the operation needs
-the identical params whichever transport calls it, and declaring them
-per mount is how two mounts come to disagree.</p>
+<p>Both are <strong>this mount's</strong> declarations, and both override by name
+the <code>QueryParam</code> reads the spec declares, which its registry
+entry's <code>OfflineContract</code> carries. Where a project runs more than
+one agent transport, the spec's <code>reads</code> are the better home: the
+operation needs the identical params whichever transport calls it,
+and declaring them per mount is how two mounts come to disagree.</p>
               </div>
             </td>
             <td>
@@ -1921,8 +1936,51 @@ and a <code>UrlKwarg</code> on one tool: a value cannot route to two channels.</
             <td>
               <div class="doc-md-description">
                 <p><code>url_kwargs</code> for one tool only, same override rule,
-and the same preference for the entry's <code>OfflineContract</code> where one
-exists.</p>
+and the same preference for the spec's own <code>UrlKwarg</code> reads where
+a registry carries the spec.</p>
+<p><strong>An override by name is true of what this toolset advertises,
+routes and defaults, and of nothing drf-services reads.</strong> The
+spec's own declaration still checks the call, so a mount loosening
+a spec's <code>required</code> read to optional advertises an argument the
+call is then refused without.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>tool_server_arguments</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Mapping">Mapping</span>[<span title="str">str</span>, <a class="autorefs autorefs-external" title="django_service_specs.ServerArguments" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.types.server_arguments.ServerArguments">ServerArguments</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Values the server supplies for a tool's
+arguments, and names it keeps from the model, keyed by tool name --
+a django-service-specs
+<a class="autorefs autorefs-external" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.types.server_arguments.ServerArguments"><code>ServerArguments</code></a>
+per tool. Each name is one the tool's spec declares: a selector or
+target-lookup parameter, or one of its <code>reads</code>. A name in
+<code>values</code> is bound: the call carries the server's value whatever
+the model sent, it satisfies a <code>required</code> parameter, and every
+reader of the call sees it -- a bound <code>UrlKwarg</code> read is on
+<code>view.kwargs</code>, a bound <code>QueryParam</code> on <code>request.query_params</code>.
+A <code>withheld</code> name is absent, so its declared default, or the
+callable's own, answers. Neither is advertised: both leave the
+tool's <code>properties</code> and <code>required</code>, and the instructions name
+neither. What the model sends under one is dropped before the call
+is checked, never refused, and logged at <code>WARNING</code> with the tool
+and the names, never the values. Checked when the toolset is built:
+a name the tool does not expose is refused with <code>ValueError</code>,
+and a binding <code>check_server_arguments</code> refuses -- an undeclared
+name, a seed or provider's name, a withheld name no call could do
+without, a bound value its parameter refuses -- with
+<code>ImproperlyConfigured</code> naming the tool. Static, like the tool
+definitions: build a toolset per scope, as a run scoped to one
+project builds one with that project bound.</p>
               </div>
             </td>
             <td>
@@ -2231,12 +2289,12 @@ extending the shared default:
                 <code>pool_seeds</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="rest_framework_services.PoolSeeds" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.pool_seeds.PoolSeeds">PoolSeeds</a></code>
+                  <code><a class="autorefs autorefs-external" title="django_service_specs.PoolSeeds" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.pool.pool_seeds.PoolSeeds">PoolSeeds</a></code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>The project's own always-available pool seeds -- a
-<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.pool_seeds.PoolSeeds"><code>PoolSeeds</code></a>
+<a class="autorefs autorefs-external" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.pool.pool_seeds.PoolSeeds"><code>PoolSeeds</code></a>
 registry of names such as a tenant, a locale or a clock, which over
 HTTP hang off <code>request</code> and off it have no channel. Handed to every
 dispatch this toolset makes, so a service, a selector or an
@@ -2255,7 +2313,7 @@ what varies per call belongs in its resolver, which declares
               </div>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="rest_framework_services.DEFAULT_POOL_SEEDS" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.pool_seeds.DEFAULT_POOL_SEEDS">DEFAULT_POOL_SEEDS</a></code>
+                  <code><a class="autorefs autorefs-external" title="django_service_specs.DEFAULT_POOL_SEEDS" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.pool.pool_seeds.DEFAULT_POOL_SEEDS">DEFAULT_POOL_SEEDS</a></code>
             </td>
           </tr>
       </tbody>
@@ -2277,16 +2335,39 @@ what varies per call belongs in its resolver, which declares
             </td>
             <td>
               <div class="doc-md-description">
-                <p>A spec has no <code>permission_classes</code> and
-<code>require_permissions</code> is set, a <code>QueryParam</code> / <code>UrlKwarg</code> on
-a <code>many=True</code> spec's tool -- declared here or on its entry's
-<code>OfflineContract</code> -- shares the name its list travels under, one
-is named after a registered pool seed, a selector takes a parameter
-that a list tool's <code>page</code> / <code>limit</code> or one of the tool's
-<code>QueryParam</code> declarations takes out of the call before it runs, or
-<code>instructions=</code> is given
-beside a <code>conventions=</code> that changes a line of the block it
-replaces.</p>
+                <p><code>unknown_arguments</code> is neither <code>REJECT</code> nor
+<code>IGNORE</code>, a spec has no <code>permission_classes</code> and
+<code>require_permissions</code> is set, a <code>QueryParam</code> / <code>UrlKwarg</code>
+declared here on a <code>many=True</code> spec's tool shares the name its
+list travels under (a spec's own read of that name is refused by
+drf-services when the spec compiles), one is named after a
+registered pool seed, a selector takes a parameter that a list
+tool's <code>page</code> / <code>limit</code> or a <code>QueryParam</code> declared here takes
+out of the call before it runs (a spec's own <code>QueryParam</code> read of
+an input's name is not one: it is where the input comes from, and
+is served as the input), <code>tool_server_arguments</code> names something
+django-service-specs' <code>check_server_arguments</code> refuses for the
+tool's spec or withholds a name a <code>UrlKwarg</code> declared here
+requires, <code>instructions=</code> is given beside a
+<code>conventions=</code> that changes a line of the block it replaces, or
+drf-services refuses a spec while the toolset compiles it, reads
+its input schema or projects its output -- a <code>SelectorSpec</code> with
+no <code>selector</code>, a malformed <code>metadata["json_schema"]</code> fragment, a
+<code>field_audiences</code> key naming no output field, or two output fields
+marked <code>FieldMarking.label()</code>. drf-services' message is prefixed
+<code>SpecToolset tool '&lt;name&gt;':</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A value in <code>specs</code> is not a drf-services <code>ServiceSpec</code>
+or <code>SelectorSpec</code> -- a django-service-specs spec in a registry,
+say. The message names the tool and the constructors to use.</p>
               </div>
             </td>
           </tr>
@@ -2297,7 +2378,8 @@ replaces.</p>
             <td>
               <div class="doc-md-description">
                 <p>A tool name is outside <code>^[a-zA-Z0-9_-]{1,64}$</code>, a per-tool
-mapping names a tool this toolset does not expose, or one name is
+mapping, <code>tool_server_arguments</code> included, names a tool this
+toolset does not expose, or one name is
 registered on both parameter channels.</p>
               </div>
             </td>
@@ -2827,7 +2909,7 @@ written against one transport therefore reads the same names under the
 other.</p>
 <p>Note what the <strong>default pool</strong> leaves out, because it is the question this
 seam attracts: drf-services'
-<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.types.dispatch_result.DispatchResult"><code>DispatchResult.service_result</code></a>
+<a class="autorefs autorefs-external" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.dispatch.dispatch_result.DispatchResult"><code>DispatchResult.service_result</code></a>
 -- the flags carrier an upsert's <code>created</code> rides on. The HTTP path does
 not put it in this pool either; it feeds a callable <code>success_status</code> and
 a <code>response_finalizer</code>, both of which are status-code machinery a
@@ -2860,12 +2942,12 @@ the upsert that wants <code>created</code> is exactly the spec that re-fetches.<
                 <code>dispatch_result</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="rest_framework_services.DispatchResult" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.types.dispatch_result.DispatchResult">DispatchResult</a> | None</code>
+                  <code><a class="autorefs autorefs-external" title="django_service_specs.DispatchResult" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.dispatch.dispatch_result.DispatchResult">DispatchResult</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>The dispatch's full
-<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/dispatch/#rest_framework_services.types.dispatch_result.DispatchResult"><code>DispatchResult</code></a>.
+<a class="autorefs autorefs-external" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.dispatch.dispatch_result.DispatchResult"><code>DispatchResult</code></a>.
 Keyword-only, and <strong>always supplied by this toolset</strong> -- an
 override that does not accept it raises <code>TypeError</code> on the next
 tool call. That break is deliberate: the parameter is the only
@@ -3009,7 +3091,9 @@ each does; the safety-relevant ones are <code>require_permissions</code>,
                 <p>As <code>SpecToolset</code>, including a
 <code>SpecRegistry</code>
 or a filtered view of one, so a project declaring its specs once can
-project several capabilities from them.</p>
+project several capabilities from them. Every entry must be a
+drf-services spec: a django-service-specs one raises <code>TypeError</code>
+when the capability is built, as it does for the toolset.</p>
               </div>
             </td>
             <td>
@@ -3072,6 +3156,24 @@ which relabels individual <em>tools</em>.</p>
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>unknown_arguments</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="django_service_specs.UnknownArguments" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.types.unknown_arguments.UnknownArguments">UnknownArguments</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>As <code>SpecToolset</code>: <code>REJECT</code> (the default) or
+<code>IGNORE</code>. <code>PASSTHROUGH</code> raises <code>ImproperlyConfigured</code> when the
+capability is built, since the toolset it owns is built then.</p>
+              </div>
+            </td>
+            <td>
+                  <code><span title="django_service_specs.UnknownArguments.REJECT">REJECT</span></code>
             </td>
           </tr>
       </tbody>
@@ -3586,10 +3688,14 @@ text.</p>
 <p>Generalizes the built-in <code>page</code> / <code>limit</code> / <code>order</code> list-selector
 arguments to any read-shaping param a serializer reads off
 <code>request.query_params</code> — django-restql field selection (<code>?query=</code> /
-<code>?fields=</code>), or a custom serializer that branches on the query string. The
-transport advertises it, pops it from the arguments, and hands it to
-<code>build_offline_context(query_params=…)</code>; it never reaches the spec as an
-input, so the unknown-argument policy never flags it.</p>
+<code>?fields=</code>), or a custom serializer that branches on the query string.</p>
+<p>Declared in a spec's <code>reads</code>, it is one of the spec's parameters, of its
+<code>type</code> and with its <code>default</code>: the caller's value is checked as declared,
+handed by name to a selector, service or target lookup that takes the name,
+and never an unexpected argument. Over HTTP it is read from the request's
+query string alone, so a body value of that name is dropped; off HTTP it is
+the caller's argument, and is put onto the request's <code>query_params</code> where
+they lack it, so a serializer or provider reading them finds it.</p>
 <p>A <a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/types/#rest_framework_services.types.selector_spec.SelectorSpec"><code>SelectorSpec</code></a>
 <code>filter_set</code> does <strong>not</strong> need this — its fields are already generated into the
 schema and flow through as ordinary <code>params</code>.</p>

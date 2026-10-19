@@ -645,22 +645,25 @@ advertising a field the render drops would be worse than no schema at all: the
 model asks for it, gets nothing back, and is told nothing about why.</p>
 <h2 id="mark-the-fields">Mark the fields<a class="headerlink" href="#mark-the-fields" title="Permanent link">&para;</a></h2>
 <p>The marking is <code>FieldMarking</code>, from
-<a href="https://artui.github.io/djangorestframework-services/">djangorestframework-services</a>,
-in DRF's per-field <code>style</code> bag. It reaches a <code>ModelSerializer</code> through
+<a href="https://artui.github.io/django-service-specs/">django-service-specs</a>, in DRF's
+per-field <code>style</code> bag under
+<a href="https://artui.github.io/djangorestframework-services/">djangorestframework-services</a>'
+<code>MARKING</code> key. It reaches a <code>ModelSerializer</code> through
 <code>Meta.extra_kwargs</code>, so nothing has to be redeclared:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework</span><span class="w"> </span><span class="kn">import</span> <span class="n">serializers</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_services</span><span class="w"> </span><span class="kn">import</span> <span class="n">MARKING</span><span class="p">,</span> <span class="n">FieldMarking</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">django_service_specs</span><span class="w"> </span><span class="kn">import</span> <span class="n">FieldMarking</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_services</span><span class="w"> </span><span class="kn">import</span> <span class="n">MARKING</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="k">class</span><span class="w"> </span><span class="nc">WidgetSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        <span class="n">model</span> <span class="o">=</span> <span class="n">Widget</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;id&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="s2">&quot;price&quot;</span><span class="p">,</span> <span class="s2">&quot;status&quot;</span><span class="p">]</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">extra_kwargs</span> <span class="o">=</span> <span class="p">{</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>            <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">MARKING</span><span class="p">:</span> <span class="n">FieldMarking</span><span class="o">.</span><span class="n">handle</span><span class="p">(</span><span class="s2">&quot;Widget handle.&quot;</span><span class="p">)}},</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            <span class="s2">&quot;price&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">MARKING</span><span class="p">:</span> <span class="n">FieldMarking</span><span class="o">.</span><span class="n">hidden</span><span class="p">()}},</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">MARKING</span><span class="p">:</span> <span class="n">FieldMarking</span><span class="o">.</span><span class="n">label</span><span class="p">()}},</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        <span class="p">}</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">class</span><span class="w"> </span><span class="nc">WidgetSerializer</span><span class="p">(</span><span class="n">serializers</span><span class="o">.</span><span class="n">ModelSerializer</span><span class="p">):</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="k">class</span><span class="w"> </span><span class="nc">Meta</span><span class="p">:</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        <span class="n">model</span> <span class="o">=</span> <span class="n">Widget</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="n">fields</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;id&quot;</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">,</span> <span class="s2">&quot;price&quot;</span><span class="p">,</span> <span class="s2">&quot;status&quot;</span><span class="p">]</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        <span class="n">extra_kwargs</span> <span class="o">=</span> <span class="p">{</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>            <span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">MARKING</span><span class="p">:</span> <span class="n">FieldMarking</span><span class="o">.</span><span class="n">handle</span><span class="p">(</span><span class="s2">&quot;Widget handle.&quot;</span><span class="p">)}},</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>            <span class="s2">&quot;price&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">MARKING</span><span class="p">:</span> <span class="n">FieldMarking</span><span class="o">.</span><span class="n">hidden</span><span class="p">()}},</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>            <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="p">{</span><span class="s2">&quot;style&quot;</span><span class="p">:</span> <span class="p">{</span><span class="n">MARKING</span><span class="p">:</span> <span class="n">FieldMarking</span><span class="o">.</span><span class="n">label</span><span class="p">()}},</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        <span class="p">}</span>
 </span></code></pre></div>
 <p>Nothing changes at the toolset. A tool rendering through that serializer returns:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span><span class="s2">&quot;items&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;id&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="s2">&quot;name&quot;</span><span class="p">:</span> <span class="s2">&quot;Sprocket&quot;</span><span class="p">,</span> <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;In stock&quot;</span><span class="p">}],</span> <span class="s2">&quot;page&quot;</span><span class="p">:</span> <span class="mi">1</span><span class="p">,</span> <span class="o">...</span><span class="p">}</span>
@@ -686,17 +689,20 @@ reword, or drop, through
 <p>The serializer is the declaration and stays authoritative. The exception is a
 tool whose whole job is handing back something the others drop — a lookup
 returning the identifier a list view hides. That is an override, and it goes on
-the registry entry:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_services</span><span class="w"> </span><span class="kn">import</span> <span class="n">OfflineContract</span><span class="p">,</span> <span class="n">FieldMarking</span>
+the spec, as <code>field_audiences=</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">replace</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="s2">&quot;lookup_widget&quot;</span><span class="p">,</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">specs</span><span class="o">.</span><span class="n">lookup_widget</span><span class="p">,</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">agent_contract</span><span class="o">=</span><span class="n">OfflineContract</span><span class="p">(</span><span class="n">field_audiences</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;price&quot;</span><span class="p">:</span> <span class="n">FieldMarking</span><span class="p">()}),</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">)</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">django_service_specs</span><span class="w"> </span><span class="kn">import</span> <span class="n">FieldMarking</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="s2">&quot;lookup_widget&quot;</span><span class="p">,</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">replace</span><span class="p">(</span><span class="n">specs</span><span class="o">.</span><span class="n">lookup_widget</span><span class="p">,</span> <span class="n">field_audiences</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;price&quot;</span><span class="p">:</span> <span class="n">FieldMarking</span><span class="p">()}),</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">)</span>
 </span></code></pre></div>
-<p><code>SpecToolset(registry)</code> reads it, and so does an MCP server registering the same
-entry — which is the reason it lives there rather than in either constructor.
+<p>The marking becomes part of the spec's output declaration, so <code>SpecToolset</code>
+projects it whether it is handed the registry or <code>registry.specs()</code>, and so does
+an MCP server registering the same spec — which is the reason it lives there
+rather than in either constructor.
 <code>FieldMarking</code>'s axis is <em>audience</em>, not transport: an in-process toolset and an
 MCP server want the same thing as each other and something different from a
 browser, so a field hidden from one agent caller and visible to another is a bug
@@ -704,7 +710,12 @@ you find in a transcript rather than in a test.</p>
 <p>A project that genuinely wants two agent audiences with different visibility
 does not want this. It wants two serializers.</p>
 <p>Two fields left claiming <code>FieldMarking.label()</code> raises <code>ImproperlyConfigured</code>
-naming the tool, at construction: a record has one name.</p>
+when the toolset is built (<code>SpecToolset tool 'list_widgets': Output: both 'id'
+and 'name' are marked FieldMarking.label()...</code>): a record has one name. A
+<code>field_audiences</code> key naming a field the output does not carry is refused the
+same way, rather than projecting nothing. Both refusals are drf-services', from
+the spec's output declaration; the toolset prefixes them with the tool, since
+drf-services names only the fields.</p>
 <h2 id="what-it-costs">What it costs<a class="headerlink" href="#what-it-costs" title="Permanent link">&para;</a></h2>
 <p>Nothing per call. The markings are pure in the serializer class, like the tool
 schemas, so <code>SpecToolset</code> resolves them once at construction and reuses them.</p>

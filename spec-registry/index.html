@@ -411,10 +411,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-the-entry-carries-for-an-agent" class="md-nav__link">
+  <a href="#what-the-spec-declares-for-an-agent" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What the entry carries for an agent
+        What the spec declares for an agent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#arguments-the-server-supplies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Arguments the server supplies
       
     </span>
   </a>
@@ -429,6 +440,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="What stays per toolset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#deprecated-channel-declarations-on-the-toolset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deprecated: channel declarations on the toolset
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -619,10 +647,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-the-entry-carries-for-an-agent" class="md-nav__link">
+  <a href="#what-the-spec-declares-for-an-agent" class="md-nav__link">
     <span class="md-ellipsis">
       
-        What the entry carries for an agent
+        What the spec declares for an agent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#arguments-the-server-supplies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Arguments the server supplies
       
     </span>
   </a>
@@ -637,6 +676,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="What stays per toolset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#deprecated-channel-declarations-on-the-toolset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Deprecated: channel declarations on the toolset
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -690,7 +746,7 @@ site. <code>SpecToolset</code> and <code>SpecCapability</code> accept one <stron
 mapping</strong> — there is no separate constructor to learn.</p>
 <h2 id="declare-once">Declare once<a class="headerlink" href="#declare-once" title="Permanent link">&para;</a></h2>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># orders/registry.py</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_services</span><span class="w"> </span><span class="kn">import</span> <span class="n">SpecRegistry</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">django_service_specs</span><span class="w"> </span><span class="kn">import</span> <span class="n">SpecRegistry</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">registry</span> <span class="o">=</span> <span class="n">SpecRegistry</span><span class="p">()</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
@@ -719,9 +775,14 @@ mapping</strong> — there is no separate constructor to learn.</p>
 </span></code></pre></div>
 <p>That is the whole change. Each entry becomes one tool, named as it is in the
 registry, in registration order.</p>
+<p>The registry is django-service-specs', and it accepts any spec that compiles to
+one of the kernel's. The toolset dispatches through drf-services, so every entry
+it is handed must be a <code>rest_framework_services.ServiceSpec</code> or <code>SelectorSpec</code>.
+A django-service-specs spec raises <code>TypeError</code> naming the tool when the toolset
+is built; call one through <code>django_service_specs.dispatch</code> instead.</p>
 <p>Pass the <strong>registry</strong>, not <code>registry.specs()</code>. The mapping is what the registry
 holds minus everything else the entry carries, and one of those things — the
-<a href="#what-the-entry-carries-for-an-agent">agent contract</a> — is read here.</p>
+<a href="#what-the-spec-declares-for-an-agent">agent contract</a> — is read here.</p>
 <p>The same goes for the capability:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">SpecCapability</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
@@ -762,50 +823,178 @@ bare <code>- {id}</code> when there is not, so a few undescribed capabilities le
 model choosing between names alone — and it will either guess or load all of
 them, which is the cost deferring was meant to avoid. <code>description</code> names the
 <em>capability</em>; the separate <code>descriptions</code> mapping relabels individual tools.</p>
-<h2 id="what-the-entry-carries-for-an-agent">What the entry carries for an agent<a class="headerlink" href="#what-the-entry-carries-for-an-agent" title="Permanent link">&para;</a></h2>
-<p>An entry may hold an
-<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/registry/#rest_framework_services.types.offline_contract.OfflineContract"><code>OfflineContract</code></a>:
-what a caller with <strong>no HTTP request</strong> has to be told, because the URLconf and
-query string tell an HTTP one for free.</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="s2">&quot;list_orders&quot;</span><span class="p">,</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">specs</span><span class="o">.</span><span class="n">list_orders</span><span class="p">,</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">tags</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;public&quot;</span><span class="p">),</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">agent_contract</span><span class="o">=</span><span class="n">OfflineContract</span><span class="p">(</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">url_kwargs</span><span class="o">=</span><span class="p">(</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;tenant_pk&quot;</span><span class="p">),),</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>        <span class="n">query_params</span><span class="o">=</span><span class="p">(</span><span class="n">QueryParam</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;fields&quot;</span><span class="p">),),</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="p">),</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="p">)</span>
+<h2 id="what-the-spec-declares-for-an-agent">What the spec declares for an agent<a class="headerlink" href="#what-the-spec-declares-for-an-agent" title="Permanent link">&para;</a></h2>
+<p>A spec declares what a caller with <strong>no HTTP request</strong> has to be told, because
+the URLconf and query string tell an HTTP one for free: <code>reads=</code> names the route
+captures and query values it reads, and <code>field_audiences=</code> marks output fields
+for an agent. Its registry entry answers both as one
+<a class="autorefs autorefs-external" href="https://artui.github.io/djangorestframework-services/reference/registry/#rest_framework_services.types.offline_contract.OfflineContract"><code>OfflineContract</code></a>
+(<code>entry.agent_contract</code>).</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">dataclasses</span><span class="w"> </span><span class="kn">import</span> <span class="n">replace</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">rest_framework_pydantic_ai</span><span class="w"> </span><span class="kn">import</span> <span class="n">QueryParam</span><span class="p">,</span> <span class="n">UrlKwarg</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="s2">&quot;list_orders&quot;</span><span class="p">,</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="n">replace</span><span class="p">(</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="n">specs</span><span class="o">.</span><span class="n">list_orders</span><span class="p">,</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>        <span class="n">reads</span><span class="o">=</span><span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;tenant_pk&quot;</span><span class="p">),</span> <span class="n">QueryParam</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;fields&quot;</span><span class="p">)],</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="p">),</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="n">tags</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;read&quot;</span><span class="p">,</span> <span class="s2">&quot;public&quot;</span><span class="p">),</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="p">)</span>
 </span></code></pre></div>
-<p><code>SpecToolset</code> reads it, and so does an MCP server's <code>register_specs</code>. That is
-the point of putting it there: an operation needs the <em>identical</em> description of
-the absent request whichever agent transport calls it, so declaring it per mount
-is how two mounts come to disagree. <code>field_audiences</code> rides on the same object,
-for the one tool that must return what its siblings hide.</p>
+<p><code>replace</code> is for a spec declared elsewhere; a spec you write declares <code>reads=</code>
+in its own constructor. <code>SpecRegistry.register</code> takes no contract of its own:
+the spec is the one place it is said.</p>
+<p><code>SpecToolset</code> reads the contract off the entry, and so does an MCP server's
+<code>register_specs</code>. That is the point of putting it there: an operation needs the
+<em>identical</em> description of the absent request whichever agent transport calls
+it, so declaring it per mount is how two mounts come to disagree.
+<code>field_audiences</code> is part of the spec's output declaration, so every projection
+of the spec carries it, whichever transport or mapping it is reached through.</p>
 <p><strong>Pass the registry, not <code>registry.specs()</code>.</strong> The mapping is the flattened
-<code>name -&gt; spec</code> view, and a contract is on the entry rather than the spec — so a
-toolset built from the mapping silently has none of it.</p>
+<code>name -&gt; spec</code> view, and the toolset reads channels off the entry, so a toolset
+built from the mapping advertises none of the spec's <code>reads</code>. The spec still
+carries them, so a value the model sends under one of those names is admitted
+and routed onto the request as drf-services routes any caller's, but a model is
+not told it may send one.</p>
+<p><strong>A read naming an input declares where the input comes from.</strong> A <code>QueryParam</code>
+read naming a parameter the spec's selector takes, such as
+<code>reads=[QueryParam("status")]</code> on a selector taking <code>status</code>, a <code>filter_set</code>
+field, or a parameter of a service's target lookup, is not a second argument
+beside it. The tool
+advertises the parameter once, as the selector declares it, and leaves its
+value in the call, where drf-services hands it to the parameter and puts it on
+<code>request.query_params</code> both. <code>SpecToolset(registry)</code> and
+<code>SpecToolset(registry.specs())</code> build it and serve it alike.</p>
+<p>A <code>QueryParam</code> of that name passed to the toolset's own <code>query_params=</code> or
+<code>tool_query_params=</code> is still refused when the toolset is built, a re-declaration
+of the spec's read included: the toolset takes such a value out of the call and
+routes it to the query string alone, so the parameter would never receive it.
+A <code>UrlKwarg</code> of that name with no <code>default</code>, passed to <code>url_kwargs=</code> or
+<code>tool_url_kwargs=</code>, is built: it carries the input's value onto <code>view.kwargs</code>,
+and the spec's read puts it on <code>request.query_params</code>, from the registry and from
+<code>registry.specs()</code> alike. Two pairings still differ between the routes. A
+<code>UrlKwarg</code> with a <code>default</code> fills the parameter itself, so the tool no longer
+takes the name as an input, and a <code>UrlKwarg</code> may name a read the tool never took
+as one; in both, the registry refuses the spec's read beside the <code>UrlKwarg</code> with
+<code>ValueError</code>, as one name on two channels, while <code>registry.specs()</code>, which
+advertises none of the spec's reads, builds the toolset.</p>
+<h2 id="arguments-the-server-supplies">Arguments the server supplies<a class="headerlink" href="#arguments-the-server-supplies" title="Permanent link">&para;</a></h2>
+<p>Some arguments are not the model's to choose. An agent run scoped to one
+project should not be able to list another project's rows by sending a
+different <code>project_pk</code>, and a model asked for an identifier it cannot know
+tends to invent one or send the parameter's name. <code>tool_server_arguments</code>
+answers for such names per tool, with django-service-specs'
+<a class="autorefs autorefs-external" href="https://artui.github.io/django-service-specs/reference/#django_service_specs.types.server_arguments.ServerArguments"><code>ServerArguments</code></a>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">django_service_specs</span><span class="w"> </span><span class="kn">import</span> <span class="n">ServerArguments</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">registry</span><span class="p">,</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">tool_server_arguments</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>        <span class="s2">&quot;list_document_vendors&quot;</span><span class="p">:</span> <span class="n">ServerArguments</span><span class="p">(</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>            <span class="n">values</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;project_pk&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">(</span><span class="n">document</span><span class="o">.</span><span class="n">project_id</span><span class="p">)},</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>            <span class="n">withheld</span><span class="o">=</span><span class="nb">frozenset</span><span class="p">({</span><span class="s2">&quot;draw_request_pk&quot;</span><span class="p">}),</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>        <span class="p">),</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    <span class="p">},</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="p">)</span>
+</span></code></pre></div>
+<ul>
+<li><strong>A bound name</strong> (<code>values</code>) carries the server's value on every call. It
+  satisfies a <code>required</code> parameter, and every reader of the call sees the one
+  value: a bound <code>UrlKwarg</code> read is on <code>view.kwargs</code>, where a permission class
+  or a <code>kwargs=</code> provider finds it, a bound <code>QueryParam</code> read on
+  <code>request.query_params</code>, and the selector receives it as its parameter.</li>
+<li><strong>A withheld name</strong> is absent from every call, so the read's declared default,
+  or the callable's own, answers. Withholding the other names of an either-or
+  scope is how a tool taking a project <em>or</em> a draw request is held to the
+  project.</li>
+<li><strong>Neither is advertised.</strong> Both leave the tool's <code>properties</code> and <code>required</code>,
+  and the instructions name neither. If the model sends one anyway, its value
+  is dropped before the call is checked, never refused, so a guess costs no
+  retry, and the toolset logs the tool and the names at <code>WARNING</code>, never the
+  values.</li>
+</ul>
+<p>Each name must be one the tool's spec declares: a selector or target-lookup
+parameter, or one of its <code>reads</code>. The toolset checks every binding when it is
+built, with django-service-specs' <code>check_server_arguments</code> and the toolset's
+own <code>pool_seeds</code>, and raises <code>ImproperlyConfigured</code> naming the tool for a name
+the spec does not declare, a name a pool seed or a typed <code>kwargs=</code> provider
+fills, a withheld name no call could do without, or a bound value its
+parameter refuses. A key naming a tool the toolset does not expose raises
+<code>ValueError</code>, as every per-tool mapping does.</p>
+<p>The bindings are fixed when the toolset is built, like its tool definitions.
+For a per-run scope, build a toolset per run, from the run's scope. A tool
+counts as scoped by the run only when the run binds one of the scope names it
+reads: its other optional scope reads are then withheld too, so the model
+cannot widen the scope through a sibling, while a required one the run does
+not bind stays the model's to send, since withheld no call could supply it. A
+tool reading only scope names the run does not bind gets no binding and keeps
+them all:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">SCOPE_NAMES</span> <span class="o">=</span> <span class="nb">frozenset</span><span class="p">({</span><span class="s2">&quot;project_pk&quot;</span><span class="p">,</span> <span class="s2">&quot;draw_request_pk&quot;</span><span class="p">,</span> <span class="s2">&quot;document_pk&quot;</span><span class="p">})</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="k">def</span><span class="w"> </span><span class="nf">scope_bindings</span><span class="p">(</span><span class="n">registry</span><span class="p">,</span> <span class="n">scope</span><span class="p">):</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Each tool the run&#39;s scope reaches: the bound names, and optional siblings withheld.&quot;&quot;&quot;</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>    <span class="n">bindings</span> <span class="o">=</span> <span class="p">{}</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>    <span class="k">for</span> <span class="n">entry</span> <span class="ow">in</span> <span class="n">registry</span><span class="o">.</span><span class="n">all</span><span class="p">():</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>        <span class="n">reads</span> <span class="o">=</span> <span class="p">[</span><span class="n">read</span> <span class="k">for</span> <span class="n">read</span> <span class="ow">in</span> <span class="n">entry</span><span class="o">.</span><span class="n">spec</span><span class="o">.</span><span class="n">reads</span> <span class="k">if</span> <span class="n">read</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="n">SCOPE_NAMES</span><span class="p">]</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>        <span class="n">values</span> <span class="o">=</span> <span class="p">{</span><span class="n">read</span><span class="o">.</span><span class="n">name</span><span class="p">:</span> <span class="n">scope</span><span class="p">[</span><span class="n">read</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="k">for</span> <span class="n">read</span> <span class="ow">in</span> <span class="n">reads</span> <span class="k">if</span> <span class="n">read</span><span class="o">.</span><span class="n">name</span> <span class="ow">in</span> <span class="n">scope</span><span class="p">}</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>        <span class="k">if</span> <span class="ow">not</span> <span class="n">values</span><span class="p">:</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>            <span class="k">continue</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>        <span class="n">bindings</span><span class="p">[</span><span class="n">entry</span><span class="o">.</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">ServerArguments</span><span class="p">(</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>            <span class="n">values</span><span class="o">=</span><span class="n">values</span><span class="p">,</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>            <span class="c1"># A QueryParam read has no ``required``; a UrlKwarg read may.</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>            <span class="n">withheld</span><span class="o">=</span><span class="nb">frozenset</span><span class="p">(</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>                <span class="n">read</span><span class="o">.</span><span class="n">name</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>                <span class="k">for</span> <span class="n">read</span> <span class="ow">in</span> <span class="n">reads</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>                <span class="k">if</span> <span class="n">read</span><span class="o">.</span><span class="n">name</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">values</span> <span class="ow">and</span> <span class="ow">not</span> <span class="nb">getattr</span><span class="p">(</span><span class="n">read</span><span class="p">,</span> <span class="s2">&quot;required&quot;</span><span class="p">,</span> <span class="kc">False</span><span class="p">)</span>
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>            <span class="p">),</span>
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>        <span class="p">)</span>
+</span><span id="__span-7-21"><a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>    <span class="k">return</span> <span class="n">bindings</span>
+</span><span id="__span-7-22"><a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>
+</span><span id="__span-7-23"><a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>
+</span><span id="__span-7-24"><a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a><span class="n">toolset</span> <span class="o">=</span> <span class="n">SpecToolset</span><span class="p">(</span><span class="n">registry</span><span class="p">,</span> <span class="n">tool_server_arguments</span><span class="o">=</span><span class="n">scope_bindings</span><span class="p">(</span><span class="n">registry</span><span class="p">,</span> <span class="n">scope</span><span class="p">))</span>
+</span></code></pre></div>
+<p><code>SpecCapability</code> takes the same keyword.</p>
 <h2 id="what-stays-per-toolset">What stays per toolset<a class="headerlink" href="#what-stays-per-toolset" title="Permanent link">&para;</a></h2>
 <p>The rest of <code>SpecToolset</code>'s signature, because it is genuinely this mount's:
 <code>get_user</code>, <code>unknown_arguments</code>, <code>max_retries</code>, the result-size and page
 ceilings. A publicly exposed MCP endpoint and an in-process toolset carry
 different risk, so one shared number would be a regression rather than a
 simplification.</p>
+<h3 id="deprecated-channel-declarations-on-the-toolset">Deprecated: channel declarations on the toolset<a class="headerlink" href="#deprecated-channel-declarations-on-the-toolset" title="Permanent link">&para;</a></h3>
 <p>The <a href="../reference/#rest_framework_pydantic_ai.QueryParam"><code>QueryParam</code></a> /
 <a href="../reference/#rest_framework_pydantic_ai.UrlKwarg"><code>UrlKwarg</code></a> constructor
-arguments remain, and override the entry's contract by name:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">SpecToolset</span><span class="p">(</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="n">registry</span><span class="o">.</span><span class="n">by_tag</span><span class="p">(</span><span class="s2">&quot;read&quot;</span><span class="p">),</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">query_params</span><span class="o">=</span><span class="p">[</span><span class="n">QueryParam</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;fields&quot;</span><span class="p">)],</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">tool_url_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;list_orders&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;tenant_pk&quot;</span><span class="p">)]},</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="p">)</span>
+arguments, <code>query_params=</code>, <code>tool_query_params=</code>, <code>url_kwargs=</code> and
+<code>tool_url_kwargs=</code>, are deprecated. Passing any of them warns with
+<code>DeprecationWarning</code>, and they will be removed in the next minor release. They
+declare at one mount what the spec's <code>reads</code> declare for every transport, which
+is how two mounts come to disagree about one operation. Move each onto the spec
+and build the toolset from the registry:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Before</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">SpecToolset</span><span class="p">(</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">registry</span><span class="o">.</span><span class="n">by_tag</span><span class="p">(</span><span class="s2">&quot;read&quot;</span><span class="p">),</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">query_params</span><span class="o">=</span><span class="p">[</span><span class="n">QueryParam</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;fields&quot;</span><span class="p">)],</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">tool_url_kwargs</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;list_orders&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;tenant_pk&quot;</span><span class="p">)]},</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="p">)</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="c1"># After</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="n">registry</span><span class="o">.</span><span class="n">register</span><span class="p">(</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="s2">&quot;list_orders&quot;</span><span class="p">,</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="n">replace</span><span class="p">(</span><span class="n">specs</span><span class="o">.</span><span class="n">list_orders</span><span class="p">,</span> <span class="n">reads</span><span class="o">=</span><span class="p">[</span><span class="n">UrlKwarg</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;tenant_pk&quot;</span><span class="p">),</span> <span class="n">QueryParam</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;fields&quot;</span><span class="p">)]),</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="p">)</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="n">SpecToolset</span><span class="p">(</span><span class="n">registry</span><span class="o">.</span><span class="n">by_tag</span><span class="p">(</span><span class="s2">&quot;read&quot;</span><span class="p">))</span>
 </span></code></pre></div>
-<p>They are the right tool for a toolset with no registry behind it, and for a
-mount that genuinely differs. Where a project runs a second agent transport,
-prefer the contract.</p>
-<p>Per-tool maps like <code>tool_query_params</code> / <code>tool_url_kwargs</code> key off the registry's
-names, and an unknown key still raises — a typo is a configuration error, not a
-silent no-op.</p>
+<p>A <code>UrlKwarg(default=...)</code> used to keep a value the model should not choose was
+only ever a default: the model could override it, and it stayed advertised.
+That use moves to <a href="#arguments-the-server-supplies"><code>tool_server_arguments</code></a>.</p>
+<p>Until they go, they behave as before. Each overrides the entry's declaration of
+the same name, and the override is true of what the toolset advertises, routes
+and defaults, and of nothing drf-services reads: the spec's own declaration
+still checks the call. A mount loosening a spec's <code>required</code> read to optional
+advertises an argument the call is then refused without. Per-tool maps key off
+the registry's names, and an unknown key still raises.</p>
 <h2 id="names">Names<a class="headerlink" href="#names" title="Permanent link">&para;</a></h2>
 <p>Registry names are free-form, but tool names are not: model providers constrain
 them to <code>[a-zA-Z0-9_-]{1,64}</code>. A registry name outside that shape raises when the
