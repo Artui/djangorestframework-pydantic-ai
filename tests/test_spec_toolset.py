@@ -39,7 +39,7 @@ from django_service_specs import (
     UnknownArguments,
     UnsetType,
 )
-from pydantic_ai import Agent, ModelRetry, ToolFailed
+from pydantic_ai import Agent, ModelRetry, RunContext, ToolFailed
 from pydantic_ai.messages import (
     ModelResponse,
     RetryPromptPart,
@@ -48,6 +48,7 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.models.test import TestModel
 from pydantic_ai.usage import RunUsage
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
@@ -6220,8 +6221,12 @@ async def test_a_consumer_can_opt_into_sending_the_return_schema():
     only preserves what the tool def already carries.
     """
     toolset = SpecToolset({"list": list_spec()}).include_return_schemas()
+    # The wrapper is Pydantic-AI's own, and it reads the context while listing
+    # (newer releases dereference it unconditionally), so this needs a live
+    # ``RunContext`` rather than the ``ctx_for`` double or ``None``.
+    ctx = RunContext(deps=AgentDeps(user=None), model=TestModel(), usage=RunUsage())
 
-    tools = await toolset.get_tools(None)
+    tools = await toolset.get_tools(ctx)
 
     assert tools["list"].tool_def.include_return_schema is True
     assert tools["list"].tool_def.return_schema is not None
@@ -6911,8 +6916,6 @@ def test_the_run_context_double_carries_every_field_the_package_reads():
     production; carrying one fewer than the package reads would do the reverse.
     """
     import dataclasses
-
-    from pydantic_ai import RunContext
 
     real = {f.name for f in dataclasses.fields(RunContext)}
     assert real >= RUN_CONTEXT_FIELDS_READ, RUN_CONTEXT_FIELDS_READ - real
