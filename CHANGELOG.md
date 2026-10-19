@@ -6,6 +6,193 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-10-19
+
+### Added
+
+- **`tool_server_arguments=` on `SpecToolset` and `SpecCapability`: values the
+  server supplies for a tool's arguments, and names it keeps from the model.**
+  Keyed by tool name, each a django-service-specs `ServerArguments(values=...,
+  withheld=...)` over names the tool's spec declares: a selector or target
+  lookup parameter, or one of its `reads`. For an argument the model must not
+  choose, such as the project an agent run is scoped to.
+  - A bound name (`values`) carries the server's value on every call, applied
+    before the call is checked or its channels are split. It satisfies a
+    `required` parameter, and every reader sees the one value: a bound
+    `UrlKwarg` read is on `view.kwargs`, a bound `QueryParam` read on
+    `request.query_params`, and the selector receives it as its parameter.
+  - A withheld name is absent from every call, so its declared default, or the
+    callable's own, answers. Withholding the other names of an either-or scope
+    holds a tool taking a project or a draw request to the project.
+  - Neither is advertised: both leave the tool's `properties` and `required`,
+    and the instructions name neither. A value the model sends under one is
+    dropped before the call is checked, never refused, and logged at `WARNING`
+    with the tool and the names, never the values.
+  - Checked when the toolset is built. A key naming a tool the toolset does not
+    expose raises `ValueError`, as every per-tool mapping does. A binding
+    django-service-specs' `check_server_arguments` refuses, run with the
+    toolset's `pool_seeds`, raises `ImproperlyConfigured` prefixed
+    `SpecToolset tool '<name>': `: a name the spec does not declare, one bound
+    and withheld at once, one a pool seed or a typed `kwargs=` provider fills,
+    a withheld name no call could do without, or a bound value its parameter
+    refuses. So does a withheld name that a `UrlKwarg(required=True)` passed to
+    the toolset requires, which would otherwise refuse every call.
+  - Fixed when the toolset is built, like its tool definitions: build a toolset
+    per scope. A toolset with no bindings advertises and calls exactly as
+    before. The registry page has the either-or example, and a per-run
+    function from the registry and the run's scope to the bindings: a tool is
+    bound only when the run binds one of the scope names it reads, its other
+    optional scope reads are withheld, and a required one the run does not bind
+    stays the model's to send.
+
+### Changed
+
+- **Breaking: `unknown_arguments=UnknownArguments.PASSTHROUGH` is refused when
+  the toolset is built.** `SpecToolset` and `SpecCapability` accept `REJECT`
+  (still the default) and `IGNORE`, and raise `ImproperlyConfigured` for
+  anything else, the string `"passthrough"` included, with a message naming the
+  two accepted values. Up to 0.35.x, `PASSTHROUGH` served the call and forwarded
+  its undeclared keys: into a service's `data`, beside the validated fields, for
+  one. drf-services 0.58 retired the policy and raises `ValueError` for it on
+  every call, since it hands a callable only what its spec declares and a
+  model's tool call is one flat object with no second channel for an undeclared
+  name. The toolset now refuses it when it is built, so the mount fails at
+  startup. Declare the argument instead, as a `reads` entry, a serializer field
+  or a parameter.
+- **Requires `djangorestframework-services>=0.58.0`, and declares
+  `django-service-specs>=0.9.0`.** drf-services is an adapter over
+  django-service-specs from 0.58.0, and the ceiling 0.35.1 set is gone. The
+  floor is a hard one: the toolset recognises drf-services' refusals and
+  registries by the kernel's classes, which below 0.58.0 are not the ones
+  drf-services raises and builds. The behaviours below are 0.58.0's, reached
+  through the toolset. django-service-specs 0.9.0, above the 0.8.0 drf-services
+  asks for, is the release that exports `ServerArguments`,
+  `check_server_arguments` and `apply_server_arguments`, which
+  `tool_server_arguments` is built on.
+- **The names django-service-specs owns are imported from it**, in the
+  package, the tests and the docs snippets: `ServiceError`, `SpecRegistry`,
+  `UnknownArguments`, `PoolSeeds`, `FieldMarking`, `UNSET`, `ProgressReporter`
+  and the rest of the kernel-owned names drf-services re-exports. drf-services'
+  re-exports are the same objects, so either import still works and nothing
+  behaves differently. Names drf-services owns (`ServiceSpec`, `SelectorSpec`,
+  `QueryParam`, `UrlKwarg`, `OfflineContract`, `MARKING`, `dispatch_spec` and
+  the schema helpers) are still imported from drf-services.
+- **Breaking: `SpecRegistry.register` no longer takes `agent_contract=`; a
+  registry entry's channels and field audiences come from the spec's own
+  `reads=` and `field_audiences=`.** django-service-specs 0.9.0's signature is
+  `register(name, spec, *, tags=())`, so callers of
+  `register(agent_contract=...)` now fail with `TypeError`. Move the contract
+  onto the spec instead:
+  `registry.register(name, dataclasses.replace(spec, reads=[...], field_audiences={...}))`.
+  The entry's `agent_contract` is answered by the spec, and the toolset reads it
+  there as before, so a `UrlKwarg` or `QueryParam` read is advertised as a tool
+  argument with nothing in the constructor, and the constructor's declarations
+  still override it by name.
+  - `field_audiences` is part of the spec's output declaration, so a toolset
+    built from `registry.specs()` projects it too, where before only one built
+    from the registry did.
+  - Two fields marked `FieldMarking.label()` are refused by drf-services when
+    the toolset is built, as `SpecToolset tool 'list_widgets': Output: both 'id'
+    and 'name' are marked FieldMarking.label()...`.
+  - **Breaking: a `field_audiences` key naming no field the output carries is
+    refused when the toolset is built**, as `SpecToolset tool '...':
+    AgentWidgetSerializer: field_audiences names ['nope'], which the serializer
+    does not output...`, where a marking for a field that is not there used to
+    build and project nothing. Drop the key, or correct it to a field the output
+    carries.
+  - A toolset built from `registry.specs()` still advertises none of a spec's
+    reads, but drf-services now admits and routes a value sent under one of
+    those names onto the offline view and its query string, where before a
+    bare mapping's spec carried no reads at all.
+  - A read named after a `many=True` spec's list argument is refused by
+    drf-services when the spec compiles: at `SpecRegistry.register` for a
+    registry, and when the toolset is built for a mapping, prefixed with the
+    tool. The toolset's own check of that name still answers for the
+    constructor's declarations.
+  - A spec's own `QueryParam` read naming an input the tool advertises (a
+    parameter its selector takes, a `filter_set` field, or a parameter of a
+    service's target lookup) declares where that input comes from,
+    and `SpecToolset(registry)` builds and serves it as
+    `SpecToolset(registry.specs())` does: the parameter is advertised once, as
+    the selector declares it, and its value stays in the call, where
+    drf-services hands it to the parameter and puts it on
+    `request.query_params`. Up to 0.35.x an entry's `QueryParam` contract of
+    such a name was refused when the toolset was built, as shadowing the
+    parameter. A `QueryParam` of that name passed to the toolset's own
+    `query_params=` or `tool_query_params=` is still refused, a re-declaration
+    of the spec's read included, since the toolset takes that value out of the
+    call and routes it to the query string alone. A `UrlKwarg` of that name
+    with no `default`, passed to `url_kwargs=` or `tool_url_kwargs=`, is
+    loosened the same way: up to 0.35.x the registry refused it beside the
+    spec's `QueryParam` read with `ValueError`, as one name on two channels,
+    and it now builds and serves as `SpecToolset(registry.specs())` does, with
+    the value on `view.kwargs` and, under the spec's read, on
+    `request.query_params`. A `UrlKwarg` with a `default`, which fills the
+    parameter itself, and one over a read of a name the tool does not take as
+    an input are still refused there.
+- **Breaking: a `SelectorSpec` with `selector=None` is refused when the toolset
+  is built**, with drf-services' `ImproperlyConfigured` (`SpecToolset tool
+  'empty': SelectorSpec declares no selector, ...`). Such a spec could never run
+  off HTTP; the toolset used to build and fail on the tool's first call, so a
+  mount that never called it used to start. Declare the selector, or leave the
+  spec out of the toolset.
+- **A drf-services refusal raised while the toolset is built names the tool.**
+  The toolset compiles every spec first, and re-raises what drf-services
+  refuses there, in each tool's input schema (a malformed
+  `metadata["json_schema"]` fragment, say) and in its output projection, as
+  `SpecToolset tool '<name>': ` followed by drf-services' own message, which
+  names only the spec's parts. The exception is still `ImproperlyConfigured`,
+  chained to the original.
+- **A value that is not a drf-services `ServiceSpec` or `SelectorSpec` is
+  refused with `TypeError` when it reaches `SpecToolset` or `SpecCapability`**,
+  naming the tool, where a django-service-specs spec failed with an
+  `AttributeError` on the first drf-services attribute it lacked. A
+  `SpecRegistry` accepts any spec that compiles to a kernel spec, but this
+  toolset dispatches through drf-services, so an entry, or a mapping value,
+  must be a `rest_framework_services.ServiceSpec` or `SelectorSpec`; the message
+  says so, points a django-service-specs `ServiceSpec` or `SelectorSpec` at
+  `django_service_specs.dispatch`, and points a `PolymorphicServiceSpec` at
+  expanding its `.specs` into one tool per variant. Any other value, a
+  `RegisteredSpec` entry included, is refused with no pointer.
+- **A selector parameter a provider may fill, and that nothing filled, comes
+  back as `ceiling: This field is required.`**, drf-services' refusal keyed by
+  the name, where it read `Missing required argument(s): 'ceiling'.` It is still
+  a retry. The toolset's own missing-argument check, worded by
+  `AgentConventions.missing_arguments`, is unchanged and still answers first for
+  every name it can see before the call.
+- **Breaking: under `REJECT`, a key outside a `filter_set`'s filters and the
+  selector's parameters is refused** as `Unexpected argument(s): ...`, and a
+  selector taking a bare `**kwargs` refuses nothing and is handed none of the
+  undeclared keys, where up to 0.35.x it received them under every policy. The
+  docs and the `unknown_arguments` docstring no longer describe either
+  input set as open and unaffected. Declare each parameter the selector needs,
+  as a named parameter or a `filter_set` filter; under `IGNORE` a `**kwargs`
+  selector also now receives none of the undeclared keys, only the seeds
+  dispatch hands every call, such as `request` and `view`.
+- **Docs**: the registry and agent-audience pages declare reads and field
+  audiences on the spec rather than through `agent_contract=`, the quickstart
+  quotes drf-services' missing-field wording, and the API reference links the
+  kernel-owned names to django-service-specs' own pages.
+
+### Deprecated
+
+- **`query_params=`, `tool_query_params=`, `url_kwargs=` and `tool_url_kwargs=`
+  on `SpecToolset` and `SpecCapability`.** Passing any of them warns with
+  `DeprecationWarning`, naming the class they were passed to and attributed to
+  the caller's line, and they will be removed in the next minor release.
+  Declare each read on the spec as `reads=[QueryParam(...)]` or
+  `reads=[UrlKwarg(...)]` and build the toolset from the `SpecRegistry`, where
+  every transport reads the same declaration; a `UrlKwarg(default=...)`
+  standing in for a value the model must not choose moves to
+  `tool_server_arguments`. Until then they behave as before, including
+  overriding the spec's read of the same name, which is true of what the
+  toolset advertises, routes and defaults and of nothing drf-services reads: a
+  mount loosening a spec's `required` read to optional advertises an argument
+  the call is still refused without. One case changed, the loosening under
+  Changed: a `UrlKwarg` with no `default` over the spec's `QueryParam` read of
+  a name the tool takes as an input now builds and serves from the registry,
+  where it was refused.
+
 ## [0.35.1] — 2026-10-16
 
 ### Changed
@@ -2108,7 +2295,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.1...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.1...v0.36.0
 [0.35.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.33.0...v0.34.0

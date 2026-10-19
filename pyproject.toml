@@ -87,17 +87,29 @@ dependencies = [
     # stops being advertised and one only the model sends becomes required;
     # ``allow_none`` is how an ``allow_none`` retrieve's ``return_schema`` admits
     # the ``null`` it returns.
-    # 0.56.0 is the floor, and it is a hard one: ``provider_keys``,
-    # ``can_present_nothing`` and ``server_owned_keys`` first exist there, and
-    # the toolset imports them at module level, so below it the toolset does
-    # not import. ``spec_to_json_schema`` also first takes ``argument_binding=``
-    # there, which the toolset passes with the same binding it hands dispatch,
-    # so the advertised keys and the admitted ones are read off one binding.
+    # 0.56.0: ``provider_keys``, ``can_present_nothing`` and
+    # ``server_owned_keys`` first exist there, and the toolset imports them at
+    # module level, so below it the toolset does not import.
+    # ``spec_to_json_schema`` also first takes ``argument_binding=`` there,
+    # which the toolset passes with the same binding it hands dispatch, so the
+    # advertised keys and the admitted ones are read off one binding.
     # It is also where a missing argument is refused only where the caller
     # could have sent it, which the toolset turns into a retry.
-    # The ceiling is there because 0.58.0 retires names this release still
-    # passes; the release adapted to it floors ``>=0.58.0`` and drops the cap.
-    "djangorestframework-services>=0.56.0,<0.58",
+    # The floor, and a hard one: drf-services is an adapter over
+    # django-service-specs from here, and the names the kernel owns are re-exported
+    # as the kernel's own objects. The toolset imports those names from the kernel
+    # (below), so its ``isinstance`` checks against ``ServiceError``,
+    # ``ServiceValidationError``, ``AdditionalInputRequired``, ``ActionUnavailable``
+    # and ``SpecRegistry`` match what drf-services raises and builds only where
+    # the two are one object; below it each refusal would escape the run as an
+    # unrecognised exception and a registry would be read as a bare mapping.
+    "djangorestframework-services>=0.58.0",
+    # Declared because the toolset imports the kernel-owned names from here
+    # rather than through drf-services' re-exports, which are being retired.
+    # The floor is above drf-services' own because ``tool_server_arguments`` is
+    # built on ``ServerArguments``, ``check_server_arguments`` and
+    # ``apply_server_arguments``, which the kernel first exports here.
+    "django-service-specs>=0.9.0",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
     # a business-rule refusal, an unresolved target, a dispatch that ran past its
@@ -167,6 +179,10 @@ testpaths = ["tests"]
 filterwarnings = [
     'ignore::SyntaxWarning:.*[/\\]pypeg2[/\\]',
     'ignore::DeprecationWarning:.*[/\\]pypeg2[/\\]',
+    # The suite still exercises the deprecated mount-level channel knobs, which
+    # stay supported for one minor. The tests about the deprecation itself use
+    # ``pytest.warns``, which records whatever this filter says.
+    "ignore:Spec(Toolset|Capability)'s .* deprecated:DeprecationWarning",
 ]
 
 [tool.coverage.run]
@@ -238,7 +254,7 @@ root = ["./rest_framework_pydantic_ai"]
 # rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.35.1"
+current_version = "0.36.0"
 allow_dirty = false
 commit = false
 tag = false

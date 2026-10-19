@@ -7,14 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from django.http import HttpRequest
+from django_service_specs import DEFAULT_POOL_SEEDS, PoolSeeds, ServerArguments, UnknownArguments
 from pydantic_ai.capabilities import AbstractCapability
-from rest_framework_services import (
-    DEFAULT_JSON_SCHEMA_REGISTRY,
-    DEFAULT_POOL_SEEDS,
-    JsonSchemaRegistry,
-    PoolSeeds,
-    UnknownArguments,
-)
+from rest_framework_services import DEFAULT_JSON_SCHEMA_REGISTRY, JsonSchemaRegistry
 
 from rest_framework_pydantic_ai.spec_toolset import (
     ExceptionHandler,
@@ -68,7 +63,9 @@ class SpecCapability(AbstractCapability[Any]):
         specs: As ``SpecToolset``, including a
             ``SpecRegistry``
             or a filtered view of one, so a project declaring its specs once can
-            project several capabilities from them.
+            project several capabilities from them. Every entry must be a
+            drf-services spec: a django-service-specs one raises ``TypeError``
+            when the capability is built, as it does for the toolset.
         defer_loading: Hide the whole spec toolset and its instructions behind
             Pydantic-AI's native ``load_capability`` tool until the model loads
             it — progressive disclosure for a large spec map.
@@ -82,6 +79,9 @@ class SpecCapability(AbstractCapability[Any]):
             choosing between names alone — the guess-or-load-everything outcome
             deferring exists to avoid. Not the same knob as ``descriptions``,
             which relabels individual *tools*.
+        unknown_arguments: As ``SpecToolset``: ``REJECT`` (the default) or
+            ``IGNORE``. ``PASSTHROUGH`` raises ``ImproperlyConfigured`` when the
+            capability is built, since the toolset it owns is built then.
     """
 
     def __init__(
@@ -100,6 +100,7 @@ class SpecCapability(AbstractCapability[Any]):
         tool_query_params: Mapping[str, Sequence[QueryParam]] | None = None,
         url_kwargs: Sequence[UrlKwarg] = (),
         tool_url_kwargs: Mapping[str, Sequence[UrlKwarg]] | None = None,
+        tool_server_arguments: Mapping[str, ServerArguments] | None = None,
         host: str | None = None,
         max_retries: int = 1,
         max_result_bytes: int | None = None,
@@ -128,6 +129,7 @@ class SpecCapability(AbstractCapability[Any]):
             tool_query_params=tool_query_params,
             url_kwargs=url_kwargs,
             tool_url_kwargs=tool_url_kwargs,
+            tool_server_arguments=tool_server_arguments,
             host=host,
             max_retries=max_retries,
             max_result_bytes=max_result_bytes,

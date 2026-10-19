@@ -19,20 +19,13 @@ from typing import Any
 
 import django_filters
 import pytest
+from django_service_specs import DEFAULT_PAGE_SIZE, Affordance, FieldMarking, SelectorKind
 from pydantic_ai import ModelRetry
 from pydantic_ai.usage import RunUsage
 from rest_framework import serializers
 from rest_framework.exceptions import ValidationError as DRFValidationError
 from rest_framework.permissions import AllowAny
-from rest_framework_services import (
-    DEFAULT_PAGE_SIZE,
-    MARKING,
-    Affordance,
-    FieldMarking,
-    SelectorKind,
-    SelectorSpec,
-    ServiceSpec,
-)
+from rest_framework_services import MARKING, SelectorSpec, ServiceSpec
 
 from rest_framework_pydantic_ai import AgentDeps, QueryParam, SpecCapability, SpecToolset
 from tests.testapp.models import Widget

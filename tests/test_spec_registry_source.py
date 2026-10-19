@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from typing import Any
+
+import django_service_specs
 import pytest
+from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
-from rest_framework.permissions import AllowAny
-from rest_framework_services import (
-    FieldAudience,
-    FieldMarking,
-    OfflineContract,
-    SelectorKind,
-    SelectorSpec,
-    ServiceSpec,
-    SpecRegistry,
-)
+from django_service_specs import FieldAudience, FieldMarking, SelectorKind, SpecRegistry
+from pydantic_ai import ModelRetry
+from rest_framework.permissions import AllowAny, BasePermission
+from rest_framework_services import PolymorphicServiceSpec, SelectorSpec, ServiceSpec
 
 from rest_framework_pydantic_ai import QueryParam, SpecCapability, SpecToolset, UrlKwarg
+from tests.test_spec_toolset import ctx_for
 from tests.testapp.models import Widget
 from tests.testapp.serializers import AgentWidgetSerializer, WidgetSerializer
 
@@ -144,6 +144,93 @@ class TestToolsetFromRegistry:
             )
 
 
+def _native_registry() -> SpecRegistry:
+    # A django-service-specs spec, which the registry accepts because it
+    # compiles to a kernel spec, and which drf-services cannot dispatch.
+    registry = SpecRegistry()
+    registry.register(
+        "native_create",
+        django_service_specs.ServiceSpec(
+            service=create_widget, permissions=[django_service_specs.Unrestricted()]
+        ),
+    )
+    return registry
+
+
+_NATIVE_REFUSAL = (
+    r"^SpecToolset tool 'native_create': django_service_specs\.ServiceSpec is not a "
+    r"rest_framework_services\.ServiceSpec or SelectorSpec\. "
+)
+
+
+class TestANativeSpecIsRefused:
+    """A kernel-native spec reached the toolset's internals and died on the first
+    drf-services attribute it lacked, an ``AttributeError`` naming neither the
+    tool nor what to do. The refusal is a ``TypeError`` because the value is the
+    wrong kind, and it names the tool and both ways out."""
+
+    def test_from_a_registry(self) -> None:
+        with pytest.raises(TypeError, match=_NATIVE_REFUSAL) as raised:
+            SpecToolset(_native_registry())
+
+        assert "django_service_specs.dispatch" in str(raised.value)
+
+    def test_from_a_mapping(self) -> None:
+        native = _native_registry().specs()
+
+        with pytest.raises(TypeError, match=_NATIVE_REFUSAL):
+            SpecToolset(native)
+
+    def test_through_the_capability(self) -> None:
+        with pytest.raises(TypeError, match=_NATIVE_REFUSAL):
+            SpecCapability(_native_registry())
+
+    def test_a_native_selector_spec_is_pointed_at_dispatch_too(self) -> None:
+        native = django_service_specs.SelectorSpec(
+            kind=SelectorKind.LIST,
+            selector=list_widgets,
+            permissions=[django_service_specs.Unrestricted()],
+        )
+
+        with pytest.raises(TypeError, match=r"SelectorSpec is not a ") as raised:
+            SpecToolset({"native_list": native})
+
+        assert "django_service_specs.dispatch" in str(raised.value)
+
+    def test_a_polymorphic_spec_is_pointed_at_its_variants(self) -> None:
+        # A drf-services class, so the kernel's dispatch is the wrong way out:
+        # the polymorphic actions page expands ``.specs`` into one tool per
+        # variant, and the message says that instead.
+        moderate = PolymorphicServiceSpec(
+            discriminator=lambda *, data: data["op"],
+            specs={"create": _create_spec()},
+        )
+
+        with pytest.raises(
+            TypeError,
+            match=(
+                r"^SpecToolset tool 'moderate': rest_framework_services\."
+                r"PolymorphicServiceSpec is not a rest_framework_services\.ServiceSpec "
+                r"or SelectorSpec\. "
+            ),
+        ) as raised:
+            SpecToolset({"moderate": moderate})
+
+        assert ".specs" in str(raised.value)
+        assert "django_service_specs.dispatch" not in str(raised.value)
+
+    def test_a_registry_entry_is_not_pointed_at_dispatch(self) -> None:
+        # ``RegisteredSpec`` lives in django-service-specs too, but it is an
+        # entry, not a spec dispatch could run: only a kernel spec is pointed
+        # there, whatever module the value comes from.
+        entry = _native_registry().get("native_create")
+
+        with pytest.raises(TypeError, match=r"RegisteredSpec is not a ") as raised:
+            SpecToolset({"native_create": entry})
+
+        assert "django_service_specs.dispatch" not in str(raised.value)
+
+
 class TestCapabilityFromRegistry:
     def test_wraps_a_registry(self) -> None:
         capability = SpecCapability(_registry())
@@ -173,68 +260,96 @@ class TestCapabilityFromRegistry:
 
 
 class TestTheEntrysOfflineContract:
-    """What a caller with no HTTP request has to be told, declared on the entry.
+    """What a caller with no HTTP request has to be told, declared on the spec.
 
     Over HTTP the URLconf supplies the route captures and the query string the
     read-shaping params, so a spec mounted on a view is already complete. Off
     HTTP nobody supplies them, and every agent transport needs the *identical*
-    answer -- which is why the declaration belongs to the entry rather than to
-    this toolset's constructor or an MCP server's registrar.
+    answer -- which is why the declaration belongs to the spec (``reads=`` and
+    ``field_audiences=``), whose registry entry answers it as
+    ``entry.agent_contract``, rather than to this toolset's constructor or an
+    MCP server's registrar.
     """
 
-    def _contract_registry(self, contract: OfflineContract) -> SpecRegistry:
+    def _contract_registry(
+        self,
+        *,
+        reads: tuple[UrlKwarg | QueryParam, ...] = (),
+        field_audiences: dict[str, FieldMarking] | None = None,
+    ) -> SpecRegistry:
         registry = SpecRegistry()
-        registry.register("list_widgets", _agent_list_spec(), agent_contract=contract)
+        registry.register(
+            "list_widgets",
+            replace(_agent_list_spec(), reads=reads, field_audiences=field_audiences),
+        )
         return registry
 
     def test_url_kwargs_reach_the_tool_with_nothing_in_the_constructor(self) -> None:
-        toolset = SpecToolset(
-            self._contract_registry(OfflineContract(url_kwargs=(UrlKwarg("tenant_pk"),)))
-        )
+        toolset = SpecToolset(self._contract_registry(reads=(UrlKwarg("tenant_pk"),)))
 
         props = toolset._tool_defs["list_widgets"].parameters_json_schema["properties"]
         assert "tenant_pk" in props
+        assert toolset._tool_url_kwargs["list_widgets"] == (UrlKwarg("tenant_pk"),)
 
     def test_query_params_reach_the_tool_with_nothing_in_the_constructor(self) -> None:
-        toolset = SpecToolset(
-            self._contract_registry(OfflineContract(query_params=(QueryParam(name="since"),)))
-        )
+        toolset = SpecToolset(self._contract_registry(reads=(QueryParam(name="since"),)))
 
         props = toolset._tool_defs["list_widgets"].parameters_json_schema["properties"]
         assert "since" in props
+        assert toolset._tool_query_params["list_widgets"] == (QueryParam(name="since"),)
 
     def test_field_audiences_reach_the_projection(self) -> None:
-        # The asymmetry this closes: the override existed for the MCP transport
-        # and nowhere here, so one spec projected a different field set
-        # depending on which agent transport served it.
-        toolset = SpecToolset(
-            self._contract_registry(OfflineContract(field_audiences={"price": FieldMarking()}))
-        )
+        # The asymmetry this once closed -- one spec projecting a different field
+        # set depending on which agent transport served it -- is now closed at
+        # the source: the audiences are part of the spec's own output
+        # declaration, so the registry and a bare mapping project alike.
+        registry = self._contract_registry(field_audiences={"price": FieldMarking()})
 
-        assert toolset._projections["list_widgets"].audience("price") is FieldAudience.CONTENT
+        from_registry = SpecToolset(registry)._projections["list_widgets"]
+        from_mapping = SpecToolset(registry.specs())._projections["list_widgets"]
+
+        assert from_registry.audience("price") is FieldAudience.CONTENT
+        assert from_mapping.audience("price") is FieldAudience.CONTENT
 
     def test_the_serializer_still_decides_when_the_contract_is_silent(self) -> None:
-        toolset = SpecToolset(self._contract_registry(OfflineContract()))
+        toolset = SpecToolset(self._contract_registry())
 
         assert toolset._projections["list_widgets"].audience("price") is FieldAudience.HIDDEN
 
-    def test_a_field_audiences_clash_raises_naming_the_tool(self) -> None:
+    def test_a_field_audiences_clash_is_refused_when_the_toolset_is_built(self) -> None:
         # ``name`` is already the serializer's label; claiming it for ``id`` as
-        # well leaves two, and a record has one name.
-        with pytest.raises(ImproperlyConfigured, match="list_widgets"):
-            SpecToolset(
-                self._contract_registry(
-                    OfflineContract(field_audiences={"id": FieldMarking.label()})
-                )
-            )
+        # well leaves two, and a record has one name. The refusal is
+        # drf-services', from the spec's own output declaration, and the toolset
+        # prefixes it with the tool: drf-services names the output, which a
+        # registry of many specs shares across tools.
+        registry = self._contract_registry(field_audiences={"id": FieldMarking.label()})
+
+        with pytest.raises(
+            ImproperlyConfigured,
+            match=r"^SpecToolset tool 'list_widgets': Output: both 'id' and 'name' are marked",
+        ) as raised:
+            SpecToolset(registry)
+
+        # Re-raised, not replaced: drf-services' own refusal is the cause.
+        assert isinstance(raised.value.__cause__, ImproperlyConfigured)
+        assert str(raised.value.__cause__).startswith("Output: both 'id' and 'name'")
+
+    def test_a_field_audiences_key_naming_no_output_field_is_refused(self) -> None:
+        # A marking for a field the output does not carry would silently project
+        # nothing; drf-services refuses it, and the toolset names the tool.
+        registry = self._contract_registry(field_audiences={"nope": FieldMarking.label()})
+
+        with pytest.raises(ImproperlyConfigured) as raised:
+            SpecToolset(registry)
+
+        assert str(raised.value).startswith("SpecToolset tool 'list_widgets': ")
+        assert "'nope'" in str(raised.value)
 
     def test_this_mounts_declaration_overrides_the_entrys_by_name(self) -> None:
         # The contract is a default. A constructor declaration is this mount's
         # word about this deployment, and wins.
         toolset = SpecToolset(
-            self._contract_registry(
-                OfflineContract(query_params=(QueryParam(name="since", description="entry"),))
-            ),
+            self._contract_registry(reads=(QueryParam(name="since", description="entry"),)),
             query_params=[QueryParam(name="since", description="mount")],
         )
 
@@ -243,7 +358,7 @@ class TestTheEntrysOfflineContract:
 
     def test_a_per_tool_declaration_overrides_both(self) -> None:
         toolset = SpecToolset(
-            self._contract_registry(OfflineContract(url_kwargs=(UrlKwarg("tenant_pk"),))),
+            self._contract_registry(reads=(UrlKwarg("tenant_pk"),)),
             url_kwargs=[UrlKwarg("tenant_pk", description="mount")],
             tool_url_kwargs={"list_widgets": [UrlKwarg("tenant_pk", description="tool")]},
         )
@@ -251,28 +366,86 @@ class TestTheEntrysOfflineContract:
         (kwarg,) = toolset._tool_url_kwargs["list_widgets"]
         assert kwarg.description == "tool"
 
+    @pytest.mark.django_db(transaction=True)
+    async def test_an_override_changes_what_is_advertised_and_the_spec_still_checks_the_call(
+        self,
+    ) -> None:
+        """An override by name is true of what this toolset advertises, routes and
+        defaults, and of nothing drf-services reads: the spec's own declaration
+        still checks the call. A mount loosening a required read to optional
+        advertises it as optional, and a call leaving it out is refused by the
+        spec all the same. Declare the read once, on the spec.
+        """
+        registry = self._contract_registry(reads=(UrlKwarg("tenant_pk", required=True),))
+        toolset = SpecToolset(registry, url_kwargs=[UrlKwarg("tenant_pk")])
+        user = await User.objects.acreate(username="u")
+
+        schema = toolset._tool_defs["list_widgets"].parameters_json_schema
+        assert "tenant_pk" in schema["properties"]
+        assert "tenant_pk" not in schema.get("required", [])
+        tools = await toolset.get_tools(ctx_for(user))
+        with pytest.raises(ModelRetry, match="tenant_pk: This field is required"):
+            await toolset.call_tool("list_widgets", {}, ctx_for(user), tools["list_widgets"])
+
     def test_the_contract_still_answers_to_the_shared_channel_checks(self) -> None:
         # Nothing about arriving from an entry exempts a declaration from the
         # checks a constructor one answers to: both are merged first, and the
-        # merged tuple is what is validated and what reaches the schema.
-        registry = self._contract_registry(
-            OfflineContract(
-                url_kwargs=(UrlKwarg("tenant_pk"),),
-                query_params=(QueryParam(name="tenant_pk"),),
-            )
-        )
+        # merged tuple is what is validated and what reaches the schema. The
+        # entry's ``UrlKwarg`` and the mount's ``QueryParam`` meet only there --
+        # one spec cannot declare the name twice, which drf-services refuses
+        # when the spec is built.
+        registry = self._contract_registry(reads=(UrlKwarg("tenant_pk"),))
 
         with pytest.raises(ValueError, match="cannot route to two channels"):
-            SpecToolset(registry)
+            SpecToolset(registry, query_params=[QueryParam(name="tenant_pk")])
 
-    def test_a_bare_mapping_carries_no_contract(self) -> None:
-        """``registry.specs()`` flattens the entry away, contract included.
-
-        The documented consequence of passing the mapping rather than the
-        registry: what the entry declared is not in the mapping to be read.
+    @pytest.mark.django_db(transaction=True)
+    async def test_a_bare_mapping_advertises_no_read_and_still_routes_one(self) -> None:
+        """``registry.specs()`` flattens the entry to its spec, and the toolset
+        reads channels off the entry alone, so a bare mapping's tool advertises
+        none of what the spec reads. The spec still carries its ``reads``, and
+        drf-services routes a value sent under one of those names onto the
+        offline view and its query string as it does for any caller, so the call
+        is served: what the mapping drops is the advertisement, not the read.
         """
-        registry = self._contract_registry(OfflineContract(url_kwargs=(UrlKwarg("tenant_pk"),)))
+        spec = replace(
+            _agent_list_spec(),
+            permission_classes=[_RecordingPermission],
+            reads=(UrlKwarg("tenant_pk"), QueryParam(name="since")),
+        )
+        registry = SpecRegistry()
+        registry.register("list_widgets", spec)
+
+        user = await User.objects.acreate(username="u")
 
         toolset = SpecToolset(registry.specs())
+        tools = await toolset.get_tools(ctx_for(user))
+        await toolset.call_tool(
+            "list_widgets",
+            {"tenant_pk": "5", "since": "2020"},
+            ctx_for(user),
+            tools["list_widgets"],
+        )
 
         assert toolset._tool_url_kwargs["list_widgets"] == ()
+        assert toolset._tool_query_params["list_widgets"] == ()
+        props = toolset._tool_defs["list_widgets"].parameters_json_schema["properties"]
+        assert "tenant_pk" not in props
+        assert "since" not in props
+        assert _RecordingPermission.seen == {
+            "kwargs": {"tenant_pk": "5"},
+            "query_params": {"since": ["2020"]},
+        }
+
+
+class _RecordingPermission(BasePermission):
+    """Allows everything, and records the route captures and query it was shown."""
+
+    seen: dict[str, Any] = {}
+
+    def has_permission(self, request: Any, view: Any) -> bool:
+        _RecordingPermission.seen = {
+            "kwargs": dict(view.kwargs),
+            "query_params": dict(request.query_params.lists()),
+        }
+        return True

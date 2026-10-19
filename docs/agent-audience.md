@@ -15,13 +15,16 @@ model asks for it, gets nothing back, and is told nothing about why.
 ## Mark the fields
 
 The marking is `FieldMarking`, from
-[djangorestframework-services](https://artui.github.io/djangorestframework-services/),
-in DRF's per-field `style` bag. It reaches a `ModelSerializer` through
+[django-service-specs](https://artui.github.io/django-service-specs/), in DRF's
+per-field `style` bag under
+[djangorestframework-services](https://artui.github.io/djangorestframework-services/)'
+`MARKING` key. It reaches a `ModelSerializer` through
 `Meta.extra_kwargs`, so nothing has to be redeclared:
 
 ```python
 from rest_framework import serializers
-from rest_framework_services import MARKING, FieldMarking
+from django_service_specs import FieldMarking
+from rest_framework_services import MARKING
 
 
 class WidgetSerializer(serializers.ModelSerializer):
@@ -66,20 +69,23 @@ reword, or drop, through
 The serializer is the declaration and stays authoritative. The exception is a
 tool whose whole job is handing back something the others drop — a lookup
 returning the identifier a list view hides. That is an override, and it goes on
-the registry entry:
+the spec, as `field_audiences=`:
 
 ```python
-from rest_framework_services import OfflineContract, FieldMarking
+from dataclasses import replace
+
+from django_service_specs import FieldMarking
 
 registry.register(
     "lookup_widget",
-    specs.lookup_widget,
-    agent_contract=OfflineContract(field_audiences={"price": FieldMarking()}),
+    replace(specs.lookup_widget, field_audiences={"price": FieldMarking()}),
 )
 ```
 
-`SpecToolset(registry)` reads it, and so does an MCP server registering the same
-entry — which is the reason it lives there rather than in either constructor.
+The marking becomes part of the spec's output declaration, so `SpecToolset`
+projects it whether it is handed the registry or `registry.specs()`, and so does
+an MCP server registering the same spec — which is the reason it lives there
+rather than in either constructor.
 `FieldMarking`'s axis is *audience*, not transport: an in-process toolset and an
 MCP server want the same thing as each other and something different from a
 browser, so a field hidden from one agent caller and visible to another is a bug
@@ -89,7 +95,12 @@ A project that genuinely wants two agent audiences with different visibility
 does not want this. It wants two serializers.
 
 Two fields left claiming `FieldMarking.label()` raises `ImproperlyConfigured`
-naming the tool, at construction: a record has one name.
+when the toolset is built (`SpecToolset tool 'list_widgets': Output: both 'id'
+and 'name' are marked FieldMarking.label()...`): a record has one name. A
+`field_audiences` key naming a field the output does not carry is refused the
+same way, rather than projecting nothing. Both refusals are drf-services', from
+the spec's output declaration; the toolset prefixes them with the tool, since
+drf-services names only the fields.
 
 ## What it costs
 

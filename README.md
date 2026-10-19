@@ -68,7 +68,7 @@ the run under a plain `pydantic_ai.Agent`. A host that installs a tool-failure
 policy — `django-pydantic-agent`'s `build_agent` does by default — turns that
 denial into a failed-tool result instead, so the run continues; the call is
 still denied either way. Unexpected arguments are **rejected by default** — pass
-`unknown_arguments=` to `SpecToolset` (`IGNORE` / `PASSTHROUGH`) to change that.
+`unknown_arguments=UnknownArguments.IGNORE` to `SpecToolset` to drop them instead.
 
 A tool whose `Affordance` condition is unmet right now, such as posting to a closed
 period, is left out of that step's tool list, and the step's instructions name it
@@ -82,6 +82,13 @@ missing-argument retry. `SpecToolset(specs, conventions=AgentConventions(paginat
 rewords one line and leaves the rest as they are. The toolset still decides when
 each line is said, and `None` drops a line. Argument descriptions, such as those
 of `limit` and `page`, and the toolset's other retries stay fixed.
+
+An argument the model must not choose, such as the project a run is scoped to,
+is the server's to supply: `SpecToolset(registry, tool_server_arguments={"list_vendors":
+ServerArguments(values={"project_pk": "7"})})` binds it on every call to that
+tool, takes it out of the tool's schema, and drops whatever the model sends
+under it. `ServerArguments.withheld` keeps a name from the model with no value
+in its place, so its default answers.
 
 See the [documentation](https://artui.github.io/djangorestframework-pydantic-ai/)
 for the full reference.
