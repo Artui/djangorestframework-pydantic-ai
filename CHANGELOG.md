@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-10-19
+
 ### Added
 
 - **`tool_server_arguments=` on `SpecToolset` and `SpecCapability`: values the
@@ -2293,7 +2295,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.1...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.1...v0.36.0
 [0.35.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.33.0...v0.34.0
