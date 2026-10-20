@@ -17,8 +17,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `DoesNotExist` is: `ToolFailed("not found")` for a read, or for the
   instance selector of a write (which does not run), and `None` for a read
   that sets `allow_none=True`. A list selector's `Http404`, typically a
-  missing parent, is `ToolFailed("not found")` whatever `allow_none` says. An `exception_map` entry for `Http404` is no
-  longer needed for this, and one that is registered is no longer reached for
+  missing parent, is `ToolFailed("not found")` whatever `allow_none` says.
+  An `exception_map` entry for `Http404` is no longer needed for this, and one that is registered is no longer reached for
   a selector's `Http404`, because dispatch answers it first. The fix is in
   `django-service-specs`, so the floor is now `>=0.10.0`; it moves together
   with `djangorestframework-mcp-server`'s, since the two routes reach one spec
