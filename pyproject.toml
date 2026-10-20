@@ -109,7 +109,13 @@ dependencies = [
     # The floor is above drf-services' own because ``tool_server_arguments`` is
     # built on ``ServerArguments``, ``check_server_arguments`` and
     # ``apply_server_arguments``, which the kernel first exports here.
-    "django-service-specs>=0.9.0",
+    # 0.10.0: a selector's ``Http404`` (``get_object_or_404``) is a missing row
+    # in the kernel's dispatch, answered as ``not_found`` like a ``DoesNotExist``;
+    # below it the exception escapes and aborts the agent run. The floor moves
+    # with djangorestframework-mcp-server's: the two routes reach one spec, and
+    # with only one raised the same selector is a not-found on one route and an
+    # error on the other.
+    "django-service-specs>=0.10.0",
     # 2.16 floor: ``pydantic_ai.ToolFailed``, imported at module level by
     # ``spec_toolset`` and raised on every failure this toolset calls terminal —
     # a business-rule refusal, an unresolved target, a dispatch that ran past its
@@ -254,7 +260,7 @@ root = ["./rest_framework_pydantic_ai"]
 # rest_framework_pydantic_ai/version.py and promotes the CHANGELOG [Unreleased] block under
 # a new dated heading. Run via `uvx bump-my-version` (no permanent dependency).
 [tool.bumpversion]
-current_version = "0.36.0"
+current_version = "0.36.1"
 allow_dirty = false
 commit = false
 tag = false
