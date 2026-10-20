@@ -1063,7 +1063,7 @@ The toolset maps drf-services' failure kinds onto the Pydantic-AI model loop:
 | `ActionUnavailable` (an `Affordance` condition not met) | `ToolFailed` with the reason followed by the rule's code — `The books are closed. (code: books_closed)`; see below |
 | `AdditionalInputRequired` (the service wants one more input) | `ModelRetry` with the service's message, ending in the names to supply (``Call this tool again, additionally supplying: `confirmed`.``) — see the warning below |
 | `ServiceError` (business rule) | `ToolFailed` with the rule's own message — a failed result the model reads and reports |
-| Unresolved instance: a selector that finds no row, or raises `DoesNotExist` or Django's `Http404` (as `get_object_or_404` does) | `ToolFailed("not found")`, unless the spec sets `allow_none=True`, when the tool returns `None`. A list selector's `Http404` is `ToolFailed("not found")` whatever `allow_none` says |
+| Unresolved instance: a read's or a write's instance selector that finds no row, or raises `DoesNotExist` or Django's `Http404` (as `get_object_or_404` does) | `ToolFailed("not found")`, unless the spec sets `allow_none=True`, when the tool returns `None`. A list selector's `Http404`, usually from a parent it looked up, is `ToolFailed("not found")` whatever `allow_none` says; a list that finds no rows returns `[]`, and a `DoesNotExist` escaping a list selector is an error, not a not-found |
 | A dispatch past `dispatch_timeout` | `ToolFailed` — abandoned, with the sentence telling the model to narrow and call again |
 | A rendered result over `max_result_bytes` | `ToolFailed` — refused rather than truncated, since a partial payload looks complete |
 | Unexpected argument (default `REJECT`) | `ModelRetry` naming the unknown key |
