@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.1] — 2026-10-20
+
 ### Fixed
 
 - **A selector that raises `Http404` now fails the tool call as "not found",
@@ -2314,7 +2316,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.1...HEAD
+[0.36.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.1...v0.36.0
 [0.35.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.0...v0.35.1
 [0.35.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.34.0...v0.35.0
