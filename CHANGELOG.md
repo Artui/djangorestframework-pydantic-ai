@@ -6,6 +6,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A selector that raises `Http404` now fails the tool call as "not found",
+  where it used to abort the agent run
+  ([drf-mcp#188](https://github.com/Artui/djangorestframework-mcp-server/issues/188)).**
+  A selector written with `get_object_or_404` raises Django's `Http404`, which
+  is not an `ObjectDoesNotExist`, so dispatch let it through and the run
+  ended on the raw exception. It is now a missing row exactly as a
+  `DoesNotExist` is: `ToolFailed("not found")` for a read, or for the
+  instance selector of a write (which does not run), and `None` for a read
+  that sets `allow_none=True`. A list selector's `Http404`, typically a
+  missing parent, is `ToolFailed("not found")` whatever `allow_none` says. An `exception_map` entry for `Http404` is no
+  longer needed for this, and one that is registered is no longer reached for
+  a selector's `Http404`, because dispatch answers it first. The fix is in
+  `django-service-specs`, so the floor is now `>=0.10.0`; it moves together
+  with `djangorestframework-mcp-server`'s, since the two routes reach one spec
+  and with only one raised the same selector is a not-found on one route and an
+  error on the other.
+
 ## [0.36.0] — 2026-10-19
 
 ### Added

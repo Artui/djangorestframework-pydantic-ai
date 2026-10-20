@@ -20,6 +20,7 @@ from django.core.exceptions import FieldError, ImproperlyConfigured
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import connection, connections
 from django.db.models import Q
+from django.http import Http404
 from django.test import RequestFactory
 from django_restql.mixins import DynamicFieldsMixin
 from django_service_specs import (
@@ -195,9 +196,9 @@ def list_spec(**kwargs):
     # Guarded by default: ``require_permissions`` defaults to True, so an
     # unguarded spec is a construction error and every fixture would trip it.
     kwargs.setdefault("permission_classes", [AllowAny])
+    kwargs.setdefault("selector", list_widgets)
     return SelectorSpec(
         kind=SelectorKind.LIST,
-        selector=list_widgets,
         output_serializer=WidgetSerializer,
         **kwargs,
     )
@@ -207,9 +208,9 @@ def retrieve_spec(**kwargs):
     # Guarded by default: ``require_permissions`` defaults to True, so an
     # unguarded spec is a construction error and every fixture would trip it.
     kwargs.setdefault("permission_classes", [AllowAny])
+    kwargs.setdefault("selector", get_widget)
     return SelectorSpec(
         kind=SelectorKind.RETRIEVE,
-        selector=get_widget,
         output_serializer=WidgetSerializer,
         **kwargs,
     )
@@ -517,8 +518,29 @@ def test_retrieve_selector_found():
     assert result["name"] == "a"
 
 
+def _raises_does_not_exist(user, pk):
+    """Fetch a single widget by primary key, raising when it is missing."""
+    raise Widget.DoesNotExist(f"no widget {pk}")
+
+
+def _raises_http404(user, pk):
+    """The shape ``get_object_or_404`` gives a selector, without the query."""
+    raise Http404(f"no widget {pk}")
+
+
+#: The three ways a selector reports a missing row. Each must end as the same
+#: ``ToolFailed("not found")``; the kernel's dispatch answers ``Http404`` since
+#: django-service-specs 0.10.0, and below that floor the run raised instead.
+_MISSING_ROW_SELECTORS = pytest.mark.parametrize(
+    "selector",
+    [get_widget, _raises_does_not_exist, _raises_http404],
+    ids=["empty-queryset", "does-not-exist", "http404"],
+)
+
+
 @pytest.mark.django_db
-def test_retrieve_selector_not_found_fails_the_call():
+@_MISSING_ROW_SELECTORS
+def test_retrieve_selector_not_found_fails_the_call(selector):
     """An unresolved target is ``ToolFailed``, carrying the wording unchanged.
 
     The message is what the model reads and it has not moved; what moved is that
@@ -527,17 +549,77 @@ def test_retrieve_selector_not_found_fails_the_call():
     that marking off a real run."""
     user = User.objects.create(username="u")
     with pytest.raises(ToolFailed) as caught:
-        _dispatch(retrieve_spec(), user, {"pk": 999})
+        _dispatch(retrieve_spec(selector=selector), user, {"pk": 999})
+    assert caught.value.message == "not found"
+
+
+def _list_raising_http404(user):
+    """List the acting user's widgets, or 404 when there is no such parent."""
+    raise Http404("no such parent")
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize("allow_none", [False, True], ids=["strict", "allow-none"])
+def test_a_list_selector_that_raises_http404_fails_the_call(allow_none):
+    """A list has no single row to be missing, so ``allow_none`` does not turn
+    its ``Http404`` into ``None`` (nor into an empty page): it is the same
+    ``ToolFailed`` as a read's, whichever way the flag is set."""
+    user = User.objects.create(username="u")
+    spec = list_spec(selector=_list_raising_http404, allow_none=allow_none)
+    with pytest.raises(ToolFailed) as caught:
+        _dispatch(spec, user, {})
     assert caught.value.message == "not found"
 
 
 @pytest.mark.django_db
-def test_a_nullable_retrieve_that_finds_nothing_returns_none():
+def test_an_http404_exception_map_entry_is_not_consulted_for_a_selector():
+    """The kernel answers a selector's ``Http404`` before it can reach the
+    map, so the entry a consumer once registered by hand is redundant: the call
+    is the same ``ToolFailed`` and the handler never runs."""
+    user = User.objects.create(username="u")
+    seen: list[BaseException] = []
+
+    def handler(exc: BaseException) -> Any:
+        seen.append(exc)
+        return {"handled": True}
+
+    with pytest.raises(ToolFailed) as caught:
+        _dispatch(
+            retrieve_spec(selector=_raises_http404),
+            user,
+            {"pk": 999},
+            toolset_kwargs={"exception_map": {Http404: handler}},
+        )
+    assert caught.value.message == "not found"
+    assert seen == []
+
+
+@pytest.mark.django_db
+@_MISSING_ROW_SELECTORS
+def test_a_write_whose_instance_selector_finds_nothing_fails_the_call(selector):
+    """The write never runs: the instance selector is what resolves its target,
+    and a missing one is the same ``ToolFailed`` a read gets."""
+    user = User.objects.create(username="u")
+    spec = ServiceSpec(
+        service=update_widget,
+        input_serializer=WidgetInputSerializer,
+        instance_selector_spec=SelectorSpec(kind=SelectorKind.RETRIEVE, selector=selector),
+        permission_classes=[AllowAny],
+        atomic=False,
+    )
+    with pytest.raises(ToolFailed) as caught:
+        _dispatch(spec, user, {"pk": 999, "name": "x", "price": 1})
+    assert caught.value.message == "not found"
+
+
+@pytest.mark.django_db
+@_MISSING_ROW_SELECTORS
+def test_a_nullable_retrieve_that_finds_nothing_returns_none(selector):
     """Not the output serializer's blank row, which read to the model as a widget
     with an empty name: drf-services renders a single ``None`` as ``None`` from
     0.52.1, the floor that buys this."""
     user = User.objects.create(username="u")
-    spec = retrieve_spec(allow_none=True)
+    spec = retrieve_spec(allow_none=True, selector=selector)
 
     assert _dispatch(spec, user, {"pk": 999}) is None
 
@@ -1735,11 +1817,12 @@ async def test_a_refused_call_marks_the_tool_return_failed_and_carries_its_code(
 
 
 @pytest.mark.django_db(transaction=True)
-async def test_an_unresolved_target_marks_the_tool_return_failed():
+@_MISSING_ROW_SELECTORS
+async def test_an_unresolved_target_marks_the_tool_return_failed(selector):
     from asgiref.sync import sync_to_async
 
     user = await sync_to_async(User.objects.create)(username="alice")
-    result = await _run_one_tool(retrieve_spec(), user=user, args={"pk": 999})
+    result = await _run_one_tool(retrieve_spec(selector=selector), user=user, args={"pk": 999})
     part = _tool_return(result)
     assert part.outcome == "failed"
     assert part.content == "not found"
