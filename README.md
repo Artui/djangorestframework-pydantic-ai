@@ -1,3 +1,13 @@
+> **This package has moved.** `djangorestframework-pydantic-ai` is no longer
+> developed; 0.36.2 is its final release and its code is unchanged from 0.36.1.
+> Development continues as
+> [`django-spec-agents`](https://pypi.org/project/django-spec-agents/), where this
+> package is now `django_spec_agents.spec_tools`
+> (`pip install "django-spec-agents[specs]"`). See
+> [Moving to django-spec-agents](https://artui.github.io/djangorestframework-pydantic-ai/moving-to-django-spec-agents/)
+> for what each name became, and the
+> [new documentation](https://artui.github.io/django-spec-agents/).
+
 # djangorestframework-pydantic-ai
 
 [![CI](https://github.com/Artui/djangorestframework-pydantic-ai/workflows/tests/badge.svg)](https://github.com/Artui/djangorestframework-pydantic-ai/actions/workflows/tests.yml)
@@ -7,7 +17,7 @@
 [![Docs](https://img.shields.io/badge/docs-artui.github.io-blue.svg)](https://artui.github.io/djangorestframework-pydantic-ai/)
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Artui/djangorestframework-pydantic-ai/gh-pages/coverage.json)](https://github.com/Artui/djangorestframework-pydantic-ai/actions/workflows/tests.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![License](https://img.shields.io/pypi/l/djangorestframework-pydantic-ai.svg)](LICENSE)
+[![License](https://img.shields.io/pypi/l/djangorestframework-pydantic-ai.svg)](https://github.com/Artui/djangorestframework-pydantic-ai/blob/main/LICENSE)
 
 Expose [`djangorestframework-services`](https://github.com/Artui/djangorestframework-services)
 services and selectors as a [Pydantic-AI](https://ai.pydantic.dev) toolset, so a

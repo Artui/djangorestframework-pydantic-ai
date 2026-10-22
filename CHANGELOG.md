@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.2] — 2026-10-22
+
+### Changed
+
+- **Final release: development continues as `django-spec-agents`.** This
+  package is no longer developed, and its code is unchanged from 0.36.1:
+  nothing under `rest_framework_pydantic_ai/` differs except `version.py`, no
+  test differs, and the extras and dependencies are the same. What it did is now
+  `django_spec_agents.spec_tools` in
+  [`django-spec-agents`](https://pypi.org/project/django-spec-agents/)
+  (`pip install "django-spec-agents[specs]"`). The PyPI classifier is now
+  `Development Status :: 7 - Inactive`, the README and every docs page carry a
+  notice, and the new
+  [Moving to django-spec-agents](https://artui.github.io/djangorestframework-pydantic-ai/moving-to-django-spec-agents/)
+  page maps each exported name to its new home, including the four mount
+  keywords that are gone there and the renamed logger.
+
 ## [0.36.1] — 2026-10-20
 
 ### Fixed
@@ -2316,7 +2333,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.1...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.2...HEAD
+[0.36.2]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.1...v0.36.0
 [0.35.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.0...v0.35.1

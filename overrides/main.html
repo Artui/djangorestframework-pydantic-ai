@@ -1,0 +1,12 @@
+{#
+  Site-wide notice, shown on every page through mkdocs-material's announce bar.
+  It lives in ``overrides/`` rather than under ``docs/`` so the theme loads it as a
+  template and the build does not also copy it into the published site.
+#}
+{% extends "base.html" %}
+
+{% block announce %}
+  This package is no longer developed. Development continues as
+  <a href="https://artui.github.io/django-spec-agents/"><strong>django-spec-agents</strong></a>;
+  see <a href="{{ 'moving-to-django-spec-agents/' | url }}">Moving to django-spec-agents</a>.
+{% endblock %}
