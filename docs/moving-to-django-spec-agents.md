@@ -22,8 +22,8 @@ that installed `djangorestframework-pydantic-ai[filter]` installs
 `django-spec-agents[specs,filter]`.
 
 If you reach this package through `django-ag-ui[spec-tools]`, that extra still
-installs this package for one more minor release. Its replacement is
-`django-ag-ui[specs]`.
+installs this package through django-ag-ui 0.69, and the next minor removes it.
+Its replacement is `django-ag-ui[specs]`.
 
 ## Where each name went
 
@@ -61,6 +61,7 @@ Module by module, for an import that reaches past the package root:
 | --- | --- |
 | `rest_framework_pydantic_ai.spec_toolset` | `django_spec_agents.spec_tools.spec_toolset` |
 | `rest_framework_pydantic_ai.spec_capability` | `django_spec_agents.spec_tools.spec_capability` |
+| `rest_framework_pydantic_ai.types` (`AgentConventions`, `AgentDeps`, `QueryParam`) | `AgentConventions` from `django_spec_agents.spec_tools.types`; `AgentDeps` from `django_spec_agents`; `QueryParam` from `rest_framework_services`. The new `types` package exports `AgentConventions` only |
 | `rest_framework_pydantic_ai.types.agent_conventions` | `django_spec_agents.spec_tools.types.agent_conventions` |
 | `rest_framework_pydantic_ai.types.agent_deps` | `django_spec_agents.agent.types.agent_deps`, or import `AgentDeps` from `django_spec_agents` |
 | `rest_framework_pydantic_ai.types.query_param` | removed; import `QueryParam` from `rest_framework_services` |
@@ -75,8 +76,8 @@ Module by module, for an import that reaches past the package root:
 `TypeError`. They declared at one mount what the spec's `reads` declare for every
 transport, which is how two mounts came to disagree about one operation. This
 package already warned with `DeprecationWarning` when you passed one; the new
-package removes them. Declare what a spec reads on the spec itself, with `reads=`, and build the
-toolset from the registry:
+package removes them. Where you register the spec today, declare its reads on the spec itself
+with `reads=`, and build the toolset from the registry:
 
 ```python
 # Before
@@ -90,6 +91,7 @@ SpecToolset(
 registry.register(
     "list_orders",
     replace(specs.list_orders, reads=[UrlKwarg(name="tenant_pk"), QueryParam(name="fields")]),
+    tags=("read",),
 )
 SpecToolset(registry.by_tag("read"))
 ```
@@ -121,6 +123,10 @@ Every other keyword of `SpecToolset` and `SpecCapability` is unchanged.
   `rest_framework_pydantic_ai`. A `LOGGING` entry under the old name stops
   receiving this toolset's records after the move, and nothing fails to tell you.
   Rename the entry, or add one for the new name.
+- **`AgentDeps` has more fields, and `progress` moved.** This package's
+  `AgentDeps` was `user, progress`. The host's is `user, ip_address, state,
+  progress`, so a positional `AgentDeps(user, reporter)` binds the reporter to
+  `ip_address` without complaint. Pass `progress=` by keyword.
 - **The `[filter]` extra** keeps its name in django-spec-agents.
 
 ## Where the rest of the documentation went

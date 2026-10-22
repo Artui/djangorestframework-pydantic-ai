@@ -17,7 +17,7 @@
 [![Docs](https://img.shields.io/badge/docs-artui.github.io-blue.svg)](https://artui.github.io/djangorestframework-pydantic-ai/)
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/Artui/djangorestframework-pydantic-ai/gh-pages/coverage.json)](https://github.com/Artui/djangorestframework-pydantic-ai/actions/workflows/tests.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![License](https://img.shields.io/pypi/l/djangorestframework-pydantic-ai.svg)](LICENSE)
+[![License](https://img.shields.io/pypi/l/djangorestframework-pydantic-ai.svg)](https://github.com/Artui/djangorestframework-pydantic-ai/blob/main/LICENSE)
 
 Expose [`djangorestframework-services`](https://github.com/Artui/djangorestframework-services)
 services and selectors as a [Pydantic-AI](https://ai.pydantic.dev) toolset, so a

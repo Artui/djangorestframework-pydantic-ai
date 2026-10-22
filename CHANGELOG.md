@@ -12,8 +12,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Final release: development continues as `django-spec-agents`.** This
   package is no longer developed, and its code is unchanged from 0.36.1:
-  nothing under `rest_framework_pydantic_ai/` and no test differs, and the
-  extras and dependencies are the same. What it did is now
+  nothing under `rest_framework_pydantic_ai/` differs except `version.py`, no
+  test differs, and the extras and dependencies are the same. What it did is now
   `django_spec_agents.spec_tools` in
   [`django-spec-agents`](https://pypi.org/project/django-spec-agents/)
   (`pip install "django-spec-agents[specs]"`). The PyPI classifier is now
