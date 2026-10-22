@@ -1,3 +1,13 @@
+> **This package has moved.** `djangorestframework-pydantic-ai` is no longer
+> developed; 0.36.2 is its final release and its code is unchanged from 0.36.1.
+> Development continues as
+> [`django-spec-agents`](https://pypi.org/project/django-spec-agents/), where this
+> package is now `django_spec_agents.spec_tools`
+> (`pip install "django-spec-agents[specs]"`). See
+> [Moving to django-spec-agents](https://artui.github.io/djangorestframework-pydantic-ai/moving-to-django-spec-agents/)
+> for what each name became, and the
+> [new documentation](https://artui.github.io/django-spec-agents/).
+
 # djangorestframework-pydantic-ai
 
 [![CI](https://github.com/Artui/djangorestframework-pydantic-ai/workflows/tests/badge.svg)](https://github.com/Artui/djangorestframework-pydantic-ai/actions/workflows/tests.yml)
