@@ -53,9 +53,20 @@ from django_spec_agents.spec_tools import SpecToolset
 from rest_framework_services import QueryParam, UrlKwarg
 ```
 
-The submodule paths follow the same move:
-`rest_framework_pydantic_ai.spec_toolset` is
-`django_spec_agents.spec_tools.spec_toolset`, and the other modules likewise.
+### Modules
+
+Module by module, for an import that reaches past the package root:
+
+| Was | Now |
+| --- | --- |
+| `rest_framework_pydantic_ai.spec_toolset` | `django_spec_agents.spec_tools.spec_toolset` |
+| `rest_framework_pydantic_ai.spec_capability` | `django_spec_agents.spec_tools.spec_capability` |
+| `rest_framework_pydantic_ai.types.agent_conventions` | `django_spec_agents.spec_tools.types.agent_conventions` |
+| `rest_framework_pydantic_ai.types.agent_deps` | `django_spec_agents.agent.types.agent_deps`, or import `AgentDeps` from `django_spec_agents` |
+| `rest_framework_pydantic_ai.types.query_param` | removed; import `QueryParam` from `rest_framework_services` |
+| `rest_framework_pydantic_ai.types.url_kwarg` | removed; import `UrlKwarg` from `rest_framework_services` |
+| `rest_framework_pydantic_ai.version` | removed; read `django_spec_agents.__version__` |
+| `rest_framework_pydantic_ai.testing` | `django_spec_agents.testing`, with the same three doubles: `tool_calling_model`, `streaming_tool_calling_model` and `instruction_capturing_model` |
 
 ## Mount keywords that are gone
 
