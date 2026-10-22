@@ -7,6 +7,8 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
+  # The announce bar that points readers at django-spec-agents.
+  custom_dir: overrides
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -83,6 +85,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Moving to django-spec-agents: moving-to-django-spec-agents.md
   - Quickstart: quickstart.md
   - Shared spec registry: spec-registry.md
   - Polymorphic actions: polymorphic-actions.md
