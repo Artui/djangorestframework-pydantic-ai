@@ -4300,9 +4300,11 @@ arguments once will reject them again and the run will not settle.</p>
           </tr>
       </tbody>
     </table>
-        <p>The branch order matters and is not arbitrary. A retry prompt is checked
-<strong>before</strong> a tool return, because a retried call's message history carries
-both and the tool-return arm would end the run on the failed attempt.</p>
+        <p>The branch order matters and is not arbitrary. A retry is checked
+<strong>before</strong> a tool return, because from pydantic-ai 2.60 a retried call <em>is</em>
+a tool return, marked <code>outcome="retried"</code>, and the tool-return arm would
+end the run on the failed attempt. Below 2.60 the retry is a separate
+<code>retry-prompt</code> part, and both shapes are read.</p>
 
 
     </div>

@@ -729,13 +729,15 @@
 
 
 <h1 id="moving-to-django-spec-agents">Moving to django-spec-agents<a class="headerlink" href="#moving-to-django-spec-agents" title="Permanent link">&para;</a></h1>
-<p><code>djangorestframework-pydantic-ai</code> is no longer developed. Version 0.36.2 is its
-final release, and its code is identical to 0.36.1. Development continues as
+<p><code>djangorestframework-pydantic-ai</code> is no longer developed. 0.36.x is its final
+line: 0.36.2 changed no code, and 0.36.3 only fixes the test doubles in
+<code>rest_framework_pydantic_ai.testing</code>, which ended a run on a tool retry under
+pydantic-ai 2.60 and later. Development continues as
 <a href="https://artui.github.io/django-spec-agents/">django-spec-agents</a>, which merges
 this package with <code>django-pydantic-agent</code>. What this package did is now
 <code>django_spec_agents.spec_tools</code>.</p>
 <p>Nothing here warns, breaks or re-exports: an install that keeps this package
-keeps working exactly as 0.36.1 did. This page is for the day you move.</p>
+keeps working as it does today. This page is for the day you move.</p>
 <h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">&quot;django-spec-agents[specs]&quot;</span>
 </span></code></pre></div>
@@ -842,7 +844,7 @@ re-exports of <code>djangorestframework-services</code>, so they are imported fr
 </tr>
 <tr>
 <td><code>rest_framework_pydantic_ai.testing</code></td>
-<td><code>django_spec_agents.testing</code>, with the same three doubles: <code>tool_calling_model</code>, <code>streaming_tool_calling_model</code> and <code>instruction_capturing_model</code></td>
+<td><code>django_spec_agents.testing</code>, with the same three doubles: <code>tool_calling_model</code>, <code>streaming_tool_calling_model</code> and <code>instruction_capturing_model</code>. Their pydantic-ai 2.60 retry fix is merged there and ships in the release after 0.2.0</td>
 </tr>
 </tbody>
 </table>
