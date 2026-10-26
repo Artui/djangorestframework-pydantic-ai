@@ -18,8 +18,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that as an answer and ended the run on the failed attempt. Both shapes are read
   now. A fresh install resolves pydantic-ai 2.61 on Python 3.11 and later, so a
   consumer's suite built on these doubles failed without any change of its own.
-  This is a fix to the final release rather than a return to development: the
-  same fix shipped in `django_spec_agents.testing`, where development continues.
+  This is a fix to the final 0.36 line rather than a return to development: the
+  same fix is merged into `django_spec_agents.testing`, where development
+  continues, and ships in its release after 0.2.0.
 
 ## [0.36.2] — 2026-10-22
 

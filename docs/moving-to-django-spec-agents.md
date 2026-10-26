@@ -1,13 +1,15 @@
 # Moving to django-spec-agents
 
-`djangorestframework-pydantic-ai` is no longer developed. Version 0.36.2 is its
-final release, and its code is identical to 0.36.1. Development continues as
+`djangorestframework-pydantic-ai` is no longer developed. 0.36.x is its final
+line: 0.36.2 changed no code, and 0.36.3 only fixes the test doubles in
+`rest_framework_pydantic_ai.testing`, which ended a run on a tool retry under
+pydantic-ai 2.60 and later. Development continues as
 [django-spec-agents](https://artui.github.io/django-spec-agents/), which merges
 this package with `django-pydantic-agent`. What this package did is now
 `django_spec_agents.spec_tools`.
 
 Nothing here warns, breaks or re-exports: an install that keeps this package
-keeps working exactly as 0.36.1 did. This page is for the day you move.
+keeps working as it does today. This page is for the day you move.
 
 ## Install
 
@@ -67,7 +69,7 @@ Module by module, for an import that reaches past the package root:
 | `rest_framework_pydantic_ai.types.query_param` | removed; import `QueryParam` from `rest_framework_services` |
 | `rest_framework_pydantic_ai.types.url_kwarg` | removed; import `UrlKwarg` from `rest_framework_services` |
 | `rest_framework_pydantic_ai.version` | removed; read `django_spec_agents.__version__` |
-| `rest_framework_pydantic_ai.testing` | `django_spec_agents.testing`, with the same three doubles: `tool_calling_model`, `streaming_tool_calling_model` and `instruction_capturing_model` |
+| `rest_framework_pydantic_ai.testing` | `django_spec_agents.testing`, with the same three doubles: `tool_calling_model`, `streaming_tool_calling_model` and `instruction_capturing_model`. Their pydantic-ai 2.60 retry fix is merged there and ships in the release after 0.2.0 |
 
 ## Mount keywords that are gone
 
