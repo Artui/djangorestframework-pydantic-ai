@@ -1,5 +1,6 @@
 > **This package has moved.** `djangorestframework-pydantic-ai` is no longer
-> developed; 0.36.2 is its final release and its code is unchanged from 0.36.1.
+> developed; 0.36.x is its final line, and 0.36.3 only fixes the test doubles
+> in `rest_framework_pydantic_ai.testing` for pydantic-ai 2.60 and later.
 > Development continues as
 > [`django-spec-agents`](https://pypi.org/project/django-spec-agents/), where this
 > package is now `django_spec_agents.spec_tools`

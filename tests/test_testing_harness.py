@@ -2,18 +2,29 @@
 
 A harness shipped in the wheel is API: it is what a consumer's suite will
 depend on, so its own contract needs pinning. In particular the branch order
-inside ``tool_calling_model`` -- retry prompt before tool return -- is the part
-that reads as arbitrary and is not, and the only way to prove it is a run that
-actually retries.
+inside ``tool_calling_model`` -- retry before tool return -- is the part that
+reads as arbitrary and is not. A run that actually retries proves it against
+the installed pydantic-ai; a hand-built history proves it for the retry shape
+that pydantic-ai does not write.
 """
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import pytest
 from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.exceptions import UnexpectedModelBehavior
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from rest_framework import serializers
 from rest_framework.permissions import AllowAny
 from rest_framework_services import ServiceSpec
@@ -172,10 +183,11 @@ async def test_the_streaming_double_still_serves_a_plain_run() -> None:
 async def test_the_streaming_double_retries_in_the_same_order() -> None:
     """The branch order is shared with the non-streamed double, not copied.
 
-    A retry prompt has to be read before a tool return, because a retried
-    call's history carries both and reading them the other way round ends the
-    run on the failed attempt. This asserts the streamed path has the same
-    order -- the reason the decision lives in one function.
+    A retry has to be read before a tool return, because from pydantic-ai 2.60
+    a retried call is a tool return marked ``outcome="retried"``, and reading
+    them the other way round ends the run on the failed attempt. This asserts
+    the streamed path has the same order -- the reason the decision lives in
+    one function.
     """
     attempts: list[str] = []
 
@@ -206,3 +218,61 @@ async def test_the_streaming_double_retries_in_the_same_order() -> None:
         await run.get_output()
 
     assert attempts == ["first", "second"], "the streamed double retried out of order"
+
+
+def _legacy_retry_prompt() -> RetryPromptPart:
+    # Deprecated from pydantic-ai 2.60, which no longer emits it. Built here
+    # because a consumer's own history, or a pydantic-ai below 2.60, still has it.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return RetryPromptPart(content="try again", tool_name="t", tool_call_id="c1")
+
+
+def _retried_tool_return() -> ToolReturnPart:
+    # What pydantic-ai 2.60 and later records for a tool's ``ModelRetry`` or a
+    # call whose arguments failed validation: the call's own return, marked.
+    # A dataclass does not enforce its ``Literal`` fields, so this builds on a
+    # pydantic-ai that predates the ``"retried"`` value too.
+    return ToolReturnPart(tool_name="t", content="try again", tool_call_id="c1", outcome="retried")
+
+
+@pytest.mark.parametrize(
+    "retry",
+    [_legacy_retry_prompt, _retried_tool_return],
+    ids=["retry-prompt", "retried-tool-return"],
+)
+@pytest.mark.parametrize("double", [tool_calling_model, streaming_tool_calling_model])
+def test_a_retry_in_either_shape_gets_the_retry_args(retry: Any, double: Any) -> None:
+    """Whichever shape the installed pydantic-ai writes a retry in.
+
+    Driven with a hand-built history rather than a run, so the shape under test
+    does not depend on which pydantic-ai is installed: a run on 2.60 or later
+    only ever produces the second, and one below it only the first. Each case
+    holds one arm of the double's retry check.
+    """
+    model = double("t", {"mode": "first"}, retry_args={"mode": "second"})
+    history = [
+        ModelRequest(parts=[UserPromptPart("go")]),
+        ModelResponse(parts=[ToolCallPart(tool_name="t", args={"mode": "first"})]),
+        ModelRequest(parts=[retry()]),
+    ]
+
+    (part,) = model.function(history, None).parts
+
+    assert isinstance(part, ToolCallPart), f"the double ended the run on a retry: {part!r}"
+    assert part.args == {"mode": "second"}
+
+
+def test_a_successful_tool_return_still_ends_the_run() -> None:
+    """The other side of the retry check: an ordinary return is not a retry."""
+    model = tool_calling_model("t", {"mode": "first"}, final_text="finished")
+    history = [
+        ModelRequest(parts=[UserPromptPart("go")]),
+        ModelResponse(parts=[ToolCallPart(tool_name="t", args={"mode": "first"})]),
+        ModelRequest(parts=[ToolReturnPart(tool_name="t", content="ok", tool_call_id="c1")]),
+    ]
+
+    (part,) = model.function(history, None).parts
+
+    assert isinstance(part, TextPart)
+    assert part.content == "finished"
