@@ -59,9 +59,11 @@ def tool_calling_model(
     Returns:
         A ``FunctionModel``: no provider, no network, no key.
 
-    The branch order matters and is not arbitrary. A retry prompt is checked
-    **before** a tool return, because a retried call's message history carries
-    both and the tool-return arm would end the run on the failed attempt.
+    The branch order matters and is not arbitrary. A retry is checked
+    **before** a tool return, because from pydantic-ai 2.60 a retried call *is*
+    a tool return, marked ``outcome="retried"``, and the tool-return arm would
+    end the run on the failed attempt. Below 2.60 the retry is a separate
+    ``retry-prompt`` part, and both shapes are read.
     """
 
     def model_fn(messages: Any, info: Any) -> ModelResponse:
@@ -87,11 +89,28 @@ def _next_response(
     second: dict[str, Any] = dict(retry_args) if retry_args is not None else dict(first)
 
     last = messages[-1]
-    if any(part.part_kind == "retry-prompt" for part in last.parts):
+    if any(_is_retry(part) for part in last.parts):
         return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=second)])
     if any(part.part_kind == "tool-return" for part in last.parts):
         return ModelResponse(parts=[TextPart(final_text)])
     return ModelResponse(parts=[ToolCallPart(tool_name=tool_name, args=first)])
+
+
+def _is_retry(part: Any) -> bool:
+    """Whether ``part`` asks the model to make its call again, in either shape.
+
+    Below pydantic-ai 2.60 a tool's ``ModelRetry``, or arguments that failed
+    validation, came back as a ``retry-prompt`` part. From 2.60 that part is
+    deprecated and no longer emitted: the retry is the call's own tool return,
+    marked ``outcome="retried"``. Read through ``getattr`` because only a tool
+    return carries an ``outcome``, and a request can hold other parts beside it.
+
+    One branch arc, so coverage cannot see either half go missing. Each is held
+    by its case of ``test_a_retry_in_either_shape_gets_the_retry_args``:
+    ``retry-prompt`` by the first, ``retried-tool-return`` by the second, both
+    built by hand so they run whichever pydantic-ai is installed.
+    """
+    return part.part_kind == "retry-prompt" or getattr(part, "outcome", None) == "retried"
 
 
 def streaming_tool_calling_model(

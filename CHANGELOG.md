@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tool_calling_model` and `streaming_tool_calling_model` in
+  `rest_framework_pydantic_ai.testing` call the tool again with `retry_args` on
+  pydantic-ai 2.60 and later.** From 2.60 a tool's `ModelRetry`, or arguments
+  that failed validation, is recorded as the call's own `ToolReturnPart` marked
+  `outcome="retried"` rather than as a `RetryPromptPart`, and the doubles read
+  that as an answer and ended the run on the failed attempt. Both shapes are read
+  now. A fresh install resolves pydantic-ai 2.61 on Python 3.11 and later, so a
+  consumer's suite built on these doubles failed without any change of its own.
+  This is a fix to the final release rather than a return to development: the
+  same fix shipped in `django_spec_agents.testing`, where development continues.
+
 ## [0.36.2] — 2026-10-22
 
 ### Changed

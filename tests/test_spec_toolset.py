@@ -43,7 +43,6 @@ from django_service_specs import (
 from pydantic_ai import Agent, ModelRetry, RunContext, ToolFailed
 from pydantic_ai.messages import (
     ModelResponse,
-    RetryPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -108,6 +107,7 @@ from tests.testapp.serializers import (
     WidgetInputSerializer,
     WidgetSerializer,
 )
+from tests.tool_retries import is_tool_answer, is_tool_retry, tool_answers, tool_retries
 
 if TYPE_CHECKING:
     # Annotation-only imports, where a project running ruff's flake8-type-checking
@@ -956,12 +956,7 @@ async def test_the_model_reads_an_item_error_as_argument_index_and_field():
 
     result = await agent.run("go", deps=AgentDeps(user=user))
 
-    retries = [
-        part
-        for message in result.all_messages()
-        for part in message.parts
-        if isinstance(part, RetryPromptPart)
-    ]
+    retries = tool_retries(result.all_messages())
     assert len(retries) == 1
     assert retries[0].content == "items[1].price: This field is required."
     assert _tool_return(result).outcome == "success"
@@ -1737,13 +1732,8 @@ async def test_agent_run_recovers_from_model_retry():
 
 
 def _tool_return(result: Any) -> ToolReturnPart:
-    """The one tool return in a finished run's messages."""
-    returns = [
-        part
-        for message in result.all_messages()
-        for part in message.parts
-        if isinstance(part, ToolReturnPart)
-    ]
+    """The one tool return in a finished run's messages that is not a retry."""
+    returns = tool_answers(result.all_messages())
     assert len(returns) == 1, f"expected exactly one tool return, got {len(returns)}"
     return returns[0]
 
@@ -4294,9 +4284,9 @@ async def test_a_model_calling_an_omitted_tool_gets_the_unknown_tool_retry():
         ran.append(True)
 
     def calls_approve(messages: Any, info: Any) -> Any:
-        retry = [p for p in messages[-1].parts if isinstance(p, RetryPromptPart)]
+        retry = [p for p in messages[-1].parts if is_tool_retry(p)]
         if retry:
-            retries.append(retry[0].model_response())
+            retries.append(str(retry[0].content))
             return ModelResponse(parts=[TextPart("done")])
         return ModelResponse(parts=[ToolCallPart(tool_name="approve", args={})])
 
@@ -7477,7 +7467,7 @@ async def test_a_selection_written_against_the_envelope_is_one_retry_then_the_pa
     queries = iter(["{items{id, name}}", "{id, name}"])
 
     def model(messages: list[Any], info: Any) -> ModelResponse:
-        if any(isinstance(part, ToolReturnPart) for part in messages[-1].parts):
+        if any(is_tool_answer(part) for part in messages[-1].parts):
             return ModelResponse(parts=[TextPart("done")])
         return ModelResponse(parts=[ToolCallPart("list_widgets", {"query": next(queries)})])
 
@@ -7488,12 +7478,7 @@ async def test_a_selection_written_against_the_envelope_is_one_retry_then_the_pa
         "go", deps=AgentDeps(user=user)
     )
 
-    retries = [
-        part
-        for message in result.all_messages()
-        for part in message.parts
-        if isinstance(part, RetryPromptPart)
-    ]
+    retries = tool_retries(result.all_messages())
     assert [retry.content for retry in retries] == [
         "`query` was rejected while rendering the result: `items` field is not found. "
         + _SCOPE_DESCRIPTION
