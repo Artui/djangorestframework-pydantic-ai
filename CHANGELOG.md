@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.36.3] — 2026-10-26
+
 ### Fixed
 
 - **`tool_calling_model` and `streaming_tool_calling_model` in
@@ -2346,7 +2348,8 @@ reaches the read path.
   `RunContext.deps`; override with a `get_user` extractor for a custom identity
   shape.
 
-[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.2...HEAD
+[Unreleased]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.3...HEAD
+[0.36.3]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.2...v0.36.3
 [0.36.2]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.1...v0.36.2
 [0.36.1]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.36.0...v0.36.1
 [0.36.0]: https://github.com/Artui/djangorestframework-pydantic-ai/compare/v0.35.1...v0.36.0
